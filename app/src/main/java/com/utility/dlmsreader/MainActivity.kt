@@ -95,6 +95,12 @@ fun MeterReaderScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val probeStatus by transport.probeStatus.collectAsState()
+    val probeStatusColor = when (probeStatus) {
+        OpticalUsbTransport.STATUS_METER_LINK_ESTABLISHED -> Color(0xFF15803D)
+        OpticalUsbTransport.STATUS_NO_METER_RESPONSE -> Color(0xFFB91C1C)
+        OpticalUsbTransport.STATUS_USB_CABLE_WAITING -> Color(0xFFB45309)
+        else -> Color.Gray
+    }
 
     var useMeterReaderAuth by remember { mutableStateOf(true) }
     var llsPassword by remember { mutableStateOf("lnt1") }
@@ -157,7 +163,18 @@ fun MeterReaderScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Optical Probe Status", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.Gray)
                         Spacer(Modifier.height(2.dp))
-                        Text(probeStatus, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                        Surface(
+                            color = probeStatusColor.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text(
+                                probeStatus,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                                color = probeStatusColor
+                            )
+                        }
                     }
                     FilledTonalButton(onClick = onRefreshUsb) {
                         Text("Scan USB")

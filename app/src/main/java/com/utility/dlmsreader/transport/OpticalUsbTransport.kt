@@ -11,7 +11,6 @@ import android.os.Build
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -33,10 +32,13 @@ class OpticalUsbTransport(private val context: Context) {
 
     companion object {
         private const val ACTION_USB_PERMISSION = "com.utility.dlmsreader.USB_PERMISSION"
+        const val STATUS_USB_CABLE_WAITING = "USB Cable Detected (Waiting for Meter...)"
+        const val STATUS_NO_METER_RESPONSE = "❌ Cable Connected, but No Meter Response (Check alignment / push button)"
+        const val STATUS_METER_LINK_ESTABLISHED = "✅ Meter Link Established Successfully!"
     }
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-    private var serialPort: UsbSerialPort? = null
+    private var port: UsbSerialPort? = null
 
     private val _probeStatus = MutableStateFlow("No Optical Probe Connected")
     val probeStatus: StateFlow<String> = _probeStatus
@@ -49,9 +51,7 @@ class OpticalUsbTransport(private val context: Context) {
         if (drivers.isEmpty()) {
             _probeStatus.value = "No USB Optical Probe Detected"
         } else {
-            val dev = drivers.first().device
-            val hasPerm = usbManager.hasPermission(dev)
-            _probeStatus.value = "Detected: ${dev.productName ?: dev.deviceName} (Perm: $hasPerm)"
+            _probeStatus.value = STATUS_USB_CABLE_WAITING
         }
     }
 
@@ -73,17 +73,23 @@ class OpticalUsbTransport(private val context: Context) {
                 val connection = usbManager.openDevice(device)
                     ?: throw IOException("Failed to open USB device connection.")
 
-                val port = driver.ports.first()
-                port.open(connection)
+                val openedPort = driver.ports.first()
+                openedPort.open(connection)
 
                 // CRITICAL: Optical probes draw power from DTR/RTS lines for IR TX/RX
-                port.dtr = true
-                port.rts = true
+                openedPort.dtr = true
+                openedPort.rts = true
+                port = openedPort
+                _probeStatus.value = STATUS_USB_CABLE_WAITING
+                log(TraceDirection.INFO, STATUS_USB_CABLE_WAITING)
 
                 if (useModeE) {
-                    performModeEHandshake(port)
+                    if (!performModeEHandshake()) {
+                        closePort(preserveStatus = true)
+                        throw IOException("L&T Mode E handshake failed.")
+                    }
                 } else {
-                    port.setParameters(
+                    openedPort.setParameters(
                         baudRate,
                         8,
                         UsbSerialPort.STOPBITS_1,
@@ -93,69 +99,106 @@ class OpticalUsbTransport(private val context: Context) {
 
                 // Purge any stale bytes in the UART FIFO buffer
                 try {
-                    port.purgeHwBuffers(true, true)
+                    openedPort.purgeHwBuffers(true, true)
                 } catch (_: UnsupportedOperationException) { }
 
-                serialPort = port
-                _probeStatus.value = "Connected (${device.productName ?: "Optical Probe"} @ $baudRate 8N1)"
                 log(TraceDirection.INFO, "Optical port opened at $baudRate 8N1 (DTR/RTS ON)")
             }
         }
 
-    /**
-     * IEC 62056-21 Mode E Handshake: Starts at 300 7E1, sends /?!\r\n, negotiates 9600 8N1 HDLC.
-     */
-    private suspend fun performModeEHandshake(port: UsbSerialPort) {
-        log(TraceDirection.INFO, "Starting IEC 62056-21 Mode E Handshake at 300 7E1...")
-        port.setParameters(300, 7, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_EVEN)
-        delay(200)
+    fun performModeEHandshake(): Boolean {
+        try {
+            log(TraceDirection.INFO, "Starting L&T Mode E Handshake (300 7E1)...")
 
-        val signOn = "/?!\r\n".toByteArray(Charsets.US_ASCII)
-        log(TraceDirection.TX, signOn.toHexString())
-        port.write(signOn, 1000)
+            port?.let { p ->
+                p.setParameters(300, 7, 1, com.hoho.android.usbserial.driver.UsbSerialPort.PARITY_EVEN)
+                p.dtr = true
+                p.rts = true
+                Thread.sleep(200)
 
-        val rxBuf = ByteArray(128)
-        val len = port.read(rxBuf, 2500)
-        if (len <= 0) throw IOException("No response to Mode E /?! sign-on.")
-        log(TraceDirection.RX, rxBuf.copyOf(len).toHexString())
+                val signOnQuery = byteArrayOf(0x2F, 0x3F, 0x21, 0x0D, 0x0A)
+                p.write(signOnQuery, 500)
+                log(TraceDirection.TX, "/?! (300 baud sign-on sent)")
 
-        // Send <ACK>052\r\n (0 = Normal, 5 = 9600 bps, 2 = Binary HDLC Mode E)
-        val ackSwitch = byteArrayOf(0x06, 0x30, 0x35, 0x32, 0x0D, 0x0A)
-        log(TraceDirection.TX, ackSwitch.toHexString())
-        port.write(ackSwitch, 1000)
+                val buffer = ByteArray(64)
+                val len = try {
+                    readBytes(buffer, 2500)
+                } catch (e: Exception) {
+                    markNoMeterResponse(
+                        "No physical meter response detected (Mode E read timeout): ${e.message ?: "timeout"}"
+                    )
+                    return false
+                }
 
-        // Wait for UART transmit register to drain before switching baud rate
-        delay(300)
-        port.setParameters(9600, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
-        log(TraceDirection.INFO, "Switched to 9600 8N1 for HDLC.")
+                if (len > 0) {
+                    val responseStr = String(buffer, 0, len, Charsets.US_ASCII).trim()
+                    log(TraceDirection.RX, "Meter Response: $responseStr")
+
+                    val ackFrame = byteArrayOf(0x06, 0x30, 0x35, 0x30, 0x0D, 0x0A)
+                    Thread.sleep(200)
+                    p.write(ackFrame, 500)
+                    log(TraceDirection.TX, "ACK Baud-Rate Switch sent")
+
+                    Thread.sleep(300)
+                    p.setParameters(9600, 8, 1, com.hoho.android.usbserial.driver.UsbSerialPort.PARITY_NONE)
+                    log(TraceDirection.INFO, "Switched port to 9600 8N1. Ready for HDLC.")
+                    return true
+                } else {
+                    markNoMeterResponse("No physical meter response detected (Mode E sign-on timeout).")
+                }
+            }
+        } catch (e: Exception) {
+            markNoMeterResponse(
+                "No physical meter response detected (Mode E handshake failed): ${e.message ?: "communication error"}"
+            )
+        }
+        return false
+    }
+
+    fun markNoMeterResponse(traceMessage: String = "No physical meter response detected.") {
+        _probeStatus.value = STATUS_NO_METER_RESPONSE
+        log(TraceDirection.ERROR, traceMessage)
+    }
+
+    fun markMeterLinkEstablished() {
+        _probeStatus.value = STATUS_METER_LINK_ESTABLISHED
+        log(TraceDirection.INFO, STATUS_METER_LINK_ESTABLISHED)
+    }
+
+    private fun readBytes(buffer: ByteArray, timeoutMs: Int): Int {
+        val p = port ?: return 0
+        if (buffer.isEmpty()) return 0
+
+        val bytesRead = p.read(buffer, buffer.size, timeoutMs.coerceAtLeast(0))
+        return bytesRead.coerceIn(0, buffer.size)
     }
 
     fun write(data: ByteArray, timeoutMs: Int = 2000) {
-        val port = serialPort ?: throw IOException("Serial port is not open.")
+        val activePort = port ?: throw IOException("Serial port is not open.")
         log(TraceDirection.TX, data.toHexString())
-        port.write(data, timeoutMs)
+        activePort.write(data, timeoutMs)
     }
 
     fun readChunk(buffer: ByteArray, timeoutMs: Int = 200): Int {
-        val port = serialPort ?: throw IOException("Serial port is not open.")
-        return port.read(buffer, timeoutMs)
+        val activePort = port ?: throw IOException("Serial port is not open.")
+        return activePort.read(buffer, timeoutMs)
     }
 
     fun log(direction: TraceDirection, message: String) {
         _traceFlow.tryEmit(TraceLog(direction = direction, hexOrMessage = message))
     }
 
-    fun closePort() {
+    fun closePort(preserveStatus: Boolean = false) {
         try {
-            serialPort?.apply {
+            port?.apply {
                 dtr = false
                 rts = false
                 close()
             }
         } catch (_: Exception) {
         } finally {
-            serialPort = null
-            refreshProbeStatus()
+            port = null
+            if (!preserveStatus) refreshProbeStatus()
         }
     }
 
