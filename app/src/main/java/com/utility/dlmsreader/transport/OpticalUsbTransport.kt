@@ -87,8 +87,19 @@ class OpticalUsbTransport(private val context: Context) {
 
                 if (useModeE) {
                     if (!performModeEHandshake()) {
-                        closePort(preserveStatus = true)
-                        throw IOException("L&T Mode E handshake failed.")
+                        log(
+                            TraceDirection.INFO,
+                            "Mode E did not receive a banner; falling back to direct 9600 8N1 HDLC."
+                        )
+                        openedPort.setParameters(
+                            9600,
+                            8,
+                            UsbSerialPort.STOPBITS_1,
+                            UsbSerialPort.PARITY_NONE
+                        )
+                        openedPort.dtr = true
+                        openedPort.rts = true
+                        _probeStatus.value = STATUS_USB_CABLE_WAITING
                     }
                 } else {
                     openedPort.setParameters(
@@ -273,6 +284,14 @@ class OpticalUsbTransport(private val context: Context) {
         val buffer = ByteArray(safeSize)
         val bytesRead = readChunk(buffer, timeoutMs).coerceIn(0, safeSize)
         return buffer.copyOf(bytesRead)
+    }
+
+    fun purgeBuffers() {
+        try {
+            port?.purgeHwBuffers(true, true)
+        } catch (_: Exception) {
+            // Some USB serial driver wrappers do not support hardware purging.
+        }
     }
 
     fun log(direction: TraceDirection, message: String) {

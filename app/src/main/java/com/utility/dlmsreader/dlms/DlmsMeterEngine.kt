@@ -9,7 +9,6 @@ import gurux.dlms.GXDLMSException
 import gurux.dlms.GXReplyData
 import gurux.dlms.enums.Authentication
 import gurux.dlms.enums.InterfaceType
-import gurux.dlms.enums.RequestTypes
 import gurux.dlms.objects.GXDLMSClock
 import gurux.dlms.objects.GXDLMSData
 import gurux.dlms.objects.GXDLMSObject
@@ -20,6 +19,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.util.Locale
 import java.util.concurrent.TimeoutException
 
 data class ConnectionParams(
@@ -44,7 +44,110 @@ data class MeterReadSnapshot(
     val powerFactor: String
 )
 
+enum class MeterDataModule {
+    IDENTITY,
+    ENERGY,
+    INSTANTANEOUS,
+    BILLING,
+    BLOCK_LOAD,
+    DAILY_LOAD,
+    TAMPER,
+    ALL
+}
+
 class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
+
+    suspend fun readMeterModule(
+        params: ConnectionParams,
+        module: MeterDataModule,
+        onProgress: suspend (String) -> Unit = {}
+    ): Result<MeterDataReport> = withContext(Dispatchers.IO) {
+        runCatching {
+            suspend fun reportProgress(message: String) {
+                onProgress(message)
+                transport.log(TraceDirection.INFO, message)
+            }
+
+            transport.openPort(params.baudRate, params.useModeE).getOrThrow()
+            reportProgress("Starting Public Client (0x10) discovery...")
+            val publicClient = GXDLMSSecureClient().apply {
+                clientAddress = 16
+                serverAddress = 1
+                useLogicalNameReferencing = true
+                interfaceType = InterfaceType.HDLC
+            }
+            val publicIdentity = PublicClientDiscovery.discover(transport, publicClient)
+
+            if (module == MeterDataModule.IDENTITY && params.clientAddress == 0x10) {
+                transport.markMeterLinkEstablished()
+                transport.closePort(preserveStatus = true)
+                return@runCatching MeterDataReport(identity = publicIdentity.toIdentitySection())
+            }
+            if (params.clientAddress == 0x10) {
+                throw IOException("Client 32 authentication is required for ${module.name.lowercase(Locale.US)} data.")
+            }
+
+            delay(400)
+            transport.purgeBuffers()
+            reportProgress("Preparing authenticated Meter Reader (Client=32) session...")
+
+            val client = GXDLMSSecureClient(
+                true,
+                params.clientAddress,
+                params.serverAddress,
+                params.authentication,
+                if (params.authentication == Authentication.NONE) null else params.password,
+                InterfaceType.HDLC
+            )
+            val executor = GuruxPacketExecutor(transport, client, packetTimeoutMs = params.responseTimeoutMs)
+            val reply = GXReplyData()
+            var linked = false
+            try {
+                establishSession(client, executor, reply)
+                linked = true
+                val reader = Is15959DataReader(transport, client, params.responseTimeoutMs, onProgress)
+                when (module) {
+                    MeterDataModule.IDENTITY -> MeterDataReport(identity = reader.readIdentityAndNameplate())
+                    MeterDataModule.ENERGY -> MeterDataReport(cumulativeEnergies = reader.readCumulativeEnergies())
+                    MeterDataModule.INSTANTANEOUS -> MeterDataReport(instantaneous = reader.readInstantaneousProfile())
+                    MeterDataModule.BILLING -> MeterDataReport(billing = reader.readBillingProfile())
+                    MeterDataModule.BLOCK_LOAD -> MeterDataReport(blockLoad = reader.readBlockLoadSurvey())
+                    MeterDataModule.DAILY_LOAD -> MeterDataReport(dailyLoad = reader.readDailyLoadSurvey())
+                    MeterDataModule.TAMPER -> MeterDataReport(tamperEvents = reader.readTamperEventLogs())
+                    MeterDataModule.ALL -> reader.readAllMeterData()
+                }
+            } finally {
+                if (linked) {
+                    runCatching {
+                        reportProgress("Closing Meter Reader session...")
+                        executor.readDLMSPacket(client.disconnectRequest(), GXReplyData())
+                    }
+                }
+                transport.closePort(preserveStatus = true)
+            }
+        }
+    }
+
+    private suspend fun establishSession(
+        client: GXDLMSSecureClient,
+        executor: GuruxPacketExecutor,
+        reply: GXReplyData
+    ) {
+        val snrm = client.snrmRequest()
+        if (snrm.isEmpty()) throw IOException("Meter Reader SNRM request was empty.")
+        executor.readDLMSPacket(snrm, reply)
+        client.parseUAResponse(reply.data)
+        reply.clear()
+
+        executor.readDataBlock(client.aarqRequest(), reply)
+        client.parseAareResponse(reply.data)
+
+        if (client.isAuthenticationRequired) {
+            reply.clear()
+            executor.readDataBlock(client.applicationAssociationRequest, reply)
+            client.parseApplicationAssociationResponse(reply.data)
+        }
+    }
 
     suspend fun readMeter(params: ConnectionParams): Result<MeterReadSnapshot> =
         withContext(Dispatchers.IO) {
@@ -79,6 +182,32 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                 transport.log(
                     TraceDirection.INFO,
                     "✅ Meter Link Established Successfully! Serial: ${identity.serialNumber}"
+                )
+
+                if (params.clientAddress == 0x10) {
+                    transport.log(
+                        TraceDirection.INFO,
+                        "Public Client (0x10) discovery complete; skipping a second SNRM session."
+                    )
+                    transport.closePort(preserveStatus = true)
+                    return@runCatching MeterReadSnapshot(
+                        logicalDeviceName = identity.logicalDeviceName,
+                        serialNumber = identity.serialNumber,
+                        manufacturerName = "Public Client Discovery",
+                        firmwareVersion = "Available via Meter Reader (0x20)",
+                        meterClock = identity.clockTime,
+                        activeEnergyKwh = "Switch to Client 32 (MR) for Energy",
+                        instantaneousVoltage = "Switch to Client 32 (MR) for Voltage",
+                        instantaneousCurrent = "Switch to Client 32 (MR) for Current",
+                        powerFactor = "Switch to Client 32 (MR) for PF"
+                    )
+                }
+
+                delay(400)
+                transport.purgeBuffers()
+                transport.log(
+                    TraceDirection.INFO,
+                    "Public discovery session closed; preparing Meter Reader (Client=32) session."
                 )
 
                 val client = GXDLMSSecureClient(
@@ -225,11 +354,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
     ): String = runCatching {
         val obj = GXDLMSData(obis)
         val raw = readAttribute(client, obj, 2, timeoutMs)
-        when (raw) {
-            is ByteArray -> String(raw, Charsets.US_ASCII).trim { it <= ' ' }
-            null -> "N/A"
-            else -> raw.toString()
-        }
+        Is15959Formatter.formatValue(raw)
     }.getOrElse { "Unsupported ($obis)" }
 
     private suspend fun readClock(
@@ -238,7 +363,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
         timeoutMs: Long
     ): String = runCatching {
         val clockObj = GXDLMSClock(obis)
-        readAttribute(client, clockObj, 2, timeoutMs)?.toString() ?: "N/A"
+        Is15959Formatter.formatValue(readAttribute(client, clockObj, 2, timeoutMs))
     }.getOrElse { "Unsupported ($obis)" }
 
     private suspend fun readScaledRegister(
@@ -251,7 +376,11 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
         readAttribute(client, reg, 3, timeoutMs)
         // Read Attribute 2 (Value)
         readAttribute(client, reg, 2, timeoutMs)
-        "${reg.value} ${reg.unit}"
+        Is15959Formatter.formatValue(
+            reg.value,
+            Is15959Formatter.normalizedScaler(reg.scaler, reg.unit),
+            reg.unit
+        )
     }.getOrElse { e -> "Error: ${e.message}" }
 
     private suspend fun readAttribute(
@@ -262,40 +391,12 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
     ): Any? {
         val reply = GXReplyData()
         val requestFrames = client.read(obj, attributeIndex)
-        readDataBlock(client, requestFrames, reply, timeoutMs)
+        GuruxPacketExecutor(
+            transport = transport,
+            client = client,
+            packetTimeoutMs = timeoutMs
+        ).readDataBlock(requestFrames, reply)
         return client.updateValue(obj, attributeIndex, reply.value)
-    }
-
-    /**
-     * Handles both HDLC segmented frames (RequestTypes.FRAME -> RR)
-     * and COSEM Application Block Transfers (RequestTypes.DATABLOCK).
-     */
-    private suspend fun readDataBlock(
-        client: GXDLMSSecureClient,
-        txFrames: Array<ByteArray>,
-        reply: GXReplyData,
-        timeoutMs: Long
-    ) {
-        for (frame in txFrames) {
-            reply.clear()
-            readDlmsPacket(client, frame, reply, timeoutMs)
-while (reply.isMoreData) {
-                val nextFrame: ByteArray? = when {
-                    reply.moreData.contains(RequestTypes.FRAME) -> {
-                        // Pass reply.data buffer and the reply object
-                        client.getData(reply.data, reply)
-                        reply.data.array()
-                    }
-                    reply.moreData.contains(RequestTypes.DATABLOCK) -> {
-                        client.getData(reply.data, reply)
-                        reply.data.array()
-                    }
-                    else -> null
-                }
-                if (nextFrame == null || nextFrame.isEmpty()) break
-                readDlmsPacket(client, nextFrame, reply, timeoutMs)
-            }
-        }
     }
 
     /**
@@ -317,8 +418,8 @@ while (reply.isMoreData) {
         var attempt = 0
         while (attempt < maxRetries) {
             attempt++
+            reply.clear()
             rxBuffer.clear()
-            reply.error = 0
 
             transport.write(txFrame)
             val deadline = SystemClock.elapsedRealtime() + timeoutMs
@@ -354,3 +455,24 @@ while (reply.isMoreData) {
         }
     }
 }
+
+private fun PublicClientDiscovery.MeterIdentity.toIdentitySection(): IdentitySection =
+    IdentitySection(
+        rows = listOf(
+            ParameterRow(
+                parameterName = Is15959Formatter.getObisLabelAndUnit("0.0.42.0.0.255").label,
+                obisCode = "0.0.42.0.0.255",
+                formattedValue = logicalDeviceName
+            ),
+            ParameterRow(
+                parameterName = Is15959Formatter.getObisLabelAndUnit("0.0.96.1.0.255").label,
+                obisCode = "0.0.96.1.0.255",
+                formattedValue = serialNumber
+            ),
+            ParameterRow(
+                parameterName = Is15959Formatter.getObisLabelAndUnit("0.0.1.0.0.255").label,
+                obisCode = "0.0.1.0.0.255",
+                formattedValue = clockTime
+            )
+        )
+    )
