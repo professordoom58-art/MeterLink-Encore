@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -23,12 +24,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.utility.dlmsreader.dlms.ConnectionParams
 import com.utility.dlmsreader.dlms.DlmsMeterEngine
+import com.utility.dlmsreader.dlms.MeterDataModule
+import com.utility.dlmsreader.dlms.MeterDataReport
 import com.utility.dlmsreader.dlms.MeterReadSnapshot
+import com.utility.dlmsreader.dlms.MeterLinkPdfExporter
+import com.utility.dlmsreader.dlms.ProfileSection
 import com.utility.dlmsreader.transport.OpticalUsbTransport
 import com.utility.dlmsreader.transport.TraceDirection
 import com.utility.dlmsreader.transport.TraceLog
@@ -108,7 +114,37 @@ fun MeterReaderScreen(
     var isReading by remember { mutableStateOf(false) }
     var snapshot by remember { mutableStateOf<MeterReadSnapshot?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    var meterReport by remember { mutableStateOf(MeterDataReport()) }
+    var progressText by remember { mutableStateOf<String?>(null) }
     val traceLogs = remember { mutableStateListOf<TraceLog>() }
+
+    fun runModule(module: MeterDataModule) {
+        isReading = true
+        errorMessage = null
+        progressText = "Starting ${module.name.lowercase(Locale.US)}..."
+        if (module == MeterDataModule.ALL) meterReport = MeterDataReport()
+        traceLogs.clear()
+        scope.launch {
+            val params = ConnectionParams(
+                clientAddress = if (useMeterReaderAuth) 0x20 else 0x10,
+                authentication = if (useMeterReaderAuth) Authentication.LOW else Authentication.NONE,
+                password = llsPassword,
+                useModeE = useModeE
+            )
+            engine.readMeterModule(params, module) { progressText = it }
+                .onSuccess { meterReport = meterReport.merge(it) }
+                .onFailure { errorMessage = it.message ?: "${module.name} read failed" }
+            isReading = false
+            progressText = null
+        }
+    }
+
+    fun exportReport() {
+        runCatching {
+            val file = MeterLinkPdfExporter(context).export(meterReport)
+            MeterLinkPdfExporter(context).share(file)
+        }.onFailure { errorMessage = it.message ?: "PDF export failed" }
+    }
 
     LaunchedEffect(Unit) {
         transport.traceFlow.collect { log ->
@@ -297,6 +333,68 @@ fun MeterReaderScreen(
                 }
             }
 
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("IS 15959 Data Extraction", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    progressText?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
+                    Button(
+                        onClick = { runModule(MeterDataModule.ALL) },
+                        enabled = !isReading,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Read All (Full Meter Dump)")
+                    }
+                    ExtractionButtonRow(
+                        first = "Read Identity" to MeterDataModule.IDENTITY,
+                        second = "Read Energy & MD" to MeterDataModule.ENERGY,
+                        enabled = !isReading,
+                        onRead = ::runModule
+                    )
+                    ExtractionButtonRow(
+                        first = "Read Instantaneous" to MeterDataModule.INSTANTANEOUS,
+                        second = "Read Billing History" to MeterDataModule.BILLING,
+                        enabled = !isReading,
+                        onRead = ::runModule
+                    )
+                    ExtractionButtonRow(
+                        first = "Read Block Load" to MeterDataModule.BLOCK_LOAD,
+                        second = "Read Daily Load" to MeterDataModule.DAILY_LOAD,
+                        enabled = !isReading,
+                        onRead = ::runModule
+                    )
+                    OutlinedButton(
+                        onClick = { runModule(MeterDataModule.TAMPER) },
+                        enabled = !isReading,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Read Tamper Logs")
+                    }
+                    if (meterReport.hasData) {
+                        Button(
+                            onClick = ::exportReport,
+                            enabled = !isReading,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Text("Export PDF Report")
+                        }
+                    }
+                }
+            }
+
+            if (meterReport.hasData) {
+                MeterDataReportView(meterReport)
+            }
+
             // 3. Parsed Meter Results Card
             snapshot?.let { data ->
                 Card(
@@ -385,5 +483,152 @@ private fun ResultRow(label: String, value: String) {
     ) {
         Text(label, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         Text(value, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun ExtractionButtonRow(
+    first: Pair<String, MeterDataModule>,
+    second: Pair<String, MeterDataModule>,
+    enabled: Boolean,
+    onRead: (MeterDataModule) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        OutlinedButton(
+            onClick = { onRead(first.second) },
+            enabled = enabled,
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Text(first.first, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        OutlinedButton(
+            onClick = { onRead(second.second) },
+            enabled = enabled,
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(8.dp)
+        ) {
+            Text(second.first, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun MeterDataReportView(report: MeterDataReport) {
+    report.identity?.let { identity ->
+        ReportCard("Meter Identity & Nameplate") {
+            ReportTable(
+                headers = listOf("Parameter", "OBIS", "Value", "Unit"),
+                rows = identity.rows.map { listOf(it.parameterName, it.obisCode, it.formattedValue, it.unit) }
+            )
+            identity.nameplate?.let {
+                Spacer(Modifier.height(8.dp))
+                Text("Nameplate Profile", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                ProfileTable(it)
+            }
+        }
+    }
+    if (report.cumulativeEnergies.isNotEmpty()) {
+        ReportCard("Cumulative Energy & Maximum Demand") {
+            ReportTable(
+                headers = listOf("Parameter", "OBIS", "Reading", "Unit", "Capture Time"),
+                rows = report.cumulativeEnergies.map {
+                    listOf(it.parameterName, it.obisCode, it.reading, it.unit, it.captureTimestamp)
+                }
+            )
+        }
+    }
+    report.instantaneous?.let { ReportCard(it.title) { ProfileTable(it) } }
+    report.billing?.let { ReportCard(it.title) { ProfileTable(it) } }
+    report.dailyLoad?.let { ReportCard(it.title) { ProfileTable(it) } }
+    report.blockLoad?.let { ReportCard(it.title) { ProfileTable(it) } }
+    if (report.tamperEvents.isNotEmpty()) {
+        ReportCard("Tamper & Event Logs") {
+            ReportTable(
+                headers = listOf("Compartment", "Date/Time", "Code", "Description", "V", "I", "PF", "kWh"),
+                rows = report.tamperEvents.map {
+                    listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription, it.voltage, it.current, it.powerFactor, it.energy)
+                }
+            )
+        }
+    }
+    if (report.errors.isNotEmpty()) {
+        ReportCard("Read Notes") {
+            report.errors.forEach { Text(it, color = Color(0xFFB45309), fontSize = 11.sp) }
+        }
+    }
+}
+
+@Composable
+private fun ProfileTable(section: ProfileSection) {
+    if (section.columns.isEmpty()) {
+        Text("No rows returned", color = Color.Gray, fontSize = 11.sp)
+        return
+    }
+    ReportTable(section.columns.map { it.parameterName }, section.rows)
+}
+
+@Composable
+private fun ReportCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(title, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun ReportTable(headers: List<String>, rows: List<List<String>>) {
+    if (headers.isEmpty()) return
+    val tableWidth = (headers.size * 125).dp
+    Column(Modifier.horizontalScroll(rememberScrollState()).width(tableWidth)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF1E3A8A))
+                .padding(vertical = 5.dp)
+        ) {
+            headers.forEach { header ->
+                Text(
+                    header,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.sp,
+                    modifier = Modifier.width(125.dp).padding(horizontal = 4.dp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        rows.forEachIndexed { rowIndex, row ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(if (rowIndex % 2 == 0) Color(0xFFF8FAFC) else Color.White)
+                    .padding(vertical = 4.dp)
+            ) {
+                headers.indices.forEach { index ->
+                    Text(
+                        row.getOrNull(index) ?: "N/A",
+                        fontSize = 10.sp,
+                        color = Color(0xFF1E293B),
+                        modifier = Modifier.width(125.dp).padding(horizontal = 4.dp),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
     }
 }
