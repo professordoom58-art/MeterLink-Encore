@@ -5,7 +5,9 @@
 
     <application
         android:allowBackup="false"
-        android:label="DLMS Meter Reader"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="MeterLink"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 

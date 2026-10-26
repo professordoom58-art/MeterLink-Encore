@@ -174,6 +174,46 @@ class OpticalUsbTransport(private val context: Context) {
         return false
     }
 
+    fun testDirectHdlcConnection(): Boolean {
+        val snrmFrame = byteArrayOf(
+            0x7E, 0xA0.toByte(), 0x07, 0x03, 0x41, 0x93.toByte(), 0x5A, 0x64, 0x7E
+        )
+
+        try {
+            val p = port ?: throw IOException("Serial port is not open.")
+            p.setParameters(9600, 8, 1, UsbSerialPort.PARITY_NONE)
+
+            // Power the optical probe and clear stale bytes before the direct request.
+            p.dtr = true
+            p.rts = true
+            try {
+                p.purgeHwBuffers(true, true)
+            } catch (_: Exception) {
+                // Ignore if the specific driver wrapper does not support purging.
+            }
+            Thread.sleep(200)
+
+            write(snrmFrame, 1000)
+            log(TraceDirection.TX, "Sent Direct HDLC SNRM (9600 8N1, Public Client 0x10)")
+
+            val response = readBytesRaw(64, 2000)
+            if (response.isNotEmpty()) {
+                log(TraceDirection.RX, "Meter Responded Directly: ${response.toHexString()}")
+                markMeterLinkEstablished()
+                return true
+            }
+
+            val error = "Direct HDLC timeout - no UA received."
+            markNoMeterResponse("No physical meter response detected (Direct HDLC timeout).")
+            logConnectionDiagnosticReport(false, snrmFrame, null, error)
+        } catch (e: Exception) {
+            val error = "Direct communication error: ${e.message ?: "unknown error"}"
+            log(TraceDirection.ERROR, error)
+            logConnectionDiagnosticReport(false, snrmFrame, null, error)
+        }
+        return false
+    }
+
     fun logConnectionDiagnosticReport(
         modeEUsed: Boolean,
         sentBytes: ByteArray?,
@@ -276,7 +316,12 @@ class OpticalUsbTransport(private val context: Context) {
             } else {
                 PendingIntent.FLAG_UPDATE_CURRENT
             }
-            val permissionIntent = PendingIntent.getBroadcast(context, 0, Intent(ACTION_USB_PERMISSION), flags)
+            val permissionIntent = PendingIntent.getBroadcast(
+                context,
+                0,
+                Intent(ACTION_USB_PERMISSION).setPackage(context.packageName),
+                flags
+            )
             usbManager.requestPermission(device, permissionIntent)
 
             cont.invokeOnCancellation {
