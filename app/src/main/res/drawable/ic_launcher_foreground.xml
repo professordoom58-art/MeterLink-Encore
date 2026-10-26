@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:scaleX="0.67"
+        android:scaleY="0.67"
+        android:translateX="25.19"
+        android:translateY="21.84">
+        <!-- White meter body fill -->
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M23,11 H55 A11,11 0 0 1 66,22 V74 A11,11 0 0 1 55,85 H23 A11,11 0 0 1 12,74 V22 A11,11 0 0 1 23,11 Z" />
+        <!-- Meter outer outline -->
+        <path
+            android:strokeColor="#CBD5E1"
+            android:strokeWidth="4"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M23,11 H55 A11,11 0 0 1 66,22 V74 A11,11 0 0 1 55,85 H23 A11,11 0 0 1 12,74 V22 A11,11 0 0 1 23,11 Z" />
+        <!-- LCD screen frame -->
+        <path
+            android:strokeColor="#3FB950"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M25,23 H53 A3,3 0 0 1 56,26 V37 A3,3 0 0 1 53,40 H25 A3,3 0 0 1 22,37 V26 A3,3 0 0 1 25,23 Z" />
+        <!-- LCD screen dashed line -->
+        <path
+            android:strokeColor="#3FB950"
+            android:strokeWidth="2.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M28,31h5 M37,31h5 M46,31h4" />
+        <!-- Push button / optical flap -->
+        <path
+            android:strokeColor="#8B949E"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M23,51h13" />
+        <!-- Optical IR port circle -->
+        <path
+            android:strokeColor="#3FB950"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M48,55 A5,5 0 1,0 48,65 A5,5 0 1,0 48,55 Z" />
+        <!-- Optical communication wave - inner arc -->
+        <path
+            android:strokeColor="#3FB950"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M59,52 A11,11 0 0,1 59,68" />
+        <!-- Optical communication wave - outer arc -->
+        <path
+            android:strokeColor="#3FB950"
+            android:strokeWidth="3"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M67,46 A19,19 0 0,1 67,74" />
+    </group>
+</vector>

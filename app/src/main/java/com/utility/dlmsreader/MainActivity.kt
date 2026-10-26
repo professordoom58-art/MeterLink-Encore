@@ -238,6 +238,33 @@ fun MeterReaderScreen(
                         Text("IEC 62056-21 Mode E Handshake (300 7E1)", fontSize = 12.sp)
                     }
 
+                    OutlinedButton(
+                        onClick = {
+                            isReading = true
+                            errorMessage = null
+                            snapshot = null
+                            traceLogs.clear()
+                            scope.launch {
+                                val openResult = transport.openPort(baudRate = 9600, useModeE = false)
+                                if (openResult.isSuccess) {
+                                    val directSuccess = transport.testDirectHdlcConnection()
+                                    if (!directSuccess) {
+                                        errorMessage = "Direct 9600 HDLC test failed. See the trace for raw RX bytes."
+                                    }
+                                    transport.closePort(preserveStatus = true)
+                                } else {
+                                    errorMessage = openResult.exceptionOrNull()?.message ?: "Unable to open direct HDLC port."
+                                }
+                                isReading = false
+                            }
+                        },
+                        enabled = !isReading,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Test Direct 9600 HDLC")
+                    }
+
                     Button(
                         onClick = {
                             isReading = true
