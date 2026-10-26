@@ -85,7 +85,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                         reply.clear()
                         readDlmsPacket(client, aarqFrame, reply, params.responseTimeoutMs)
                     }
-                    client.parseAarerResponse(reply.data)
+                    client.parseAare(reply.data)
 
                     // 4. Perform HLS Mutual Authentication Pass (if High Authentication is used)
                     if (client.isAuthenticationRequired) {
@@ -94,7 +94,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                             reply.clear()
                             readDlmsPacket(client, hlsFrame, reply, params.responseTimeoutMs)
                         }
-                        client.parseApplicationAssociationResponse(reply.data)
+                        client.parseHlsAuthentication(reply.data)
                     }
                     transport.log(TraceDirection.INFO, "DLMS Association Established!")
 
