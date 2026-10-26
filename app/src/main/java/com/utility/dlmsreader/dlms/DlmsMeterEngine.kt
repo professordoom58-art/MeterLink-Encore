@@ -202,12 +202,12 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
         for (frame in txFrames) {
             reply.clear()
             readDlmsPacket(client, frame, reply, timeoutMs)
-            while (reply.isMoreData) {
+while (reply.isMoreData) {
                 val nextFrame: ByteArray? = when {
                     reply.moreData.contains(RequestTypes.FRAME) ->
-                        client.receiverReady(RequestTypes.FRAME)
+                        client.getData(reply) // Updated from deprecated receiverReady
                     reply.moreData.contains(RequestTypes.DATABLOCK) ->
-                        client.receiverReady(RequestTypes.DATABLOCK)
+                        client.getData(reply) // Updated from deprecated receiverReady
                     else -> null
                 }
                 if (nextFrame == null || nextFrame.isEmpty()) break
