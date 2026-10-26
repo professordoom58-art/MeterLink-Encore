@@ -85,7 +85,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                         reply.clear()
                         readDlmsPacket(client, aarqFrame, reply, params.responseTimeoutMs)
                     }
-                    client.parseAare(reply.data)
+                    client.parseAARE(reply.data)
 
                     // 4. Perform HLS Mutual Authentication Pass (if High Authentication is used)
                     if (client.isAuthenticationRequired) {
@@ -94,10 +94,9 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                             reply.clear()
                             readDlmsPacket(client, hlsFrame, reply, params.responseTimeoutMs)
                         }
-                        client.parseHlsAuthentication(reply.data)
+                        client.parseApplicationAssociationResponse(reply.data)
                     }
                     transport.log(TraceDirection.INFO, "DLMS Association Established!")
-
                     // 5. Read Identity & Clock Registers (Accessible in Public 0x10 and MR 0x20)
                     val ldn = readDataString(client, "0.0.42.0.0.255", params.responseTimeoutMs)
                     val serial = readDataString(client, "0.0.96.1.0.255", params.responseTimeoutMs)
