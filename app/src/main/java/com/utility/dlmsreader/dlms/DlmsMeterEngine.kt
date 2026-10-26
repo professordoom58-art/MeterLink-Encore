@@ -29,6 +29,7 @@ data class ConnectionParams(
     val serverAddress: Int = 0x01,
     val authentication: Authentication = Authentication.LOW,
     val password: String = "lnt1",
+    val passwordCandidates: List<String> = emptyList(),
     val baudRate: Int = 9600,
     val useModeE: Boolean = false,
     val responseTimeoutMs: Long = 3000L,
@@ -169,6 +170,9 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
             if (authentication == Authentication.NONE || authentication == Authentication.HIGH_GMAC) null else params.password,
             InterfaceType.HDLC
         )
+        if (authentication != Authentication.NONE && authentication != Authentication.HIGH_GMAC) {
+            client.password = params.password.toByteArray(Charsets.US_ASCII)
+        }
 
         if (params.securitySuite0) {
             val counter = requireNotNull(invocationCounter) {
@@ -195,7 +199,42 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
         return client
     }
 
-    suspend fun readMeter(params: ConnectionParams): Result<MeterReadSnapshot> =
+    suspend fun readMeter(params: ConnectionParams): Result<MeterReadSnapshot> = withContext(Dispatchers.IO) {
+        val candidates = buildList {
+            add(params.password)
+            addAll(params.passwordCandidates)
+        }.filter { it.isNotEmpty() }.distinct()
+
+        var result: Result<MeterReadSnapshot> = Result.failure(IOException("Meter read did not start."))
+        for ((index, password) in candidates.withIndex()) {
+            if (index > 0) {
+                transport.log(
+                    TraceDirection.INFO,
+                    "Primary LLS authentication failed; retrying with vendor alternate password #$index."
+                )
+            }
+            result = readMeterOnce(params.copy(password = password, passwordCandidates = emptyList()))
+            if (result.isSuccess) return@withContext result
+
+            val failure = result.exceptionOrNull()
+            if (index == candidates.lastIndex || !isAuthenticationFailure(failure)) break
+        }
+        result
+    }
+
+    private fun isAuthenticationFailure(error: Throwable?): Boolean {
+        var current = error
+        while (current != null) {
+            val message = current.message?.lowercase(Locale.US).orEmpty()
+            if ("auth" in message || "aarq" in message || "aare" in message ||
+                "password" in message || "challenge" in message || "access denied" in message
+            ) return true
+            current = current.cause
+        }
+        return false
+    }
+
+    private suspend fun readMeterOnce(params: ConnectionParams): Result<MeterReadSnapshot> =
         withContext(Dispatchers.IO) {
             runCatching {
                 transport.openPort(params.baudRate, params.useModeE).getOrThrow()

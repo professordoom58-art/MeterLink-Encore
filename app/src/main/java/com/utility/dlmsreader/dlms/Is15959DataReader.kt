@@ -67,7 +67,7 @@ data class MeterDataReport(
     val hasData: Boolean
         get() = identity != null || cumulativeEnergies.isNotEmpty() ||
             instantaneous != null || billing != null || blockLoad != null ||
-            dailyLoad != null || tamperEvents.isNotEmpty()
+            dailyLoad != null || tamperEvents.isNotEmpty() || errors.isNotEmpty()
 
     fun merge(other: MeterDataReport): MeterDataReport = MeterDataReport(
         identity = other.identity ?: identity,
