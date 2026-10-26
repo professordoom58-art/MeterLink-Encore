@@ -111,18 +111,27 @@ class OpticalUsbTransport(private val context: Context) {
             log(TraceDirection.INFO, "Starting L&T Mode E Handshake (300 7E1)...")
 
             port?.let { p ->
+                // openPort() has already opened and stored this port.
                 p.setParameters(300, 7, 1, com.hoho.android.usbserial.driver.UsbSerialPort.PARITY_EVEN)
                 p.dtr = true
                 p.rts = true
-                Thread.sleep(200)
+
+                // CRITICAL: Clear stale noise before sending the 300-baud sign-on.
+                try {
+                    p.purgeHwBuffers(true, true)
+                } catch (_: Exception) {
+                    // Ignore if the specific driver wrapper does not support purging.
+                }
+
+                Thread.sleep(300)
 
                 val signOnQuery = byteArrayOf(0x2F, 0x3F, 0x21, 0x0D, 0x0A)
-                p.write(signOnQuery, 500)
+                p.write(signOnQuery, 1000)
                 log(TraceDirection.TX, "/?! (300 baud sign-on sent)")
 
-                val buffer = ByteArray(64)
+                val buffer = ByteArray(128)
                 val len = try {
-                    readBytes(buffer, 2500)
+                    readBytes(buffer, 3000)
                 } catch (e: Exception) {
                     markNoMeterResponse(
                         "No physical meter response detected (Mode E read timeout): ${e.message ?: "timeout"}"
@@ -135,11 +144,11 @@ class OpticalUsbTransport(private val context: Context) {
                     log(TraceDirection.RX, "Meter Response: $responseStr")
 
                     val ackFrame = byteArrayOf(0x06, 0x30, 0x35, 0x30, 0x0D, 0x0A)
-                    Thread.sleep(200)
-                    p.write(ackFrame, 500)
+                    Thread.sleep(300)
+                    p.write(ackFrame, 1000)
                     log(TraceDirection.TX, "ACK Baud-Rate Switch sent")
 
-                    Thread.sleep(300)
+                    Thread.sleep(400)
                     p.setParameters(9600, 8, 1, com.hoho.android.usbserial.driver.UsbSerialPort.PARITY_NONE)
                     log(TraceDirection.INFO, "Switched port to 9600 8N1. Ready for HDLC.")
                     return true
