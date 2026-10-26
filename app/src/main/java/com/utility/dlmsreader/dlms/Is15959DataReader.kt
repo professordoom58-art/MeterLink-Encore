@@ -102,7 +102,8 @@ class Is15959DataReader(
             addRow(rows, "0.0.1.0.0.255", value)
         }
         val nameplate = runCatching {
-            loadProfile("0.0.94.91.10.255", "Meter Nameplate")
+            val profile = Is15959Catalog.profileByName("Nameplate Profile")
+            loadProfile(profile.dataObis, profile.name)
         }.getOrNull()
         return IdentitySection(rows, nameplate)
     }
@@ -126,41 +127,38 @@ class Is15959DataReader(
 
     suspend fun readInstantaneousProfile(): ProfileSection {
         progress("Reading instantaneous profile...")
-        tryLoadScalerProfile("1.0.94.91.3.255")
-        return loadProfile("1.0.94.91.0.255", "Instantaneous Parameters Snapshot")
+        val profile = Is15959Catalog.profileByName("Instantaneous Profile")
+        tryLoadScalerProfile(profile.scalerObis)
+        return loadProfile(profile.dataObis, "Instantaneous Parameters Snapshot")
     }
 
     suspend fun readBillingProfile(): ProfileSection {
         progress("Reading billing history profile...")
-        tryLoadScalerProfile("1.0.94.91.6.255")
-        return loadProfile("1.0.98.1.0.255", "Billing History Profile")
+        val profile = Is15959Catalog.profileByName("Billing Profile")
+        tryLoadScalerProfile(profile.scalerObis)
+        return loadProfile(profile.dataObis, "Billing History Profile")
     }
 
     suspend fun readBlockLoadSurvey(maxEntries: Int = 48): ProfileSection {
         progress("Reading block load survey...")
-        tryLoadScalerProfile("1.0.94.91.4.255")
-        return loadRecentProfile("1.0.99.1.0.255", "Block Load Survey", maxEntries)
+        val profile = Is15959Catalog.profileByName("Block Load Profile")
+        tryLoadScalerProfile(profile.scalerObis)
+        return loadRecentProfile(profile.dataObis, "Block Load Survey", maxEntries)
     }
 
     suspend fun readDailyLoadSurvey(maxEntries: Int = 35): ProfileSection {
         progress("Reading daily load survey...")
-        tryLoadScalerProfile("1.0.94.91.5.255")
-        return loadRecentProfile("1.0.99.2.0.255", "Daily Load Survey", maxEntries)
+        val profile = Is15959Catalog.profileByName("Daily Load Profile")
+        tryLoadScalerProfile(profile.scalerObis)
+        return loadRecentProfile(profile.dataObis, "Daily Load Survey", maxEntries)
     }
 
     suspend fun readTamperEventLogs(): List<TamperEventRow> {
         progress("Reading tamper and event logs...")
-        tryLoadScalerProfile("1.0.94.91.7.255")
-        val compartments = listOf(
-            "Voltage" to "0.0.99.98.0.255",
-            "Current" to "0.0.99.98.1.255",
-            "Power" to "0.0.99.98.2.255",
-            "Transaction" to "0.0.99.98.3.255",
-            "Other" to "0.0.99.98.4.255",
-            "Non-Rollover" to "0.0.99.98.5.255"
-        )
-        return compartments.flatMap { (name, obis) ->
-            runCatching { readTamperProfile(name, obis) }.getOrDefault(emptyList())
+        return Is15959Catalog.PROFILES
+            .filter { it.dataObis.startsWith("0.0.99.98.") }
+            .flatMap { profile ->
+                runCatching { readTamperProfile(profile.name, profile.dataObis) }.getOrDefault(emptyList())
         }
     }
 
@@ -272,7 +270,8 @@ class Is15959DataReader(
         }
     }
 
-    private suspend fun tryLoadScalerProfile(obis: String) {
+    private suspend fun tryLoadScalerProfile(obis: String?) {
+        if (obis == null) return
         runCatching {
             val scalerProfile = GXDLMSProfileGeneric(obis)
             executor.readObject(scalerProfile, 3)

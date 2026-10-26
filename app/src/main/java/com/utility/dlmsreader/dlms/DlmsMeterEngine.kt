@@ -9,6 +9,8 @@ import gurux.dlms.GXDLMSException
 import gurux.dlms.GXReplyData
 import gurux.dlms.enums.Authentication
 import gurux.dlms.enums.InterfaceType
+import gurux.dlms.enums.Security
+import gurux.dlms.objects.enums.SecuritySuite
 import gurux.dlms.objects.GXDLMSClock
 import gurux.dlms.objects.GXDLMSData
 import gurux.dlms.objects.GXDLMSObject
@@ -29,7 +31,13 @@ data class ConnectionParams(
     val password: String = "lnt1",
     val baudRate: Int = 9600,
     val useModeE: Boolean = false,
-    val responseTimeoutMs: Long = 3000L
+    val responseTimeoutMs: Long = 3000L,
+    val securitySuite0: Boolean = false,
+    val secureClientAddress: Int = 32,
+    val securitySystemTitle: String = "",
+    val authenticationKey: String = "",
+    val blockCipherKey: String = "",
+    val dedicatedKey: String? = null
 )
 
 data class MeterReadSnapshot(
@@ -91,14 +99,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
             transport.purgeBuffers()
             reportProgress("Preparing authenticated Meter Reader (Client=32) session...")
 
-            val client = GXDLMSSecureClient(
-                true,
-                params.clientAddress,
-                params.serverAddress,
-                params.authentication,
-                if (params.authentication == Authentication.NONE) null else params.password,
-                InterfaceType.HDLC
-            )
+            val client = createMeterReaderClient(params, publicIdentity.invocationCounter)
             val executor = GuruxPacketExecutor(transport, client, packetTimeoutMs = params.responseTimeoutMs)
             val reply = GXReplyData()
             var linked = false
@@ -147,6 +148,51 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
             executor.readDataBlock(client.applicationAssociationRequest, reply)
             client.parseApplicationAssociationResponse(reply.data)
         }
+    }
+
+    private fun createMeterReaderClient(
+        params: ConnectionParams,
+        invocationCounter: Long?
+    ): GXDLMSSecureClient {
+        if (params.securitySuite0) {
+            require(params.secureClientAddress == 32 || params.secureClientAddress == 48) {
+                "IS 15959 Suite 0 client address must be 32 or 48."
+            }
+        }
+        val clientAddress = if (params.securitySuite0) params.secureClientAddress else params.clientAddress
+        val authentication = if (params.securitySuite0) Authentication.HIGH_GMAC else params.authentication
+        val client = GXDLMSSecureClient(
+            true,
+            clientAddress,
+            params.serverAddress,
+            authentication,
+            if (authentication == Authentication.NONE || authentication == Authentication.HIGH_GMAC) null else params.password,
+            InterfaceType.HDLC
+        )
+
+        if (params.securitySuite0) {
+            val counter = requireNotNull(invocationCounter) {
+                "Public Client 16 did not return ${Is15959Catalog.OBIS_INVOCATION_COUNTER_MR}."
+            }
+            require(params.securitySystemTitle.isNotBlank()) {
+                "Security Suite 0 requires an 8-byte system title."
+            }
+            val ciphering = client.ciphering
+            ciphering.security = Security.AUTHENTICATION_ENCRYPTION
+            ciphering.securitySuite = SecuritySuite.SUITE_0
+            ciphering.invocationCounter = counter
+            ciphering.systemTitle = Is15959Catalog.requireSystemTitle(params.securitySystemTitle)
+            ciphering.authenticationKey = Is15959Catalog.requireKey(params.authenticationKey, "Authentication key")
+            ciphering.blockCipherKey = Is15959Catalog.requireKey(params.blockCipherKey, "Block cipher key")
+            ciphering.dedicatedKey = params.dedicatedKey
+                ?.let { Is15959Catalog.requireKey(it, "Dedicated key") }
+                ?: Is15959Catalog.DEFAULT_DEDICATED_KEY.copyOf()
+            transport.log(
+                TraceDirection.INFO,
+                "Configured IS 15959 Security Suite 0 AES-GCM-128 for Client=$clientAddress, invocation counter=$counter."
+            )
+        }
+        return client
     }
 
     suspend fun readMeter(params: ConnectionParams): Result<MeterReadSnapshot> =
@@ -210,14 +256,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     "Public discovery session closed; preparing Meter Reader (Client=32) session."
                 )
 
-                val client = GXDLMSSecureClient(
-                    true, // IS 15959 uses Logical Name (LN) referencing
-                    params.clientAddress,
-                    params.serverAddress,
-                    params.authentication,
-                    if (params.authentication == Authentication.NONE) null else params.password,
-                    InterfaceType.HDLC
-                )
+                val client = createMeterReaderClient(params, identity.invocationCounter)
 
                 val reply = GXReplyData()
                 var hdlcLinkEstablished = false
