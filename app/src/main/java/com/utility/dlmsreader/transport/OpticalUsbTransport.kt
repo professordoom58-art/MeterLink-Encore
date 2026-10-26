@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
+import com.utility.dlmsreader.dlms.ConnectionDiagnostics
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +46,7 @@ class OpticalUsbTransport(private val context: Context) {
 
     private val _traceFlow = MutableSharedFlow<TraceLog>(extraBufferCapacity = 256)
     val traceFlow: SharedFlow<TraceLog> = _traceFlow
+    private val connectionDiagnostics = ConnectionDiagnostics()
 
     fun refreshProbeStatus() {
         val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
@@ -107,6 +109,10 @@ class OpticalUsbTransport(private val context: Context) {
         }
 
     fun performModeEHandshake(): Boolean {
+        val signOnQuery = byteArrayOf(0x2F, 0x3F, 0x21, 0x0D, 0x0A)
+        var lastPacketSent: ByteArray? = null
+        var receivedBytes: ByteArray? = null
+
         try {
             log(TraceDirection.INFO, "Starting L&T Mode E Handshake (300 7E1)...")
 
@@ -125,27 +131,29 @@ class OpticalUsbTransport(private val context: Context) {
 
                 Thread.sleep(300)
 
-                val signOnQuery = byteArrayOf(0x2F, 0x3F, 0x21, 0x0D, 0x0A)
                 p.write(signOnQuery, 1000)
+                lastPacketSent = signOnQuery
                 log(TraceDirection.TX, "/?! (300 baud sign-on sent)")
 
                 val buffer = ByteArray(128)
                 val len = try {
                     readBytes(buffer, 3000)
                 } catch (e: Exception) {
-                    markNoMeterResponse(
-                        "No physical meter response detected (Mode E read timeout): ${e.message ?: "timeout"}"
-                    )
+                    val error = "No physical meter response detected (Mode E read timeout): ${e.message ?: "timeout"}"
+                    markNoMeterResponse(error)
+                    logConnectionDiagnosticReport(true, lastPacketSent ?: signOnQuery, null, error)
                     return false
                 }
 
                 if (len > 0) {
+                    receivedBytes = buffer.copyOf(len)
                     val responseStr = String(buffer, 0, len, Charsets.US_ASCII).trim()
                     log(TraceDirection.RX, "Meter Response: $responseStr")
 
                     val ackFrame = byteArrayOf(0x06, 0x30, 0x35, 0x30, 0x0D, 0x0A)
                     Thread.sleep(300)
                     p.write(ackFrame, 1000)
+                    lastPacketSent = ackFrame
                     log(TraceDirection.TX, "ACK Baud-Rate Switch sent")
 
                     Thread.sleep(400)
@@ -153,15 +161,40 @@ class OpticalUsbTransport(private val context: Context) {
                     log(TraceDirection.INFO, "Switched port to 9600 8N1. Ready for HDLC.")
                     return true
                 } else {
-                    markNoMeterResponse("No physical meter response detected (Mode E sign-on timeout).")
+                    val error = "No physical meter response detected (Mode E sign-on timeout)."
+                    markNoMeterResponse(error)
+                    logConnectionDiagnosticReport(true, lastPacketSent, null, error)
                 }
             }
         } catch (e: Exception) {
-            markNoMeterResponse(
-                "No physical meter response detected (Mode E handshake failed): ${e.message ?: "communication error"}"
-            )
+            val error = "Mode E error: ${e.message ?: "communication error"}"
+            markNoMeterResponse(error)
+            logConnectionDiagnosticReport(true, lastPacketSent ?: signOnQuery, receivedBytes, error)
         }
         return false
+    }
+
+    fun logConnectionDiagnosticReport(
+        modeEUsed: Boolean,
+        sentBytes: ByteArray?,
+        receivedBytes: ByteArray?,
+        errorMessage: String
+    ) {
+        val report = connectionDiagnostics.generateReport(
+            modeEUsed = modeEUsed,
+            sentBytes = sentBytes,
+            receivedBytes = receivedBytes,
+            errorMessage = errorMessage
+        )
+
+        log(TraceDirection.ERROR, "=== CONNECTION FAILURE DIAGNOSTIC ===")
+        log(TraceDirection.ERROR, "Time: ${report.timestamp}")
+        log(TraceDirection.ERROR, "Mode E Enabled: ${report.modeEChecked} (${report.baudRateAttempted} baud)")
+        log(TraceDirection.ERROR, "Packet Sent (TX): ${report.packetSentHex}")
+        log(TraceDirection.ERROR, "Response Got (RX): ${report.rawResponseHex}")
+        log(TraceDirection.ERROR, "Reason: ${report.failureReason}")
+        log(TraceDirection.ERROR, "Fix: ${report.suggestion}")
+        log(TraceDirection.ERROR, "=======================================")
     }
 
     fun markNoMeterResponse(traceMessage: String = "No physical meter response detected.") {
@@ -191,6 +224,15 @@ class OpticalUsbTransport(private val context: Context) {
     fun readChunk(buffer: ByteArray, timeoutMs: Int = 200): Int {
         val activePort = port ?: throw IOException("Serial port is not open.")
         return activePort.read(buffer, timeoutMs)
+    }
+
+    fun readBytesRaw(maxBytes: Int, timeoutMs: Int = 200): ByteArray {
+        val safeSize = maxBytes.coerceAtLeast(0)
+        if (safeSize == 0) return ByteArray(0)
+
+        val buffer = ByteArray(safeSize)
+        val bytesRead = readChunk(buffer, timeoutMs).coerceIn(0, safeSize)
+        return buffer.copyOf(bytesRead)
     }
 
     fun log(direction: TraceDirection, message: String) {

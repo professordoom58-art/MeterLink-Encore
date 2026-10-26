@@ -18,6 +18,7 @@ import gurux.dlms.secure.GXDLMSSecureClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.TimeoutException
 
@@ -50,6 +51,36 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
             runCatching {
                 transport.openPort(params.baudRate, params.useModeE).getOrThrow()
 
+                val identity = try {
+                    transport.log(TraceDirection.INFO, "Starting Public Client (0x10) Discovery...")
+
+                    val secureClient = GXDLMSSecureClient().apply {
+                        clientAddress = 16
+                        serverAddress = 1
+                        useLogicalNameReferencing = true
+                        interfaceType = InterfaceType.HDLC
+                    }
+
+                    PublicClientDiscovery.discover(transport, secureClient)
+                } catch (e: Exception) {
+                    val error = "Discovery failed: ${e.message ?: "unknown error"}"
+                    transport.log(TraceDirection.ERROR, error)
+                    transport.markNoMeterResponse(error)
+                    transport.closePort(preserveStatus = true)
+                    throw e
+                }
+
+                transport.log(TraceDirection.INFO, "=== METER IDENTITY DISCOVERED ===")
+                transport.log(TraceDirection.INFO, "Logical Device Name: ${identity.logicalDeviceName}")
+                transport.log(TraceDirection.INFO, "Serial Number: ${identity.serialNumber}")
+                transport.log(TraceDirection.INFO, "Real-Time Clock: ${identity.clockTime}")
+                transport.log(TraceDirection.INFO, "=================================")
+                transport.markMeterLinkEstablished()
+                transport.log(
+                    TraceDirection.INFO,
+                    "✅ Meter Link Established Successfully! Serial: ${identity.serialNumber}"
+                )
+
                 val client = GXDLMSSecureClient(
                     true, // IS 15959 uses Logical Name (LN) referencing
                     params.clientAddress,
@@ -73,27 +104,52 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
 
                     // 2. Establish HDLC Link (SNRM -> UA)
                     transport.log(TraceDirection.INFO, "Sending HDLC SNRM (Client=${params.clientAddress})...")
+                    val snrmResponse = ByteArrayOutputStream()
+                    var snrmRequest: ByteArray? = null
                     val snrm = try {
-                        client.snrmRequest()
+                        client.snrmRequest().also { snrmRequest = it }
                     } catch (e: Exception) {
-                        transport.markNoMeterResponse(
-                            "No physical meter response detected (HDLC SNRM failed): ${e.message ?: "request error"}"
+                        val error = "No physical meter response detected (HDLC SNRM failed): ${e.message ?: "request error"}"
+                        transport.markNoMeterResponse(error)
+                        transport.logConnectionDiagnosticReport(
+                            modeEUsed = params.useModeE,
+                            sentBytes = snrmRequest,
+                            receivedBytes = snrmResponse.toByteArray(),
+                            errorMessage = error
                         )
                         throw e
                     }
                     if (snrm.isEmpty()) {
-                        transport.markNoMeterResponse("No physical meter response detected (HDLC SNRM was empty).")
+                        val error = "No physical meter response detected (HDLC SNRM was empty)."
+                        transport.markNoMeterResponse(error)
+                        transport.logConnectionDiagnosticReport(
+                            modeEUsed = params.useModeE,
+                            sentBytes = snrm.takeIf { it.isNotEmpty() },
+                            receivedBytes = snrmResponse.toByteArray(),
+                            errorMessage = error
+                        )
                         throw IOException("HDLC SNRM request was empty.")
                     }
                     try {
-                        readDlmsPacket(client, snrm, reply, params.responseTimeoutMs)
+                        readDlmsPacket(
+                            client,
+                            snrm,
+                            reply,
+                            params.responseTimeoutMs,
+                            rawResponse = snrmResponse
+                        )
                         client.parseUAResponse(reply.data)
                         transport.log(TraceDirection.INFO, "HDLC UA received. MaxInfoRX=${client.hdlcSettings.maxInfoRX}")
                         transport.markMeterLinkEstablished()
                         hdlcLinkEstablished = true
                     } catch (e: Exception) {
-                        transport.markNoMeterResponse(
-                            "No physical meter response detected (HDLC SNRM failed): ${e.message ?: "timeout"}"
+                        val error = "No physical meter response detected (HDLC SNRM failed): ${e.message ?: "timeout"}"
+                        transport.markNoMeterResponse(error)
+                        transport.logConnectionDiagnosticReport(
+                            modeEUsed = params.useModeE,
+                            sentBytes = snrm,
+                            receivedBytes = snrmResponse.toByteArray(),
+                            errorMessage = error
                         )
                         throw e
                     }
@@ -251,7 +307,8 @@ while (reply.isMoreData) {
         txFrame: ByteArray,
         reply: GXReplyData,
         timeoutMs: Long,
-        maxRetries: Int = 3
+        maxRetries: Int = 3,
+        rawResponse: ByteArrayOutputStream? = null
     ) {
         if (txFrame.isEmpty()) return
         val rxBuffer = GXByteBuffer()
@@ -270,6 +327,7 @@ while (reply.isMoreData) {
                 while (SystemClock.elapsedRealtime() < deadline) {
                     val bytesRead = transport.readChunk(chunkBuf, 150)
                     if (bytesRead > 0) {
+                        rawResponse?.write(chunkBuf, 0, bytesRead)
                         transport.log(TraceDirection.RX, chunkBuf.toHexString(bytesRead))
                         rxBuffer.set(chunkBuf, 0, bytesRead)
 
