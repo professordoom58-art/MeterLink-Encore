@@ -248,7 +248,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     val bytesRead = transport.readChunk(chunkBuf, 150)
                     if (bytesRead > 0) {
                         transport.log(TraceDirection.RX, chunkBuf.toHexString(bytesRead))
-                        rxBuffer.put(chunkBuf, 0, bytesRead)
+                        rxBuffer.set(chunkBuf, 0, bytesRead)
 
                         // client.getData returns true ONLY when a complete HDLC frame has arrived
                         if (client.getData(rxBuffer, reply)) {
