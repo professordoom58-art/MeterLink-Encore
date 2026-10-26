@@ -79,13 +79,12 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                         transport.log(TraceDirection.INFO, "HDLC UA received. MaxInfoRX=${client.hdlcSettings.maxInfoRX}")
                     }
 
-                    // 3. Establish COSEM Application Association (AARQ -> AARE)
+// 3. Establish COSEM Application Association (AARQ -> AARE)
                     transport.log(TraceDirection.INFO, "Sending COSEM AARQ (${params.authentication})...")
                     for (aarqFrame in client.aarqRequest()) {
                         reply.clear()
                         readDlmsPacket(client, aarqFrame, reply, params.responseTimeoutMs)
                     }
-                    client.parseAARE(reply.data)
 
                     // 4. Perform HLS Mutual Authentication Pass (if High Authentication is used)
                     if (client.isAuthenticationRequired) {
@@ -94,7 +93,6 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                             reply.clear()
                             readDlmsPacket(client, hlsFrame, reply, params.responseTimeoutMs)
                         }
-                        client.parseApplicationAssociationResponse(reply.data)
                     }
                     transport.log(TraceDirection.INFO, "DLMS Association Established!")
                     // 5. Read Identity & Clock Registers (Accessible in Public 0x10 and MR 0x20)
