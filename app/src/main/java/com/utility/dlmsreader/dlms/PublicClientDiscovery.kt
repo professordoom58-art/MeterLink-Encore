@@ -12,7 +12,8 @@ object PublicClientDiscovery {
     data class MeterIdentity(
         val logicalDeviceName: String,
         val serialNumber: String,
-        val clockTime: String
+        val clockTime: String,
+        val invocationCounter: Long? = null
     )
 
     suspend fun discover(
@@ -48,13 +49,19 @@ object PublicClientDiscovery {
         val clockObj = GXDLMSClock("0.0.1.0.0.255")
         val clockTime = formatDlmsValue(executor.readObject(clockObj, 2))
 
+        // Suite 0 clients need the invocation counter before the secure AARQ.
+        val invocationCounter = runCatching {
+            val counter = GXDLMSData(Is15959Catalog.OBIS_INVOCATION_COUNTER_MR)
+            (executor.readObject(counter, 2) as? Number)?.toLong()
+        }.getOrNull()
+
         // 6. Graceful Disconnect
         val disc = client.disconnectRequest()
         if (disc.isNotEmpty()) {
             executor.readDLMSPacket(disc, GXReplyData())
         }
 
-        return MeterIdentity(ldn, serial, clockTime)
+        return MeterIdentity(ldn, serial, clockTime, invocationCounter)
     }
 
     private fun formatDlmsValue(value: Any?): String = when (value) {
