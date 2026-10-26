@@ -60,6 +60,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                 )
 
                 val reply = GXReplyData()
+                var hdlcLinkEstablished = false
 
                 try {
                     // 1. Preemptive DISC to reset any hung optical session on the meter
@@ -72,11 +73,29 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
 
                     // 2. Establish HDLC Link (SNRM -> UA)
                     transport.log(TraceDirection.INFO, "Sending HDLC SNRM (Client=${params.clientAddress})...")
-                    val snrm = client.snrmRequest()
-                    if (snrm.isNotEmpty()) {
+                    val snrm = try {
+                        client.snrmRequest()
+                    } catch (e: Exception) {
+                        transport.markNoMeterResponse(
+                            "No physical meter response detected (HDLC SNRM failed): ${e.message ?: "request error"}"
+                        )
+                        throw e
+                    }
+                    if (snrm.isEmpty()) {
+                        transport.markNoMeterResponse("No physical meter response detected (HDLC SNRM was empty).")
+                        throw IOException("HDLC SNRM request was empty.")
+                    }
+                    try {
                         readDlmsPacket(client, snrm, reply, params.responseTimeoutMs)
                         client.parseUAResponse(reply.data)
                         transport.log(TraceDirection.INFO, "HDLC UA received. MaxInfoRX=${client.hdlcSettings.maxInfoRX}")
+                        transport.markMeterLinkEstablished()
+                        hdlcLinkEstablished = true
+                    } catch (e: Exception) {
+                        transport.markNoMeterResponse(
+                            "No physical meter response detected (HDLC SNRM failed): ${e.message ?: "timeout"}"
+                        )
+                        throw e
                     }
 
 // 3. Establish COSEM Application Association (AARQ -> AARE)
@@ -132,11 +151,13 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     )
                 } finally {
                     // 7. Always send DISC so the meter's optical port does not stay locked
-                    runCatching {
-                        transport.log(TraceDirection.INFO, "Sending HDLC Disconnect (DISC)...")
-                        readDlmsPacket(client, client.disconnectRequest(), GXReplyData(), 1000L, 1)
+                    if (hdlcLinkEstablished) {
+                        runCatching {
+                            transport.log(TraceDirection.INFO, "Sending HDLC Disconnect (DISC)...")
+                            readDlmsPacket(client, client.disconnectRequest(), GXReplyData(), 1000L, 1)
+                        }
                     }
-                    transport.closePort()
+                    transport.closePort(preserveStatus = true)
                 }
             }
         }
