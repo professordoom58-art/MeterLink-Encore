@@ -1,0 +1,16 @@
+# Built application files
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Gradle & Android Studio local files
+.gradle/
+.idea/
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+local.properties
+*.iml
