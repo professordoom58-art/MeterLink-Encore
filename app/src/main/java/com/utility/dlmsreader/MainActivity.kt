@@ -6,16 +6,19 @@ import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -42,17 +45,31 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge() // Fixes camera cutout overlapping
         transport = OpticalUsbTransport(applicationContext)
         engine = DlmsMeterEngine(transport)
         transport.refreshProbeStatus()
 
         setContent {
-            MaterialTheme {
-                MeterReaderScreen(
-                    transport = transport,
-                    engine = engine,
-                    onRefreshUsb = { transport.refreshProbeStatus() }
+            MaterialTheme(
+                colorScheme = lightColorScheme(
+                    primary = Color(0xFF1565C0),
+                    secondary = Color(0xFF00ACC1),
+                    background = Color(0xFFF4F6F9),
+                    surface = Color(0xFFFFFFFF),
+                    onSurface = Color(0xFF1E293B)
                 )
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    MeterReaderScreen(
+                        transport = transport,
+                        engine = engine,
+                        onRefreshUsb = { transport.refreshProbeStatus() }
+                    )
+                }
             }
         }
     }
@@ -68,6 +85,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MeterReaderScreen(
     transport: OpticalUsbTransport,
@@ -93,167 +111,224 @@ fun MeterReaderScreen(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Text(
-            text = "DLMS/COSEM Optical Reader (IS 15959 PoC)",
-            style = MaterialTheme.typography.titleLarge,
-            fontWeight = FontWeight.Bold
-        )
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(
+                            text = "MeterLink DLMS Reader",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                        Text(
+                            text = "IS 15959 / IEC 62056 Field Tool",
+                            fontSize = 11.sp,
+                            color = Color.Gray
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            )
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 16.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Spacer(Modifier.height(4.dp))
 
-        // 1. USB Probe Status Card
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Row(
-                modifier = Modifier.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
+            // 1. USB Probe Status Card
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("USB Optical Probe", fontWeight = FontWeight.SemiBold)
-                    Text(probeStatus, style = MaterialTheme.typography.bodyMedium)
-                }
-                OutlinedButton(onClick = onRefreshUsb) {
-                    Text("Scan USB")
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Optical Probe Status", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.Gray)
+                        Spacer(Modifier.height(2.dp))
+                        Text(probeStatus, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                    }
+                    FilledTonalButton(onClick = onRefreshUsb) {
+                        Text("Scan USB")
+                    }
                 }
             }
-        }
 
-        // 2. Association & Protocol Parameters
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+            // 2. Association Configuration Card
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Association Configuration", fontWeight = FontWeight.SemiBold)
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("Session Configuration", fontWeight = FontWeight.Bold, fontSize = 14.sp)
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    RadioButton(
-                        selected = !useMeterReaderAuth,
-                        onClick = { useMeterReaderAuth = false }
-                    )
-                    Text("Public (Client 16 - No Auth)")
-                    Spacer(Modifier.width(12.dp))
-                    RadioButton(
-                        selected = useMeterReaderAuth,
-                        onClick = { useMeterReaderAuth = true }
-                    )
-                    Text("Meter Reader (Client 32 - LLS)")
-                }
-
-                if (useMeterReaderAuth) {
-                    OutlinedTextField(
-                        value = llsPassword,
-                        onValueChange = { llsPassword = it },
-                        label = { Text("LLS Password (e.g. lnt1, 111111111111)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = useModeE, onCheckedChange = { useModeE = it })
-                    Text("Use IEC 62056-21 Mode E Handshake (300 7E1 -> 9600 8N1)")
-                }
-
-                Button(
-                    onClick = {
-                        isReading = true
-                        errorMessage = null
-                        traceLogs.clear()
-                        scope.launch {
-                            val params = ConnectionParams(
-                                clientAddress = if (useMeterReaderAuth) 0x20 else 0x10,
-                                authentication = if (useMeterReaderAuth) Authentication.LOW else Authentication.NONE,
-                                password = llsPassword,
-                                useModeE = useModeE
+                    // Client Selection Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = { useMeterReaderAuth = false },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (!useMeterReaderAuth) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else Color.Transparent
                             )
-                            engine.readMeter(params)
-                                .onSuccess { snapshot = it }
-                                .onFailure { errorMessage = it.message ?: "Read failed" }
-                            isReading = false
+                        ) {
+                            Text("Public (16)", fontSize = 12.sp, maxLines = 1)
                         }
-                    },
-                    enabled = !isReading,
+                        OutlinedButton(
+                            onClick = { useMeterReaderAuth = true },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.outlinedButtonColors(
+                                containerColor = if (useMeterReaderAuth) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else Color.Transparent
+                            )
+                        ) {
+                            Text("Meter Reader (32)", fontSize = 12.sp, maxLines = 1)
+                        }
+                    }
+
+                    if (useMeterReaderAuth) {
+                        OutlinedTextField(
+                            value = llsPassword,
+                            onValueChange = { llsPassword = it },
+                            label = { Text("LLS Password") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Checkbox(checked = useModeE, onCheckedChange = { useModeE = it })
+                        Text("IEC 62056-21 Mode E Handshake (300 7E1)", fontSize = 12.sp)
+                    }
+
+                    Button(
+                        onClick = {
+                            isReading = true
+                            errorMessage = null
+                            snapshot = null
+                            traceLogs.clear()
+                            scope.launch {
+                                val params = ConnectionParams(
+                                    clientAddress = if (useMeterReaderAuth) 0x20 else 0x10,
+                                    authentication = if (useMeterReaderAuth) Authentication.LOW else Authentication.NONE,
+                                    password = llsPassword,
+                                    useModeE = useModeE
+                                )
+                                engine.readMeter(params)
+                                    .onSuccess { snapshot = it }
+                                    .onFailure { errorMessage = it.message ?: "Read failed" }
+                                isReading = false
+                            }
+                        },
+                        enabled = !isReading,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text(if (isReading) "Communicating with Meter..." else "Connect & Read Meter")
+                    }
+
+                    errorMessage?.let {
+                        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+
+            // 3. Parsed Meter Results Card
+            snapshot?.let { data ->
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(if (isReading) "Reading Meter over Optical Port..." else "Connect & Read Meter")
-                }
-
-                errorMessage?.let {
-                    Text(it, color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Medium)
-                }
-            }
-        }
-
-        // 3. Parsed Meter Results
-        snapshot?.let { data ->
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text("Meter Reading Results", fontWeight = FontWeight.Bold)
-                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                    ResultRow("Logical Device Name (0.0.42.0.0.255)", data.logicalDeviceName)
-                    ResultRow("Meter Serial (0.0.96.1.0.255)", data.serialNumber)
-                    ResultRow("Manufacturer (0.0.96.1.1.255)", data.manufacturerName)
-                    ResultRow("Firmware (1.0.0.2.0.255)", data.firmwareVersion)
-                    ResultRow("Meter RTC (0.0.1.0.0.255)", data.meterClock)
-                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                    ResultRow("Active Energy Import (1.0.1.8.0.255)", data.activeEnergyKwh)
-                    ResultRow("Phase Voltage (1.0.32.7.0.255)", data.instantaneousVoltage)
-                    ResultRow("Phase Current (1.0.31.7.0.255)", data.instantaneousCurrent)
-                    ResultRow("Power Factor (1.0.13.7.0.255)", data.powerFactor)
-                }
-            }
-        }
-
-        // 4. Live Hex Trace Console
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Live HDLC / DLMS Frame Trace", fontWeight = FontWeight.SemiBold)
-            TextButton(onClick = {
-                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                val text = traceLogs.reversed().joinToString("\n") {
-                    "[${it.direction}] ${it.hexOrMessage}"
-                }
-                clipboard.setPrimaryClip(ClipData.newPlainText("DLMS Trace", text))
-            }) {
-                Text("Copy Trace")
-            }
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(260.dp)
-                .background(Color(0xFF121212))
-                .padding(8.dp)
-        ) {
-            val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.US) }
-            LazyColumn {
-                items(traceLogs) { item ->
-                    val color = when (item.direction) {
-                        TraceDirection.TX -> Color(0xFF64B5F6)
-                        TraceDirection.RX -> Color(0xFF81C784)
-                        TraceDirection.INFO -> Color(0xFFFFD54F)
-                        TraceDirection.ERROR -> Color(0xFFE57373)
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("Meter Reading Results", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        HorizontalDivider()
+                        ResultRow("Serial Number", data.serialNumber)
+                        ResultRow("Logical Device Name", data.logicalDeviceName)
+                        ResultRow("Manufacturer", data.manufacturerName)
+                        ResultRow("Firmware Version", data.firmwareVersion)
+                        ResultRow("Meter RTC Time", data.meterClock)
+                        HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                        ResultRow("Cumulative Energy", data.activeEnergyKwh)
+                        ResultRow("Phase Voltage", data.instantaneousVoltage)
+                        ResultRow("Phase Current", data.instantaneousCurrent)
+                        ResultRow("Power Factor", data.powerFactor)
                     }
-                    Text(
-                        text = "${timeFormat.format(Date(item.timestampMs))} [${item.direction}] ${item.hexOrMessage}",
-                        color = color,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp
-                    )
                 }
             }
+
+            // 4. Live Hex Trace Console
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Live Protocol Trace", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                TextButton(onClick = {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    val text = traceLogs.reversed().joinToString("\n") { "[${it.direction}] ${it.hexOrMessage}" }
+                    clipboard.setPrimaryClip(ClipData.newPlainText("DLMS Trace", text))
+                }) {
+                    Text("Copy", fontSize = 12.sp)
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(200.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFF0F172A))
+                    .padding(10.dp)
+            ) {
+                val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.US) }
+                if (traceLogs.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("Awaiting optical connection...", color = Color.Gray, fontSize = 11.sp)
+                    }
+                } else {
+                    LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        items(traceLogs) { item ->
+                            val color = when (item.direction) {
+                                TraceDirection.TX -> Color(0xFF60A5FA)
+                                TraceDirection.RX -> Color(0xFF4ADE80)
+                                TraceDirection.INFO -> Color(0xFFFACC15)
+                                TraceDirection.ERROR -> Color(0xFFF87171)
+                            }
+                            Text(
+                                text = "${timeFormat.format(Date(item.timestampMs))} [${item.direction}] ${item.hexOrMessage}",
+                                color = color,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(24.dp))
         }
     }
 }
@@ -264,7 +339,7 @@ private fun ResultRow(label: String, value: String) {
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(label, style = MaterialTheme.typography.bodySmall, color = Color.DarkGray)
-        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+        Text(label, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+        Text(value, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
     }
 }
