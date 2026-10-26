@@ -16,6 +16,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +36,7 @@ import com.utility.dlmsreader.dlms.MeterDataReport
 import com.utility.dlmsreader.dlms.MeterReadSnapshot
 import com.utility.dlmsreader.dlms.MeterLinkPdfExporter
 import com.utility.dlmsreader.dlms.ProfileSection
+import com.utility.dlmsreader.dlms.VendorPasswordCatalog
 import com.utility.dlmsreader.transport.OpticalUsbTransport
 import com.utility.dlmsreader.transport.TraceDirection
 import com.utility.dlmsreader.transport.TraceLog
@@ -109,30 +111,48 @@ fun MeterReaderScreen(
     }
 
     var useMeterReaderAuth by remember { mutableStateOf(true) }
-    var llsPassword by remember { mutableStateOf("lnt1") }
+    var selectedVendor by remember { mutableStateOf(VendorPasswordCatalog.VENDORS.first()) }
+    var llsPassword by remember { mutableStateOf(selectedVendor.defaultPrimaryPassword) }
+    var vendorMenuExpanded by remember { mutableStateOf(false) }
     var useModeE by remember { mutableStateOf(false) }
     var isReading by remember { mutableStateOf(false) }
     var snapshot by remember { mutableStateOf<MeterReadSnapshot?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var meterReport by remember { mutableStateOf(MeterDataReport()) }
     var progressText by remember { mutableStateOf<String?>(null) }
+    var reportReady by remember { mutableStateOf(false) }
+    var reportStatusText by remember { mutableStateOf<String?>(null) }
     val traceLogs = remember { mutableStateListOf<TraceLog>() }
 
     fun runModule(module: MeterDataModule) {
         isReading = true
         errorMessage = null
         progressText = "Starting ${module.name.lowercase(Locale.US)}..."
-        if (module == MeterDataModule.ALL) meterReport = MeterDataReport()
+        reportStatusText = null
+        if (module == MeterDataModule.ALL) {
+            meterReport = MeterDataReport()
+            reportReady = false
+        }
         traceLogs.clear()
         scope.launch {
             val params = ConnectionParams(
                 clientAddress = if (useMeterReaderAuth) 0x20 else 0x10,
                 authentication = if (useMeterReaderAuth) Authentication.LOW else Authentication.NONE,
                 password = llsPassword,
+                passwordCandidates = selectedVendor.defaultPasswords,
                 useModeE = useModeE
             )
             engine.readMeterModule(params, module) { progressText = it }
-                .onSuccess { meterReport = meterReport.merge(it) }
+                .onSuccess {
+                    val completedReport = if (it.hasData) {
+                        it
+                    } else {
+                        it.copy(errors = it.errors + "${module.name.replace('_', ' ')} completed successfully but returned no rows.")
+                    }
+                    meterReport = meterReport.merge(completedReport)
+                    reportReady = true
+                    reportStatusText = "✓ ${module.name.replace('_', ' ')} extraction complete. Data is ready for PDF export."
+                }
                 .onFailure { errorMessage = it.message ?: "${module.name} read failed" }
             isReading = false
             progressText = null
@@ -141,8 +161,10 @@ fun MeterReaderScreen(
 
     fun exportReport() {
         runCatching {
-            val file = MeterLinkPdfExporter(context).export(meterReport)
-            MeterLinkPdfExporter(context).share(file)
+            val exporter = MeterLinkPdfExporter(context)
+            val file = exporter.export(meterReport)
+            exporter.share(file)
+            reportStatusText = "✓ PDF saved as ${file.name} and ready to share."
         }.onFailure { errorMessage = it.message ?: "PDF export failed" }
     }
 
@@ -256,14 +278,56 @@ fun MeterReaderScreen(
                     }
 
                     if (useMeterReaderAuth) {
-                        OutlinedTextField(
-                            value = llsPassword,
-                            onValueChange = { llsPassword = it },
-                            label = { Text("LLS Password") },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(8.dp)
-                        )
+                        ExposedDropdownMenuBox(
+                            expanded = vendorMenuExpanded,
+                            onExpandedChange = { vendorMenuExpanded = !vendorMenuExpanded }
+                        ) {
+                            OutlinedTextField(
+                                value = selectedVendor.displayName,
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("Meter Manufacturer / Vendor") },
+                                trailingIcon = {
+                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = vendorMenuExpanded)
+                                },
+                                modifier = Modifier
+                                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                    .fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            ExposedDropdownMenu(
+                                expanded = vendorMenuExpanded,
+                                onDismissRequest = { vendorMenuExpanded = false }
+                            ) {
+                                VendorPasswordCatalog.VENDORS.forEach { vendor ->
+                                    DropdownMenuItem(
+                                        text = { Text(vendor.displayName) },
+                                        onClick = {
+                                            selectedVendor = vendor
+                                            llsPassword = vendor.defaultPrimaryPassword
+                                            vendorMenuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+
+                        if (selectedVendor.defaultPasswords.isEmpty()) {
+                            OutlinedTextField(
+                                value = llsPassword,
+                                onValueChange = { llsPassword = it },
+                                label = { Text("Custom LLS Password") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                        } else {
+                            Text(
+                                text = "Primary LLS password selected automatically; alternate defaults will be tried if authentication fails.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.Gray
+                            )
+                        }
                     }
 
                     Row(
@@ -312,6 +376,7 @@ fun MeterReaderScreen(
                                     clientAddress = if (useMeterReaderAuth) 0x20 else 0x10,
                                     authentication = if (useMeterReaderAuth) Authentication.LOW else Authentication.NONE,
                                     password = llsPassword,
+                                    passwordCandidates = selectedVendor.defaultPasswords,
                                     useModeE = useModeE
                                 )
                                 engine.readMeter(params)
@@ -344,6 +409,9 @@ fun MeterReaderScreen(
                 ) {
                     Text("IS 15959 Data Extraction", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     progressText?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
+                    reportStatusText?.let {
+                        Text(it, color = Color(0xFF15803D), fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                    }
                     Button(
                         onClick = { runModule(MeterDataModule.ALL) },
                         enabled = !isReading,
@@ -378,14 +446,35 @@ fun MeterReaderScreen(
                     ) {
                         Text("Read Tamper Logs")
                     }
-                    if (meterReport.hasData) {
-                        Button(
-                            onClick = ::exportReport,
-                            enabled = !isReading,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(8.dp)
+                    if (reportReady) {
+                        Surface(
+                            color = Color(0xFFE8F5E9),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("Export PDF Report")
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    "Meter data ready",
+                                    color = Color(0xFF166534),
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "Export or share the extracted report as a PDF.",
+                                    color = Color(0xFF166534),
+                                    fontSize = 12.sp
+                                )
+                                Button(
+                                    onClick = ::exportReport,
+                                    enabled = !isReading && meterReport.hasData,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("Export PDF Report")
+                                }
+                            }
                         }
                     }
                 }
