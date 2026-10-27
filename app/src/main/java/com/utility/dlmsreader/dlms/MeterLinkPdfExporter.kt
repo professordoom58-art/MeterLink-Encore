@@ -282,6 +282,7 @@ class MeterLinkPdfExporter(private val context: Context) {
             layout.subsection(chunkTitle)
             val selected = chunk.map { index ->
                 val column = section.columns[index]
+                // TODO: confirm code 65 against L&T manual; reset values remain unchanged.
                 val label = if (billing && column.obisCode == "0.0.94.91.14.255" && column.attributeIndex == 2) {
                     "Power-On Duration in Period (min)"
                 } else column.parameterName
