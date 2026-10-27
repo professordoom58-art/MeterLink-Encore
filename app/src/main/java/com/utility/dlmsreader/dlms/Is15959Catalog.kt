@@ -87,6 +87,7 @@ object Is15959Catalog {
         "1.0.51.7.0.255" to ObisMetadata("Y-Phase Current (A)", "A", ObisCategory.INSTANTANEOUS),
         "1.0.71.7.0.255" to ObisMetadata("B-Phase Current (A)", "A", ObisCategory.INSTANTANEOUS),
         "1.0.91.7.0.255" to ObisMetadata("Neutral Current (A)", "A", ObisCategory.INSTANTANEOUS),
+        "1.0.94.91.14.255" to ObisMetadata("Current (A)", "A", ObisCategory.INSTANTANEOUS),
         "1.0.13.7.0.255" to ObisMetadata("Signed Power Factor", "PF", ObisCategory.INSTANTANEOUS),
         "1.0.33.7.0.255" to ObisMetadata("R / Y / B Phase PF", "PF", ObisCategory.INSTANTANEOUS),
         "1.0.53.7.0.255" to ObisMetadata("R / Y / B Phase PF", "PF", ObisCategory.INSTANTANEOUS),

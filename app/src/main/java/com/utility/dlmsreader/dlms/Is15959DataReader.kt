@@ -61,14 +61,16 @@ data class IdentitySection(
 }
 
 data class TamperEventRow(
-    val compartment: String,
-    val dateTime: String,
-    val eventCode: String,
-    val eventDescription: String,
-    val voltage: String,
-    val current: String,
-    val powerFactor: String,
-    val energy: String
+    val compartment: String = "N/A",
+    val dateTime: String = "N/A",
+    val eventCode: String = "N/A",
+    val eventDescription: String = "N/A",
+    val voltage: String = "N/A",
+    val current: String = "N/A",
+    val powerFactor: String = "N/A",
+    val energy: String = "N/A",
+    val kvah: String = "N/A",
+    val neutralCurrent: String = "N/A"
 )
 
 data class MeterDataReport(
@@ -79,12 +81,13 @@ data class MeterDataReport(
     val blockLoad: ProfileSection? = null,
     val dailyLoad: ProfileSection? = null,
     val tamperEvents: List<TamperEventRow> = emptyList(),
+    val eventLogStatus: List<Pair<String, String>> = emptyList(),
     val errors: List<String> = emptyList()
 ) {
     val hasData: Boolean
         get() = identity != null || cumulativeEnergies.isNotEmpty() ||
             instantaneous != null || billing != null || blockLoad != null ||
-            dailyLoad != null || tamperEvents.isNotEmpty() || errors.isNotEmpty()
+            dailyLoad != null || tamperEvents.isNotEmpty() || eventLogStatus.isNotEmpty() || errors.isNotEmpty()
 
     fun merge(other: MeterDataReport): MeterDataReport = MeterDataReport(
         identity = when {
@@ -98,6 +101,7 @@ data class MeterDataReport(
         blockLoad = other.blockLoad ?: blockLoad,
         dailyLoad = other.dailyLoad ?: dailyLoad,
         tamperEvents = if (other.tamperEvents.isNotEmpty()) other.tamperEvents else tamperEvents,
+        eventLogStatus = eventLogStatus + other.eventLogStatus,
         errors = errors + other.errors
     )
 }
@@ -112,6 +116,8 @@ class Is15959DataReader(
 ) {
     private var meterRtc: GXDateTime? = null
     private var meterTimeConventionChecked = false
+    private var lastEventLogStatus: List<Pair<String, String>> = emptyList()
+    val eventLogStatus: List<Pair<String, String>> get() = lastEventLogStatus
     private val executor = GuruxPacketExecutor(
         transport,
         client,
@@ -192,11 +198,38 @@ class Is15959DataReader(
 
     suspend fun readTamperEventLogs(): List<TamperEventRow> {
         progress("Reading tamper and event logs...")
-        return Is15959Catalog.PROFILES
+        val statuses = mutableListOf<Pair<String, String>>()
+        val rows = Is15959Catalog.PROFILES
             .filter { it.dataObis.startsWith("0.0.99.98.") }
             .flatMap { profile ->
-                runCatching { readTamperProfile(profile.name, profile.dataObis) }.getOrDefault(emptyList())
+                runCatching { readTamperProfile(profile.name, profile.dataObis) }
+                    .onSuccess { values -> statuses += profile.name to "${values.size} entries" }
+                    .onFailure { error ->
+                        if (isObjectUndefined(error)) {
+                            statuses += profile.name to "not supported by this meter"
+                            transport.log(
+                                com.utility.dlmsreader.transport.TraceDirection.INFO,
+                                "${profile.name}: object undefined; treating as not supported"
+                            )
+                        } else {
+                            statuses += profile.name to "read failed: ${error.message ?: "unknown error"}"
+                        }
+                    }
+                    .getOrDefault(emptyList())
+            }
+        lastEventLogStatus = statuses
+        return rows
+    }
+
+    private fun isObjectUndefined(error: Throwable): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            if (current is gurux.dlms.GXDLMSException && current.errorCode == 4) return true
+            val message = current.message?.lowercase().orEmpty()
+            if ("object undefined" in message || "objectundefined" in message) return true
+            current = current.cause
         }
+        return false
     }
 
     suspend fun readAllMeterData(): MeterDataReport {
@@ -236,7 +269,10 @@ class Is15959DataReader(
             MeterDataReport(dailyLoad = readDailyLoadSurvey())
         }
         section("Tamper logs") {
-            MeterDataReport(tamperEvents = readTamperEventLogs())
+            MeterDataReport(
+                tamperEvents = readTamperEventLogs(),
+                eventLogStatus = eventLogStatus
+            )
         }
         progress("Full meter extraction complete.")
         return report.copy(errors = report.errors + errors)
@@ -448,8 +484,16 @@ class Is15959DataReader(
         }
         val voltageIndex = objects.indexOfFirst { descriptor(it.logicalName).unit == "V" }
         val currentIndex = objects.indexOfFirst { descriptor(it.logicalName).unit == "A" }
-        val pfIndex = objects.indexOfFirst { descriptor(it.logicalName).label.contains("PF", true) }
-        val energyIndex = objects.indexOfFirst { descriptor(it.logicalName).unit.contains("Wh") }
+        val pfIndex = objects.indexOfFirst {
+            it.logicalName == "1.0.13.7.0.255" || descriptor(it.logicalName).unit == "PF"
+        }
+        val energyIndex = objects.indexOfFirst { it.logicalName == "1.0.1.8.0.255" }
+        val kvahIndex = objects.indexOfFirst {
+            descriptor(it.logicalName).unit.contains("VAh", true)
+        }
+        val neutralCurrentIndex = objects.indexOfFirst {
+            it.logicalName == "1.0.91.7.0.255"
+        }
 
         return profile.buffer.mapIndexed { rowIndex, rawRow ->
             val raw = rowValues(rawRow)
@@ -463,7 +507,9 @@ class Is15959DataReader(
                 voltage = values.valueAt(voltageIndex),
                 current = values.valueAt(currentIndex),
                 powerFactor = values.valueAt(pfIndex),
-                energy = values.valueAt(energyIndex)
+                energy = values.valueAt(energyIndex),
+                kvah = values.valueAt(kvahIndex),
+                neutralCurrent = values.valueAt(neutralCurrentIndex)
             )
         }
     }
