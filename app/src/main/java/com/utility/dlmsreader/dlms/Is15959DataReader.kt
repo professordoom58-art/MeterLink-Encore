@@ -2,6 +2,8 @@ package com.utility.dlmsreader.dlms
 
 import com.utility.dlmsreader.transport.OpticalUsbTransport
 import gurux.dlms.GXDateTime
+import gurux.dlms.GXDLMSException
+import gurux.dlms.enums.DateTimeSkips
 import gurux.dlms.enums.Unit as DlmsUnit
 import gurux.dlms.objects.GXDLMSClock
 import gurux.dlms.objects.GXDLMSData
@@ -121,6 +123,10 @@ class Is15959DataReader(
 ) {
     private var meterRtc: GXDateTime? = null
     private var meterTimeConventionChecked = false
+    private var meterTimeConventionFlipped = false
+    private var rangeTierDenied = false
+    private var rangeVariantTierDenied = false
+    private var entryTierDenied = false
     private var lastEventLogStatus: List<Pair<String, String>> = emptyList()
     val eventLogStatus: List<Pair<String, String>> get() = lastEventLogStatus
     private val executor = GuruxPacketExecutor(
@@ -352,27 +358,75 @@ class Is15959DataReader(
         if (scalers.isEmpty()) loadCaptureScalers(profile)
 
         var totalRows = profile.buffer.size
-        try {
-            val endDate = readMeterRtc() ?: error("Meter RTC unavailable for selective range access.")
-            val rangeDays = if (obis == "1.0.99.1.0.255") 2 else 15
-            val startCalendar = MeterTime.wallClock(endDate).apply {
-                add(Calendar.DAY_OF_YEAR, -rangeDays)
-            }
-            val startDate = GXDateTime(startCalendar)
-            progress(
-                "Reading $title range ${MeterTime.format(startDate)} to ${MeterTime.format(endDate)} using meter RTC"
-            )
-            executor.readRowsByRange(profile, startDate, endDate)
-            totalRows = profile.buffer.size
-            trimProfileBuffer(profile, maxEntries)
-        } catch (_: Exception) {
-            // Some L&T firmware rejects selective access for load surveys. The
-            // complete buffer is reliable, and is trimmed locally for the PDF.
-            progress("Selective access rejected by meter, retrying full buffer download (Selector 0)...")
-            executor.readObject(profile, 2)
-            totalRows = profile.buffer.size
-            trimProfileBuffer(profile, maxEntries)
+        var loaded = false
+        val endDate = readMeterRtc() ?: error("Meter RTC unavailable for selective range access.")
+        val rangeDays = if (obis == "1.0.99.1.0.255") 2 else 15
+        val startCalendar = MeterTime.wallClock(endDate).apply {
+            add(Calendar.DAY_OF_YEAR, -rangeDays)
         }
+        val startDate = GXDateTime(startCalendar)
+
+        if (!rangeTierDenied) {
+            try {
+                progress("Tier1 range: requesting ${MeterTime.format(startDate)} to ${MeterTime.format(endDate)}")
+                executor.readRowsByRange(profile, startDate, endDate)
+                progress("Tier1 range: success(${profile.buffer.size})")
+                totalRows = profile.buffer.size
+                loaded = true
+            } catch (error: GXDLMSException) {
+                rangeTierDenied = true
+                progress("Tier1 range: denied(${error.errorCode})")
+                if (error.errorCode == 3 && !meterTimeConventionFlipped && !rangeVariantTierDenied) {
+                    val variantStart = GXDateTime(startDate).apply {
+                        deviation = 0x8000
+                        skip.add(DateTimeSkips.DEVIATION)
+                    }
+                    val variantEnd = GXDateTime(endDate).apply {
+                        deviation = 0x8000
+                        skip.add(DateTimeSkips.DEVIATION)
+                    }
+                    try {
+                        progress("Tier1 range variant: requesting deviation 0x8000")
+                        executor.readRowsByRange(profile, variantStart, variantEnd)
+                        progress("Tier1 range variant: success(${profile.buffer.size})")
+                        totalRows = profile.buffer.size
+                        loaded = true
+                    } catch (variantError: GXDLMSException) {
+                        rangeVariantTierDenied = true
+                        progress("Tier1 range variant: denied(${variantError.errorCode})")
+                    }
+                }
+            }
+        } else {
+            progress("Tier1 range: skipped(denied earlier in session)")
+        }
+
+        if (!loaded && !entryTierDenied) {
+            try {
+                val entriesRaw = executor.readObject(profile, 7)
+                val entriesInUse = (entriesRaw as? Number)?.toInt()?.takeIf { it > 0 }
+                    ?: profile.entriesInUse
+                val index = maxOf(1, entriesInUse - maxEntries + 1)
+                progress("Tier2 entry: requesting index=$index count=$maxEntries of $entriesInUse")
+                executor.readRowsByEntry(profile, index, maxEntries)
+                progress("Tier2 entry: success(${profile.buffer.size})")
+                totalRows = entriesInUse
+                loaded = true
+            } catch (error: GXDLMSException) {
+                entryTierDenied = true
+                progress("Tier2 entry: denied(${error.errorCode})")
+            }
+        } else if (!loaded) {
+            progress("Tier2 entry: skipped(denied earlier in session)")
+        }
+
+        if (!loaded) {
+            progress("Tier3 full: requesting complete buffer")
+            executor.readObject(profile, 2)
+            progress("Tier3 full: success(${profile.buffer.size})")
+            totalRows = profile.buffer.size
+        }
+        trimProfileBuffer(profile, maxEntries)
         return formatProfile(profile, title, scalers, totalRows)
     }
 
@@ -406,6 +460,7 @@ class Is15959DataReader(
             meterTimeConventionChecked = true
             if (dateTime.deviation == 330) {
                 client.setUseUtc2NormalTime(true)
+                meterTimeConventionFlipped = true
                 transport.log(
                     com.utility.dlmsreader.transport.TraceDirection.INFO,
                     "Meter RTC uses positive IST deviation (+330); enabled Gurux UTC-to-normal time conversion."
