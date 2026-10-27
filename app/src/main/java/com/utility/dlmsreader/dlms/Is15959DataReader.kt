@@ -458,7 +458,7 @@ class Is15959DataReader(
         meterRtc = dateTime
         if (!meterTimeConventionChecked) {
             meterTimeConventionChecked = true
-            if (dateTime.deviation == 330) {
+            if (dateTime.deviation == 330 && !dateTime.skip.contains(DateTimeSkips.DEVIATION)) {
                 client.setUseUtc2NormalTime(true)
                 meterTimeConventionFlipped = true
                 transport.log(
