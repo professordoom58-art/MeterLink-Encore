@@ -44,7 +44,7 @@ class OpticalUsbTransport(private val context: Context) {
     private val _probeStatus = MutableStateFlow("No Optical Probe Connected")
     val probeStatus: StateFlow<String> = _probeStatus
 
-    private val _traceFlow = MutableSharedFlow<TraceLog>(extraBufferCapacity = 256)
+    private val _traceFlow = MutableSharedFlow<TraceLog>(extraBufferCapacity = 5000)
     val traceFlow: SharedFlow<TraceLog> = _traceFlow
     private val connectionDiagnostics = ConnectionDiagnostics()
 

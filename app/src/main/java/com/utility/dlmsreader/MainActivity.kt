@@ -45,6 +45,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
@@ -122,6 +123,8 @@ fun MeterReaderScreen(
     var progressText by remember { mutableStateOf<String?>(null) }
     var reportReady by remember { mutableStateOf(false) }
     var reportStatusText by remember { mutableStateOf<String?>(null) }
+    var autoTryAlternatePasswords by remember { mutableStateOf(false) }
+    var lastHexLogFile by remember { mutableStateOf<File?>(null) }
     val traceLogs = remember { mutableStateListOf<TraceLog>() }
 
     fun runModule(module: MeterDataModule) {
@@ -140,6 +143,8 @@ fun MeterReaderScreen(
                 authentication = if (useMeterReaderAuth) Authentication.LOW else Authentication.NONE,
                 password = llsPassword,
                 passwordCandidates = selectedVendor.defaultPasswords,
+                autoTryAlternatePasswords = autoTryAlternatePasswords,
+                vendorName = selectedVendor.displayName,
                 useModeE = useModeE
             )
             engine.readMeterModule(params, module) { progressText = it }
@@ -149,9 +154,21 @@ fun MeterReaderScreen(
                     } else {
                         it.copy(errors = it.errors + "${module.name.replace('_', ' ')} completed successfully but returned no rows.")
                     }
-                    meterReport = meterReport.merge(completedReport)
+                    val mergedReport = meterReport.merge(completedReport)
+                    meterReport = mergedReport
+                    if (module == MeterDataModule.ALL) {
+                        runCatching {
+                            val bundle = MeterLinkPdfExporter(context).exportBundle(mergedReport, traceLogs.toList())
+                            lastHexLogFile = bundle.hexLog
+                            reportStatusText = "✓ Read All saved ${bundle.pdf.name} and ${bundle.hexLog.name}."
+                        }.onFailure {
+                            errorMessage = it.message ?: "Automatic report save failed"
+                        }
+                    }
                     reportReady = true
-                    reportStatusText = "✓ ${module.name.replace('_', ' ')} extraction complete. Data is ready for PDF export."
+                    if (module != MeterDataModule.ALL) {
+                        reportStatusText = "✓ ${module.name.replace('_', ' ')} extraction complete. Data is ready for PDF export."
+                    }
                 }
                 .onFailure { errorMessage = it.message ?: "${module.name} read failed" }
             isReading = false
@@ -162,16 +179,27 @@ fun MeterReaderScreen(
     fun exportReport() {
         runCatching {
             val exporter = MeterLinkPdfExporter(context)
-            val file = exporter.export(meterReport)
-            exporter.share(file)
-            reportStatusText = "✓ PDF saved as ${file.name} and ready to share."
+            val bundle = exporter.exportBundle(meterReport, traceLogs.toList())
+            lastHexLogFile = bundle.hexLog
+            exporter.share(bundle.pdf)
+            reportStatusText = "✓ PDF saved as ${bundle.pdf.name}; Hex Log saved as ${bundle.hexLog.name}."
         }.onFailure { errorMessage = it.message ?: "PDF export failed" }
+    }
+
+    fun exportHexLog() {
+        runCatching {
+            val exporter = MeterLinkPdfExporter(context)
+            val file = exporter.exportHexLog(meterReport, traceLogs.toList())
+            lastHexLogFile = file
+            exporter.shareText(file)
+            reportStatusText = "✓ Hex log saved as ${file.name} and ready to share."
+        }.onFailure { errorMessage = it.message ?: "Hex log export failed" }
     }
 
     LaunchedEffect(Unit) {
         transport.traceFlow.collect { log ->
             traceLogs.add(0, log)
-            if (traceLogs.size > 200) traceLogs.removeLast()
+            if (traceLogs.size > 5000) traceLogs.removeLast()
         }
     }
 
@@ -323,10 +351,21 @@ fun MeterReaderScreen(
                             )
                         } else {
                             Text(
-                                text = "Primary LLS password selected automatically; alternate defaults will be tried if authentication fails.",
+                                text = "Primary LLS password is used exclusively unless alternate-password retries are enabled.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color.Gray
                             )
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Checkbox(
+                                checked = autoTryAlternatePasswords,
+                                onCheckedChange = { autoTryAlternatePasswords = it }
+                            )
+                            Text("Auto-try alternate vendor passwords", fontSize = 12.sp)
                         }
                     }
 
@@ -377,6 +416,8 @@ fun MeterReaderScreen(
                                     authentication = if (useMeterReaderAuth) Authentication.LOW else Authentication.NONE,
                                     password = llsPassword,
                                     passwordCandidates = selectedVendor.defaultPasswords,
+                                    autoTryAlternatePasswords = autoTryAlternatePasswords,
+                                    vendorName = selectedVendor.displayName,
                                     useModeE = useModeE
                                 )
                                 engine.readMeter(params)
@@ -466,13 +507,29 @@ fun MeterReaderScreen(
                                     color = Color(0xFF166534),
                                     fontSize = 12.sp
                                 )
-                                Button(
-                                    onClick = ::exportReport,
-                                    enabled = !isReading && meterReport.hasData,
+                                Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(8.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Text("Export PDF Report")
+                                    Button(
+                                        onClick = ::exportReport,
+                                        enabled = !isReading && meterReport.hasData,
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("Export PDF Report", fontSize = 11.sp)
+                                    }
+                                    OutlinedButton(
+                                        onClick = ::exportHexLog,
+                                        enabled = !isReading,
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    ) {
+                                        Text("Export Hex Log (.txt)", fontSize = 11.sp)
+                                    }
+                                }
+                                lastHexLogFile?.let {
+                                    Text("Hex log ready: ${it.name}", fontSize = 10.sp, color = Color.Gray)
                                 }
                             }
                         }
@@ -518,12 +575,17 @@ fun MeterReaderScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("Live Protocol Trace", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                TextButton(onClick = {
-                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    val text = traceLogs.reversed().joinToString("\n") { "[${it.direction}] ${it.hexOrMessage}" }
-                    clipboard.setPrimaryClip(ClipData.newPlainText("DLMS Trace", text))
-                }) {
-                    Text("Copy", fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        val text = traceLogs.reversed().joinToString("\n") { "[${it.direction}] ${it.hexOrMessage}" }
+                        clipboard.setPrimaryClip(ClipData.newPlainText("DLMS Trace", text))
+                    }) {
+                        Text("Copy", fontSize = 12.sp)
+                    }
+                    TextButton(onClick = ::exportHexLog) {
+                        Text("Export Hex Log", fontSize = 12.sp)
+                    }
                 }
             }
 

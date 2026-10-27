@@ -13,7 +13,8 @@ import java.util.Locale
 
 data class ObisDescriptor(
     val label: String,
-    val unit: String = ""
+    val unit: String = "",
+    val category: ObisCategory = ObisCategory.UNKNOWN
 )
 
 object Is15959Formatter {
@@ -32,14 +33,16 @@ object Is15959Formatter {
         scaler: Double = 1.0,
         unit: DlmsUnit? = null,
         obis: String? = null,
-        includeUnit: Boolean = true
+        includeUnit: Boolean = true,
+        runtimeMetadata: Map<String, ObisMetadata> = emptyMap(),
+        meterMake: String? = null
     ): String = when (raw) {
         null -> "N/A"
         is GXDateTime -> formatDateTime(raw)
         is Date -> formatDate(raw)
         is ByteArray -> formatBytes(raw)
         is Number -> {
-            val displayUnit = displayUnit(unit, obis)
+            val displayUnit = displayUnit(unit, obis, runtimeMetadata, meterMake)
             val scaledValue = raw.toDouble() * scaler
             val value = scaledValue * if (isEnergyOrPower(unit, obis)) 0.001 else 1.0
             val formatted = if (isYearOfManufacture(obis)) {
@@ -47,12 +50,26 @@ object Is15959Formatter {
             } else if (isMeterType(obis)) {
                 meterTypeLabel(scaledValue.toInt())
             } else {
-                formatNumber(value, unit, obis)
+                formatNumber(value, unit, obis, runtimeMetadata, meterMake)
             }
             if (includeUnit && displayUnit.isNotEmpty()) "$formatted $displayUnit" else formatted
         }
-        is Array<*> -> raw.joinToString(", ") { formatValue(it, includeUnit = includeUnit) }
-        is Iterable<*> -> raw.joinToString(", ") { formatValue(it, includeUnit = includeUnit) }
+        is Array<*> -> raw.joinToString(", ") {
+            formatValue(
+                it,
+                includeUnit = includeUnit,
+                runtimeMetadata = runtimeMetadata,
+                meterMake = meterMake
+            )
+        }
+        is Iterable<*> -> raw.joinToString(", ") {
+            formatValue(
+                it,
+                includeUnit = includeUnit,
+                runtimeMetadata = runtimeMetadata,
+                meterMake = meterMake
+            )
+        }
         else -> raw.toString().trim().ifEmpty { "N/A" }
     }
 
@@ -96,7 +113,15 @@ object Is15959Formatter {
         else -> ""
     }
 
-    fun getObisLabelAndUnit(obis: String): ObisDescriptor = when {
+    fun getObisLabelAndUnit(
+        obis: String,
+        runtimeMetadata: Map<String, ObisMetadata> = emptyMap(),
+        meterMake: String? = null
+    ): ObisDescriptor {
+        Is15959Catalog.metadataFor(obis, runtimeMetadata, meterMake)?.let { metadata ->
+            return ObisDescriptor(metadata.label, metadata.unit, metadata.category)
+        }
+        return when {
         obis == "0.0.42.0.0.255" -> ObisDescriptor("Logical Device Name")
         obis == "0.0.96.1.0.255" -> ObisDescriptor("Meter Serial Number")
         obis == "0.0.96.1.1.255" -> ObisDescriptor("Manufacturer Name")
@@ -135,11 +160,15 @@ object Is15959Formatter {
         obis == "1.0.8.8.0.255" || obis == "1.0.4.8.0.255" -> ObisDescriptor("Reactive Energy - Lead (kVArh)", "kVArh")
         obis == "1.0.1.6.0.255" -> ObisDescriptor("Maximum Demand - Active (kW)", "kW")
         obis == "1.0.9.6.0.255" -> ObisDescriptor("Maximum Demand - Apparent (kVA)", "kVA")
+        obis == "1.0.1.2.0.255" -> ObisDescriptor("Cum. MD Active (kW)", "kW")
+        obis == "1.0.9.2.0.255" -> ObisDescriptor("Cum. MD Apparent (kVA)", "kVA")
+        obis == "1.0.128.8.38.255" -> ObisDescriptor("Billing Reset Type / Status")
         obis.startsWith("0.0.96.11.") && obis.endsWith(".255") -> ObisDescriptor("Tamper Event Code")
         obis == "0.0.94.91.0.255" -> ObisDescriptor("Cumulative Tamper Count")
         obis == "0.0.0.1.0.255" -> ObisDescriptor("Billing Reset Count")
         obis == "0.0.94.91.13.255" -> ObisDescriptor("Cumulative Power-On Duration (Min)", "min")
         else -> ObisDescriptor("OBIS $obis")
+    }
     }
 
     fun decodeTamperEvent(code: Int): String = when (code) {
@@ -205,19 +234,39 @@ object Is15959Formatter {
         return raw.joinToString("") { "%02X".format(it.toInt() and 0xFF) }
     }
 
-    private fun formatNumber(value: Double, unit: DlmsUnit?, obis: String?): String = when {
+    private fun formatNumber(
+        value: Double,
+        unit: DlmsUnit?,
+        obis: String?,
+        runtimeMetadata: Map<String, ObisMetadata>,
+        meterMake: String?
+    ): String {
+        val metadataUnit = obis?.let {
+            Is15959Catalog.metadataFor(it, runtimeMetadata, meterMake)?.unit
+        }.orEmpty()
+        return when {
         isEnergyOrPower(unit, obis) -> threeDecimalFormat.format(value)
         unit == DlmsUnit.VOLTAGE || unit == DlmsUnit.CURRENT ||
             unit == DlmsUnit.FREQUENCY || unit == DlmsUnit.PERCENTAGE ||
-            unit == DlmsUnit.PHASE_ANGLE_DEGREE -> twoDecimalFormat.format(value)
+            unit == DlmsUnit.PHASE_ANGLE_DEGREE ||
+            metadataUnit in setOf("V", "A", "Hz", "%", "PF", "deg") -> twoDecimalFormat.format(value)
         else -> numberFormat.format(value)
+    }
     }
 
     /** Returns the meter scaler only. Display-unit conversion is done by formatValue. */
     fun normalizedScaler(scaler: Double, unit: DlmsUnit?): Double = scaler
 
-    private fun displayUnit(unit: DlmsUnit?, obis: String?): String =
-        unitSymbol(unit).ifEmpty { obisUnitSymbol(obis) }
+    private fun displayUnit(
+        unit: DlmsUnit?,
+        obis: String?,
+        runtimeMetadata: Map<String, ObisMetadata>,
+        meterMake: String?
+    ): String = unitSymbol(unit).ifEmpty {
+        Is15959Catalog.metadataFor(obis.orEmpty(), runtimeMetadata, meterMake)?.unit
+            ?.takeIf { it.isNotEmpty() }
+            ?: obisUnitSymbol(obis)
+    }
 
     private fun isEnergyOrPower(unit: DlmsUnit?, obis: String?): Boolean =
         unit in setOf(

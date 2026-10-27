@@ -9,11 +9,18 @@ import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.os.Environment
 import androidx.core.content.FileProvider
+import com.utility.dlmsreader.transport.TraceDirection
+import com.utility.dlmsreader.transport.TraceLog
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+data class MeterLinkExportBundle(
+    val pdf: File,
+    val hexLog: File
+)
 
 class MeterLinkPdfExporter(private val context: Context) {
     companion object {
@@ -28,11 +35,15 @@ class MeterLinkPdfExporter(private val context: Context) {
     }
 
     fun export(report: MeterDataReport): File {
+        return exportBundle(report, emptyList()).pdf
+    }
+
+    fun exportBundle(report: MeterDataReport, traceLogs: List<TraceLog>): MeterLinkExportBundle {
         require(report.hasData) { "No meter data is available for export." }
         val generated = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.ENGLISH).format(Date())
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ENGLISH).format(Date())
         val serial = identityValue(report, "0.0.96.1.0.255")
-            .ifBlank { "UnknownSerial" }
+            .ifBlank { "Meter" }
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
         val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
             ?: context.filesDir
@@ -45,33 +56,56 @@ class MeterLinkPdfExporter(private val context: Context) {
             logicalDevice = identityValue(report, "0.0.42.0.0.255"),
             manufacturer = identityValue(report, "0.0.96.1.1.255")
         )
-        buildReport(layout, report)
+        buildReport(layout, report, traceLogs)
 
         val document = PdfDocument()
         layout.render(document)
         FileOutputStream(file).use { document.writeTo(it) }
         document.close()
-        return file
+        val hexLog = File(directory, "MeterLink_HexLog_${serial}_$stamp.txt")
+        writeHexLog(hexLog, traceLogs, generated, serial)
+        return MeterLinkExportBundle(file, hexLog)
+    }
+
+    fun exportHexLog(report: MeterDataReport, traceLogs: List<TraceLog>): File {
+        val generated = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.ENGLISH).format(Date())
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ENGLISH).format(Date())
+        val serial = identityValue(report, "0.0.96.1.0.255")
+            .ifBlank { "Meter" }
+            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
+        directory.mkdirs()
+        return File(directory, "MeterLink_HexLog_${serial}_$stamp.txt").also {
+            writeHexLog(it, traceLogs, generated, serial)
+        }
     }
 
     fun share(file: File) {
+        shareFile(file, "application/pdf", "Share MeterLink PDF Report")
+    }
+
+    fun shareText(file: File) {
+        shareFile(file, "text/plain", "Share MeterLink Hex Log")
+    }
+
+    private fun shareFile(file: File, mimeType: String, chooserTitle: String) {
         val uri = FileProvider.getUriForFile(
             context,
             "${context.packageName}.fileprovider",
             file
         )
         val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "application/pdf"
+            type = mimeType
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        context.startActivity(Intent.createChooser(intent, "Share MeterLink PDF Report").apply {
+        context.startActivity(Intent.createChooser(intent, chooserTitle).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         })
     }
 
-    private fun buildReport(layout: ReportLayout, report: MeterDataReport) {
+    private fun buildReport(layout: ReportLayout, report: MeterDataReport, traceLogs: List<TraceLog>) {
         report.identity?.let { identity ->
             layout.section("Section 1: Meter Identity & Nameplate Summary")
             layout.table(
@@ -119,6 +153,8 @@ class MeterLinkPdfExporter(private val context: Context) {
             layout.section("Read Notes")
             layout.table(listOf("Section", "Status"), report.errors.map { listOf("MeterLink", it) })
         }
+        layout.section("Section 8: Diagnostic Protocol & Execution Log (Summary)")
+        layout.table(listOf("Category", "Details"), diagnosticRows(traceLogs))
     }
 
     private fun drawProfile(layout: ReportLayout, section: ProfileSection) {
@@ -176,6 +212,42 @@ class MeterLinkPdfExporter(private val context: Context) {
             layout.subsection(chunkTitle)
             val selected = listOf(firstIndex) + chunk
             drawSelectedProfile(layout, section, selected.map { it to section.columns[it].parameterName })
+        }
+    }
+
+    private fun diagnosticRows(traceLogs: List<TraceLog>): List<List<String>> {
+        if (traceLogs.isEmpty()) return listOf(listOf("Trace", "No protocol trace lines captured."))
+        val counts = TraceDirection.entries.associateWith { direction ->
+            traceLogs.count { it.direction == direction }
+        }
+        val rows = mutableListOf(
+            listOf(
+                "Packet counts",
+                "TX=${counts[TraceDirection.TX] ?: 0}, RX=${counts[TraceDirection.RX] ?: 0}, " +
+                    "INFO=${counts[TraceDirection.INFO] ?: 0}, ERROR=${counts[TraceDirection.ERROR] ?: 0}"
+            )
+        )
+        traceLogs.asReversed()
+            .filter { it.direction == TraceDirection.INFO && it.hexOrMessage.startsWith("Reading Section:") }
+            .distinctBy { it.hexOrMessage }
+            .forEach { rows += listOf("Section", it.hexOrMessage) }
+        traceLogs.asReversed()
+            .filter { it.direction == TraceDirection.ERROR }
+            .take(80)
+            .forEach { rows += listOf("Error / OBIS", it.hexOrMessage) }
+        return rows
+    }
+
+    private fun writeHexLog(file: File, traceLogs: List<TraceLog>, generated: String, serial: String) {
+        val timeFormat = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss.SSS", Locale.ENGLISH)
+        file.bufferedWriter().use { writer ->
+            writer.appendLine("MeterLink Hex Terminal Log")
+            writer.appendLine("Generated: $generated")
+            writer.appendLine("Serial: $serial")
+            writer.appendLine()
+            traceLogs.asReversed().forEach { log ->
+                writer.appendLine("${timeFormat.format(Date(log.timestampMs))} [${log.direction}] ${log.hexOrMessage}")
+            }
         }
     }
 
