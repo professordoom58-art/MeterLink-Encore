@@ -242,7 +242,7 @@ class MeterLinkPdfExporter(private val context: Context) {
         val timeFormat = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss.SSS", Locale.ENGLISH)
         file.bufferedWriter().use { writer ->
             writer.appendLine("MeterLink Hex Terminal Log")
-            writer.appendLine("Generated: $generated")
+            writer.appendLine("Generated (phone time): $generated")
             writer.appendLine("Serial: $serial")
             writer.appendLine()
             traceLogs.asReversed().forEach { log ->
@@ -419,7 +419,7 @@ class MeterLinkPdfExporter(private val context: Context) {
             paint.color = Color.rgb(51, 65, 85)
             paint.textSize = 8f
             paint.typeface = Typeface.DEFAULT
-            canvas.drawText("Generated: $generated    Serial: $serial    LDN: $logicalDevice    Manufacturer: $manufacturer", LEFT, 65f, paint)
+            canvas.drawText("Generated (phone time): $generated    Serial: $serial    LDN: $logicalDevice    Manufacturer: $manufacturer", LEFT, 65f, paint)
             paint.color = BORDER
             canvas.drawLine(LEFT, 76f, RIGHT, 76f, paint)
         }

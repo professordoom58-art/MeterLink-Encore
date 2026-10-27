@@ -2,6 +2,7 @@ package com.utility.dlmsreader.dlms
 
 import gurux.dlms.GXByteBuffer
 import gurux.dlms.GXDLMSException
+import gurux.dlms.GXDateTime
 import gurux.dlms.GXReplyData
 import gurux.dlms.enums.DataType
 import gurux.dlms.enums.RequestTypes
@@ -141,6 +142,24 @@ class GuruxPacketExecutor(
         profile: GXDLMSProfileGeneric,
         start: Date,
         end: Date
+    ): Array<Array<Any?>> {
+        val data = client.readRowsByRange(profile, start, end)
+        val reply = GXReplyData()
+        readDataBlock(data, reply)
+        client.updateValue(profile, 2, reply.value)
+        return profile.buffer.map { row ->
+            when (row) {
+                is Array<*> -> row.map { it }.toTypedArray()
+                is Iterable<*> -> row.toList().toTypedArray()
+                else -> arrayOf(row)
+            }
+        }.toTypedArray()
+    }
+
+    suspend fun readRowsByRange(
+        profile: GXDLMSProfileGeneric,
+        start: GXDateTime,
+        end: GXDateTime
     ): Array<Array<Any?>> {
         val data = client.readRowsByRange(profile, start, end)
         val reply = GXReplyData()
