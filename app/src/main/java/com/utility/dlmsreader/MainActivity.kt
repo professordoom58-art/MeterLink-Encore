@@ -719,12 +719,26 @@ private fun MeterDataReportView(report: MeterDataReport) {
                     rows = report.eventLogStatus.map { listOf(it.first, it.second) }
                 )
             }
-            ReportTable(
-                headers = listOf("Compartment", "Date/Time", "Code", "Description", "V", "I", "PF", "kWh", "kVAh", "Neutral I"),
-                rows = report.tamperEvents.map {
-                    listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription, it.voltage, it.current, it.powerFactor, it.energy, it.kvah, it.neutralCurrent)
+            report.tamperEvents.groupBy { it.compartment }.forEach { (compartment, events) ->
+                val compact = events.all { event ->
+                    listOf(event.voltage, event.current, event.powerFactor, event.energy, event.kvah, event.neutralCurrent)
+                        .all { it == "N/A" }
                 }
-            )
+                Text(compartment, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                if (compact) {
+                    ReportTable(
+                        headers = listOf("Compartment", "Date/Time", "Code", "Description"),
+                        rows = events.map { listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription) }
+                    )
+                } else {
+                    ReportTable(
+                        headers = listOf("Compartment", "Date/Time", "Code", "Description", "V", "I", "PF", "kWh", "kVAh", "Neutral I"),
+                        rows = events.map {
+                            listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription, it.voltage, it.current, it.powerFactor, it.energy, it.kvah, it.neutralCurrent)
+                        }
+                    )
+                }
+            }
         }
     }
     if (report.errors.isNotEmpty()) {
