@@ -96,7 +96,7 @@ class MeterLinkPdfExporter(private val context: Context) {
         }
         report.billing?.let {
             layout.section("Section 4: Billing History Profile")
-            drawWideProfile(layout, it)
+            drawBillingProfile(layout, it)
         }
         report.dailyLoad?.let {
             layout.section("Section 5: Daily Load Survey Profile")
@@ -135,7 +135,83 @@ class MeterLinkPdfExporter(private val context: Context) {
         if (headers.isEmpty()) {
             layout.table(listOf("Profile", "Status"), listOf(listOf(section.profileObis, "No rows returned")))
         } else {
-            layout.table(headers, section.rows)
+            drawProfileChunks(layout, section, section.columns.indices.toList(), section.title)
+        }
+    }
+
+    private fun drawBillingProfile(layout: ReportLayout, section: ProfileSection) {
+        if (section.columns.isEmpty()) {
+            layout.table(listOf("Profile", "Status"), listOf(listOf(section.profileObis, "No rows returned")))
+            return
+        }
+
+        val used = linkedSetOf<Int>()
+        val core = mutableListOf<Pair<Int, String>>()
+
+        fun addCore(obis: String, header: String) {
+            val index = section.columns.indices.firstOrNull { it !in used && section.columns[it].obisCode == obis }
+            if (index != null) {
+                used += index
+                core += index to header
+            }
+        }
+
+        addCore("0.0.0.1.2.255", "Billing Date")
+        addCore("1.0.13.0.0.255", "System PF")
+        addCore("1.0.1.8.0.255", "Cum. kWh")
+        addCore("1.0.9.8.0.255", "Cum. kVAh")
+        addCore("1.0.1.6.0.255", "MD kW")
+
+        val mdDateIndexes = section.columns.indices.filter { index ->
+            index !in used && (
+                section.columns[index].parameterName.contains("date", ignoreCase = true) ||
+                    section.columns[index].parameterName.contains("time", ignoreCase = true) ||
+                    section.columns[index].parameterName.contains("clock", ignoreCase = true) ||
+                    section.columns[index].obisCode == "0.0.1.0.0.255"
+                )
+        }
+        mdDateIndexes.getOrNull(0)?.let {
+            used += it
+            core += it to "MD kW Date"
+        }
+        addCore("1.0.9.6.0.255", "MD kVA")
+        mdDateIndexes.getOrNull(1)?.let {
+            used += it
+            core += it to "MD kVA Date"
+        }
+
+        if (core.isNotEmpty()) {
+            layout.subsection("Table 4A: Core Billing Summary")
+            drawSelectedProfile(layout, section, core)
+        }
+
+        val remaining = section.columns.indices.filterNot { it in used }
+        if (remaining.isNotEmpty()) {
+            drawProfileChunks(layout, section, remaining, "Table 4B: Billing ToD & Reactive Zones")
+        }
+    }
+
+    private fun drawSelectedProfile(
+        layout: ReportLayout,
+        section: ProfileSection,
+        selected: List<Pair<Int, String>>
+    ) {
+        val headers = selected.map { it.second }
+        val rows = section.rows.map { row -> selected.map { row.getOrNull(it.first) ?: "N/A" } }
+        layout.table(headers, rows)
+    }
+
+    private fun drawProfileChunks(
+        layout: ReportLayout,
+        section: ProfileSection,
+        indexes: List<Int>,
+        title: String
+    ) {
+        val chunks = indexes.chunked(8)
+        chunks.forEachIndexed { chunkIndex, chunk ->
+            val chunkTitle = if (chunks.size == 1) title else "$title (Part ${chunkIndex + 1} of ${chunks.size})"
+            layout.subsection(chunkTitle)
+            drawSelectedProfile(layout, section, chunk.map { it to section.columns[it].parameterName })
         }
     }
 
@@ -177,28 +253,41 @@ class MeterLinkPdfExporter(private val context: Context) {
             y += 32f
         }
 
+        fun subsection(title: String) {
+            ensure(26f)
+            add(Op.Text(title, LEFT, y + 14f, 10f, NAVY, true))
+            y += 22f
+        }
+
         fun table(headers: List<String>, rows: List<List<String>>) {
             if (headers.isEmpty()) return
+            currentTableHeaders = headers
             val widths = widths(headers.size)
             tableHeader(headers, widths)
             rows.forEachIndexed { rowIndex, row ->
-                if (y + 20f > BOTTOM) {
+                val wrapped = headers.indices.map { index ->
+                    wrapText(row.getOrNull(index) ?: "", widths[index] - 8f, 8f)
+                }
+                val rowHeight = maxOf(20f, (wrapped.maxOfOrNull { it.size } ?: 1) * 10f + 8f)
+                if (y + rowHeight > BOTTOM) {
                     newPage()
                     tableHeader(headers, widths)
                 }
                 val top = y
-                add(Op.Rect(LEFT, top, RIGHT, top + 20f, if (rowIndex % 2 == 0) LIGHT_ROW else Color.WHITE, true))
+                add(Op.Rect(LEFT, top, RIGHT, top + rowHeight, if (rowIndex % 2 == 0) LIGHT_ROW else Color.WHITE, true))
                 var x = LEFT
                 headers.forEachIndexed { index, _ ->
-                    val value = truncate(row.getOrNull(index) ?: "", widths[index] - 8f, 8f)
+                    val value = row.getOrNull(index) ?: ""
                     val numeric = value.matches(Regex("[-+]?([0-9][0-9,]*)(\\.[0-9]+)?(.*)"))
                     val align = if (numeric && index > 0) Paint.Align.RIGHT else Paint.Align.LEFT
-                    val textX = if (align == Paint.Align.RIGHT) x + widths[index] - 4f else x + 4f
-                    add(Op.Text(value, textX, top + 14f, 8f, Color.rgb(30, 41, 59), false, align))
-                    add(Op.Rect(x, top, x + widths[index], top + 20f, BORDER, false))
+                    wrapped[index].forEachIndexed { lineIndex, line ->
+                        val textX = if (align == Paint.Align.RIGHT) x + widths[index] - 4f else x + 4f
+                        add(Op.Text(line, textX, top + 14f + lineIndex * 10f, 8f, Color.rgb(30, 41, 59), false, align))
+                    }
+                    add(Op.Rect(x, top, x + widths[index], top + rowHeight, BORDER, false))
                     x += widths[index]
                 }
-                y += 20f
+                y += rowHeight
             }
             y += 8f
         }
@@ -235,21 +324,39 @@ class MeterLinkPdfExporter(private val context: Context) {
         }
 
         private fun tableHeader(headers: List<String>, widths: List<Float>) {
-            ensure(22f)
+            val wrapped = headers.mapIndexed { index, header -> wrapText(header, widths[index] - 8f, 8f, bold = true) }
+            val height = maxOf(22f, (wrapped.maxOfOrNull { it.size } ?: 1) * 10f + 8f)
+            ensure(height)
             val top = y
-            add(Op.Rect(LEFT, top, RIGHT, top + 22f, NAVY, true))
+            add(Op.Rect(LEFT, top, RIGHT, top + height, NAVY, true))
             var x = LEFT
-            headers.forEachIndexed { index, header ->
-                add(Op.Text(truncate(header, widths[index] - 8f, 8f), x + 4f, top + 15f, 8f, Color.WHITE, true))
+            headers.forEachIndexed { index, _ ->
+                wrapped[index].forEachIndexed { lineIndex, line ->
+                    add(Op.Text(line, x + 4f, top + 14f + lineIndex * 10f, 8f, Color.WHITE, true))
+                }
+                add(Op.Rect(x, top, x + widths[index], top + height, BORDER, false))
                 x += widths[index]
             }
-            y += 22f
+            y += height
         }
 
         private fun widths(count: Int): List<Float> {
-            val width = (RIGHT - LEFT) / count
-            return List(count) { width }
+            if (count == 0) return emptyList()
+            val weights = List(count) { index ->
+                val header = currentTableHeaders[index].lowercase(Locale.ENGLISH)
+                when {
+                    "date" in header || "time" in header || "description" in header -> 1.6f
+                    "obis" in header || "code" in header || "unit" in header -> 0.6f
+                    header in setOf("v", "i", "pf", "kwh", "kvah", "kvarh") -> 0.6f
+                    "parameter" in header -> 1.35f
+                    else -> 1.0f
+                }
+            }
+            val unit = (RIGHT - LEFT) / weights.sum()
+            return weights.map { it * unit }
         }
+
+        private var currentTableHeaders: List<String> = emptyList()
 
         private fun ensure(height: Float) {
             if (y + height > BOTTOM) newPage()
@@ -290,9 +397,58 @@ class MeterLinkPdfExporter(private val context: Context) {
             paint.textAlign = Paint.Align.LEFT
         }
 
-        private fun truncate(value: String, width: Float, size: Float): String {
-            val maxChars = (width / (size * 0.52f)).toInt().coerceAtLeast(4)
-            return if (value.length <= maxChars) value else value.take(maxChars - 1) + "…"
+        private fun wrapText(value: String, width: Float, size: Float, bold: Boolean = false): List<String> {
+            val safeWidth = width.coerceAtLeast(10f)
+            val lines = mutableListOf<String>()
+            value.ifEmpty { " " }.split('\n').forEach { paragraph ->
+                if (paragraph.isEmpty()) {
+                    lines += ""
+                    return@forEach
+                }
+                var line = ""
+                paragraph.split(Regex("\\s+")).forEach { word ->
+                    val candidate = if (line.isEmpty()) word else "$line $word"
+                    if (measureText(candidate, size, bold) <= safeWidth) {
+                        line = candidate
+                    } else {
+                        if (line.isNotEmpty()) lines += line
+                        val pieces = breakWord(word, safeWidth, size, bold)
+                        if (pieces.size > 1) {
+                            lines += pieces.dropLast(1)
+                            line = pieces.last()
+                        } else {
+                            line = pieces.firstOrNull().orEmpty()
+                        }
+                    }
+                }
+                if (line.isNotEmpty()) lines += line
+            }
+            return lines.ifEmpty { listOf("") }
+        }
+
+        private fun breakWord(value: String, width: Float, size: Float, bold: Boolean): List<String> {
+            if (measureText(value, size, bold) <= width) return listOf(value)
+            val parts = mutableListOf<String>()
+            var part = ""
+            value.forEach { character ->
+                val candidate = part + character
+                if (part.isNotEmpty() && measureText(candidate, size, bold) > width) {
+                    parts += part
+                    part = character.toString()
+                } else {
+                    part = candidate
+                }
+            }
+            if (part.isNotEmpty()) parts += part
+            return parts.ifEmpty { listOf(value) }
+        }
+
+        private fun measureText(value: String, size: Float, bold: Boolean): Float {
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                textSize = size
+                typeface = if (bold) Typeface.create(Typeface.DEFAULT, Typeface.BOLD) else Typeface.DEFAULT
+            }
+            return paint.measureText(value)
         }
     }
 }

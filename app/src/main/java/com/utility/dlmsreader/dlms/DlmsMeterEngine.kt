@@ -108,7 +108,10 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                 establishSession(client, executor, reply)
                 linked = true
                 val reader = Is15959DataReader(transport, client, params.responseTimeoutMs, onProgress)
-                when (module) {
+                val identityHeader = if (module != MeterDataModule.IDENTITY && module != MeterDataModule.ALL) {
+                    reader.readIdentityHeader()
+                } else null
+                val moduleReport = when (module) {
                     MeterDataModule.IDENTITY -> MeterDataReport(identity = reader.readIdentityAndNameplate())
                     MeterDataModule.ENERGY -> MeterDataReport(cumulativeEnergies = reader.readCumulativeEnergies())
                     MeterDataModule.INSTANTANEOUS -> MeterDataReport(instantaneous = reader.readInstantaneousProfile())
@@ -118,6 +121,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     MeterDataModule.TAMPER -> MeterDataReport(tamperEvents = reader.readTamperEventLogs())
                     MeterDataModule.ALL -> reader.readAllMeterData()
                 }
+                moduleReport.copy(identity = identityHeader ?: moduleReport.identity)
             } finally {
                 if (linked) {
                     runCatching {
@@ -456,8 +460,9 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
         readAttribute(client, reg, 2, timeoutMs)
         Is15959Formatter.formatValue(
             reg.value,
-            Is15959Formatter.normalizedScaler(reg.scaler, reg.unit),
-            reg.unit
+            scaler = 1.0,
+            unit = reg.unit,
+            obis = obis
         )
     }.getOrElse { e -> "Error: ${e.message}" }
 

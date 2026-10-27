@@ -5,10 +5,14 @@ import gurux.dlms.GXDateTime
 import gurux.dlms.enums.Unit as DlmsUnit
 import gurux.dlms.objects.GXDLMSClock
 import gurux.dlms.objects.GXDLMSData
+import gurux.dlms.objects.GXDLMSDemandRegister
 import gurux.dlms.objects.GXDLMSExtendedRegister
 import gurux.dlms.objects.GXDLMSObject
 import gurux.dlms.objects.GXDLMSProfileGeneric
 import gurux.dlms.objects.GXDLMSRegister
+import java.util.Calendar
+import java.util.Date
+import kotlin.math.pow
 
 data class ParameterRow(
     val parameterName: String,
@@ -38,10 +42,23 @@ data class ProfileSection(
     val rows: List<List<String>>
 )
 
+private data class ProfileScaler(
+    val multiplier: Double,
+    val unit: DlmsUnit?
+)
+
 data class IdentitySection(
     val rows: List<ParameterRow>,
     val nameplate: ProfileSection? = null
-)
+) {
+    fun merge(other: IdentitySection): IdentitySection {
+        val existingObis = rows.map { it.obisCode }.toSet()
+        return IdentitySection(
+            rows = rows + other.rows.filter { it.obisCode !in existingObis },
+            nameplate = other.nameplate ?: nameplate
+        )
+    }
+}
 
 data class TamperEventRow(
     val compartment: String,
@@ -70,7 +87,11 @@ data class MeterDataReport(
             dailyLoad != null || tamperEvents.isNotEmpty() || errors.isNotEmpty()
 
     fun merge(other: MeterDataReport): MeterDataReport = MeterDataReport(
-        identity = other.identity ?: identity,
+        identity = when {
+            identity == null -> other.identity
+            other.identity == null -> identity
+            else -> identity.merge(other.identity)
+        },
         cumulativeEnergies = if (other.cumulativeEnergies.isNotEmpty()) other.cumulativeEnergies else cumulativeEnergies,
         instantaneous = other.instantaneous ?: instantaneous,
         billing = other.billing ?: billing,
@@ -96,6 +117,7 @@ class Is15959DataReader(
         readTextObject("0.0.96.1.0.255", rows)
         readTextObject("0.0.96.1.1.255", rows)
         readTextObject("0.0.96.1.4.255", rows)
+        readTextObject("1.0.0.2.0.255", rows)
         runCatching {
             val clock = GXDLMSClock("0.0.1.0.0.255")
             val value = executor.readObject(clock, 2)
@@ -106,6 +128,15 @@ class Is15959DataReader(
             loadProfile(profile.dataObis, profile.name)
         }.getOrNull()
         return IdentitySection(rows, nameplate)
+    }
+
+    suspend fun readIdentityHeader(): IdentitySection {
+        progress("Reading identity header...")
+        val rows = mutableListOf<ParameterRow>()
+        readTextObject("0.0.42.0.0.255", rows)
+        readTextObject("0.0.96.1.0.255", rows)
+        readTextObject("0.0.96.1.1.255", rows)
+        return IdentitySection(rows)
     }
 
     suspend fun readCumulativeEnergies(): List<RegisterReading> {
@@ -128,29 +159,25 @@ class Is15959DataReader(
     suspend fun readInstantaneousProfile(): ProfileSection {
         progress("Reading instantaneous profile...")
         val profile = Is15959Catalog.profileByName("Instantaneous Profile")
-        tryLoadScalerProfile(profile.scalerObis)
-        return loadProfile(profile.dataObis, "Instantaneous Parameters Snapshot")
+        return loadProfile(profile.dataObis, "Instantaneous Parameters Snapshot", profile.scalerObis)
     }
 
     suspend fun readBillingProfile(): ProfileSection {
         progress("Reading billing history profile...")
         val profile = Is15959Catalog.profileByName("Billing Profile")
-        tryLoadScalerProfile(profile.scalerObis)
-        return loadProfile(profile.dataObis, "Billing History Profile")
+        return loadProfile(profile.dataObis, "Billing History Profile", profile.scalerObis)
     }
 
     suspend fun readBlockLoadSurvey(maxEntries: Int = 48): ProfileSection {
         progress("Reading block load survey...")
         val profile = Is15959Catalog.profileByName("Block Load Profile")
-        tryLoadScalerProfile(profile.scalerObis)
-        return loadRecentProfile(profile.dataObis, "Block Load Survey", maxEntries)
+        return loadRecentProfile(profile.dataObis, "Block Load Survey", maxEntries, profile.scalerObis)
     }
 
     suspend fun readDailyLoadSurvey(maxEntries: Int = 35): ProfileSection {
         progress("Reading daily load survey...")
         val profile = Is15959Catalog.profileByName("Daily Load Profile")
-        tryLoadScalerProfile(profile.scalerObis)
-        return loadRecentProfile(profile.dataObis, "Daily Load Survey", maxEntries)
+        return loadRecentProfile(profile.dataObis, "Daily Load Survey", maxEntries, profile.scalerObis)
     }
 
     suspend fun readTamperEventLogs(): List<TamperEventRow> {
@@ -219,8 +246,10 @@ class Is15959DataReader(
         val descriptor = Is15959Formatter.getObisLabelAndUnit(obis)
         val formatted = Is15959Formatter.formatValue(
             raw,
-            Is15959Formatter.normalizedScaler(register.scaler, register.unit),
-            register.unit
+            scaler = 1.0,
+            unit = register.unit,
+            obis = obis,
+            includeUnit = false
         )
         val capture = if (register is GXDLMSExtendedRegister) {
             Is15959Formatter.formatValue(register.captureTime)
@@ -234,31 +263,45 @@ class Is15959DataReader(
         )
     }
 
-    private suspend fun loadProfile(obis: String, title: String): ProfileSection {
+    private suspend fun loadProfile(obis: String, title: String, scalerObis: String? = null): ProfileSection {
         val profile = GXDLMSProfileGeneric(obis)
         executor.readObject(profile, 3)
-        loadCaptureScalers(profile)
+        val scalers = loadCompanionScalers(scalerObis ?: Is15959Catalog.profileByDataObis(obis).scalerObis)
+        if (scalers.isEmpty()) loadCaptureScalers(profile)
         executor.readObject(profile, 2)
-        return formatProfile(profile, title)
+        return formatProfile(profile, title, scalers)
     }
 
     private suspend fun loadRecentProfile(
         obis: String,
         title: String,
-        maxEntries: Int
+        maxEntries: Int,
+        scalerObis: String?
     ): ProfileSection {
         val profile = GXDLMSProfileGeneric(obis)
         executor.readObject(profile, 3)
-        loadCaptureScalers(profile)
-        val entries = runCatching {
-            (executor.readObject(profile, 7) as? Number)?.toInt() ?: profile.entriesInUse
-        }.getOrDefault(profile.entriesInUse)
-        if (entries > 0) {
-            val count = minOf(entries, maxEntries.coerceAtLeast(1))
-            val first = maxOf(1, entries - count + 1)
-            executor.readRowsByEntry(profile, first, count)
+        val scalers = loadCompanionScalers(scalerObis)
+        if (scalers.isEmpty()) loadCaptureScalers(profile)
+
+        try {
+            val endCalendar = Calendar.getInstance()
+            val startCalendar = endCalendar.clone() as Calendar
+            startCalendar.add(Calendar.DAY_OF_YEAR, -7)
+            executor.readRowsByRange(profile, startCalendar.time, endCalendar.time)
+            trimProfileBuffer(profile, maxEntries)
+        } catch (_: Exception) {
+            // Some L&T firmware rejects selective access for load surveys. The
+            // complete buffer is reliable, and is trimmed locally for the PDF.
+            executor.readObject(profile, 2)
+            trimProfileBuffer(profile, maxEntries)
         }
-        return formatProfile(profile, title)
+        return formatProfile(profile, title, scalers)
+    }
+
+    private fun trimProfileBuffer(profile: GXDLMSProfileGeneric, maxEntries: Int) {
+        if (profile.buffer.size <= maxEntries) return
+        val latestRows = profile.buffer.takeLast(maxEntries.coerceAtLeast(1))
+        profile.setBuffer(latestRows.map { rowValues(it).toTypedArray() }.toTypedArray())
     }
 
     private suspend fun loadCaptureScalers(profile: GXDLMSProfileGeneric) {
@@ -266,36 +309,58 @@ class Is15959DataReader(
             val obj = entry.key
             if (obj is GXDLMSRegister) {
                 runCatching { executor.readObject(obj, 3) }
+            } else if (obj is GXDLMSDemandRegister) {
+                runCatching { executor.readObject(obj, 4) }
             }
         }
     }
 
-    private suspend fun tryLoadScalerProfile(obis: String?) {
-        if (obis == null) return
-        runCatching {
+    private suspend fun loadCompanionScalers(obis: String?): Map<String, ProfileScaler> {
+        if (obis == null) return emptyMap()
+        return runCatching {
             val scalerProfile = GXDLMSProfileGeneric(obis)
             executor.readObject(scalerProfile, 3)
             executor.readObject(scalerProfile, 2)
-        }
+            val row = scalerProfile.buffer.lastOrNull()?.let { rowValues(it) }.orEmpty()
+            scalerProfile.captureObjects.mapIndexedNotNull { index, entry ->
+                val structure = row.getOrNull(index)?.let { rowValues(it) } ?: return@mapIndexedNotNull null
+                val exponent = (structure.getOrNull(0) as? Number)?.toInt() ?: return@mapIndexedNotNull null
+                val unitValue = (structure.getOrNull(1) as? Number)?.toInt()
+                val unit = unitValue?.let { DlmsUnit.forValue(it) }
+                entry.key.logicalName to ProfileScaler(10.0.pow(exponent), unit)
+            }.toMap()
+        }.getOrDefault(emptyMap())
     }
 
-    private fun formatProfile(profile: GXDLMSProfileGeneric, title: String): ProfileSection {
+    private fun formatProfile(
+        profile: GXDLMSProfileGeneric,
+        title: String,
+        scalers: Map<String, ProfileScaler> = emptyMap()
+    ): ProfileSection {
         val objects = profile.captureObjects.map { it.key }
         val columns = objects.map { obj ->
             val obis = obj.logicalName
             val descriptor = Is15959Formatter.getObisLabelAndUnit(obis)
+            val profileScaler = scalers[obis]
             ProfileColumn(
                 parameterName = descriptor.label,
                 obisCode = obis,
                 unit = descriptor.unit.ifEmpty {
-                    (obj as? GXDLMSRegister)?.let { Is15959Formatter.unitSymbol(it.unit) } ?: ""
+                    profileScaler?.unit?.let { Is15959Formatter.unitSymbol(it) }
+                        ?: (obj as? GXDLMSRegister)?.let { Is15959Formatter.unitSymbol(it.unit) }
+                        ?: (obj as? GXDLMSDemandRegister)?.let { Is15959Formatter.unitSymbol(it.unit) }
+                        ?: ""
                 }
             )
         }
         val rows = profile.buffer.map { row ->
             val values = rowValues(row)
             objects.indices.map { index ->
-                formatProfileValue(objects[index], values.getOrNull(index), columns[index].unit)
+                formatProfileValue(
+                    objects[index],
+                    values.getOrNull(index),
+                    scalers[objects[index].logicalName]
+                )
             }
         }
         return ProfileSection(title, profile.logicalName, columns, rows)
@@ -304,9 +369,10 @@ class Is15959DataReader(
     private suspend fun readTamperProfile(compartment: String, obis: String): List<TamperEventRow> {
         val profile = GXDLMSProfileGeneric(obis)
         executor.readObject(profile, 3)
-        loadCaptureScalers(profile)
+        val scalers = loadCompanionScalers(Is15959Catalog.profileByDataObis(obis).scalerObis)
+        if (scalers.isEmpty()) loadCaptureScalers(profile)
         executor.readObject(profile, 2)
-        val formatted = formatProfile(profile, "$compartment Tamper Events")
+        val formatted = formatProfile(profile, "$compartment Tamper Events", scalers)
         val objects = profile.captureObjects.map { it.key }
         val dateIndex = objects.indexOfFirst { it is GXDLMSClock || Is15959Formatter.getObisLabelAndUnit(it.logicalName).label.contains("time", true) }
         val eventIndex = objects.indexOfFirst { Is15959Formatter.getObisLabelAndUnit(it.logicalName).label.contains("event", true) || Is15959Formatter.getObisLabelAndUnit(it.logicalName).label.contains("code", true) }
@@ -332,21 +398,35 @@ class Is15959DataReader(
         }
     }
 
-    private fun formatProfileValue(obj: GXDLMSObject, raw: Any?, descriptorUnit: String): String {
+    private fun formatProfileValue(
+        obj: GXDLMSObject,
+        raw: Any?,
+        profileScaler: ProfileScaler?
+    ): String {
+        if (raw is GXDateTime || raw is Date || (raw is ByteArray && raw.size == 12)) {
+            return Is15959Formatter.formatCompactDateTime(raw)
+        }
         val register = obj as? GXDLMSRegister
+        val demandRegister = obj as? GXDLMSDemandRegister
+        val unit = profileScaler?.unit ?: register?.unit ?: demandRegister?.unit
         val value = Is15959Formatter.formatValue(
             raw,
-            register?.let { Is15959Formatter.normalizedScaler(it.scaler, it.unit) } ?: 1.0,
-            register?.unit
+            scaler = profileScaler?.multiplier ?: 1.0,
+            unit = unit,
+            obis = obj.logicalName,
+            includeUnit = false
         )
-        return if (register == null && raw is Number && descriptorUnit.isNotEmpty()) {
-            "$value $descriptorUnit"
-        } else value
+        return value
     }
 
     private fun addRow(rows: MutableList<ParameterRow>, obis: String, raw: Any?) {
         val descriptor = Is15959Formatter.getObisLabelAndUnit(obis)
-        rows += ParameterRow(descriptor.label, obis, Is15959Formatter.formatValue(raw), descriptor.unit)
+        rows += ParameterRow(
+            descriptor.label,
+            obis,
+            Is15959Formatter.formatValue(raw, obis = obis, includeUnit = false),
+            descriptor.unit
+        )
     }
 
     private suspend fun progress(message: String) {
