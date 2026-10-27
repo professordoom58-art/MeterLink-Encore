@@ -12,6 +12,7 @@ import com.utility.dlmsreader.transport.TraceDirection
 import com.utility.dlmsreader.transport.toHexString
 import kotlinx.coroutines.delay
 import java.io.IOException
+import java.util.Date
 import java.util.concurrent.TimeoutException
 
 class GuruxPacketExecutor(
@@ -96,6 +97,24 @@ class GuruxPacketExecutor(
         count: Int
     ): Array<Array<Any?>> {
         val data = client.readRowsByEntry(profile, index, count)
+        val reply = GXReplyData()
+        readDataBlock(data, reply)
+        client.updateValue(profile, 2, reply.value)
+        return profile.buffer.map { row ->
+            when (row) {
+                is Array<*> -> row.map { it }.toTypedArray()
+                is Iterable<*> -> row.toList().toTypedArray()
+                else -> arrayOf(row)
+            }
+        }.toTypedArray()
+    }
+
+    suspend fun readRowsByRange(
+        profile: GXDLMSProfileGeneric,
+        start: Date,
+        end: Date
+    ): Array<Array<Any?>> {
+        val data = client.readRowsByRange(profile, start, end)
         val reply = GXReplyData()
         readDataBlock(data, reply)
         client.updateValue(profile, 2, reply.value)
