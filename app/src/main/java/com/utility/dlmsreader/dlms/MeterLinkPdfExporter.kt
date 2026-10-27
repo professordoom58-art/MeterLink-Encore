@@ -142,52 +142,8 @@ class MeterLinkPdfExporter(private val context: Context) {
     private fun drawBillingProfile(layout: ReportLayout, section: ProfileSection) {
         if (section.columns.isEmpty()) {
             layout.table(listOf("Profile", "Status"), listOf(listOf(section.profileObis, "No rows returned")))
-            return
-        }
-
-        val used = linkedSetOf<Int>()
-        val core = mutableListOf<Pair<Int, String>>()
-
-        fun addCore(obis: String, header: String) {
-            val index = section.columns.indices.firstOrNull { it !in used && section.columns[it].obisCode == obis }
-            if (index != null) {
-                used += index
-                core += index to header
-            }
-        }
-
-        addCore("0.0.0.1.2.255", "Billing Date")
-        addCore("1.0.13.0.0.255", "System PF")
-        addCore("1.0.1.8.0.255", "Cum. kWh")
-        addCore("1.0.9.8.0.255", "Cum. kVAh")
-        addCore("1.0.1.6.0.255", "MD kW")
-
-        val mdDateIndexes = section.columns.indices.filter { index ->
-            index !in used && (
-                section.columns[index].parameterName.contains("date", ignoreCase = true) ||
-                    section.columns[index].parameterName.contains("time", ignoreCase = true) ||
-                    section.columns[index].parameterName.contains("clock", ignoreCase = true) ||
-                    section.columns[index].obisCode == "0.0.1.0.0.255"
-                )
-        }
-        mdDateIndexes.getOrNull(0)?.let {
-            used += it
-            core += it to "MD kW Date"
-        }
-        addCore("1.0.9.6.0.255", "MD kVA")
-        mdDateIndexes.getOrNull(1)?.let {
-            used += it
-            core += it to "MD kVA Date"
-        }
-
-        if (core.isNotEmpty()) {
-            layout.subsection("Table 4A: Core Billing Summary")
-            drawSelectedProfile(layout, section, core)
-        }
-
-        val remaining = section.columns.indices.filterNot { it in used }
-        if (remaining.isNotEmpty()) {
-            drawProfileChunks(layout, section, remaining, "Table 4B: Billing ToD & Reactive Zones")
+        } else {
+            drawProfileChunks(layout, section, section.columns.indices.toList(), "Billing History Profile")
         }
     }
 
@@ -207,11 +163,19 @@ class MeterLinkPdfExporter(private val context: Context) {
         indexes: List<Int>,
         title: String
     ) {
-        val chunks = indexes.chunked(8)
+        if (indexes.size <= 7) {
+            layout.subsection(title)
+            drawSelectedProfile(layout, section, indexes.map { it to section.columns[it].parameterName })
+            return
+        }
+
+        val firstIndex = indexes.first()
+        val chunks = indexes.drop(1).chunked(6)
         chunks.forEachIndexed { chunkIndex, chunk ->
-            val chunkTitle = if (chunks.size == 1) title else "$title (Part ${chunkIndex + 1} of ${chunks.size})"
+            val chunkTitle = "$title (Part ${chunkIndex + 1} of ${chunks.size})"
             layout.subsection(chunkTitle)
-            drawSelectedProfile(layout, section, chunk.map { it to section.columns[it].parameterName })
+            val selected = listOf(firstIndex) + chunk
+            drawSelectedProfile(layout, section, selected.map { it to section.columns[it].parameterName })
         }
     }
 

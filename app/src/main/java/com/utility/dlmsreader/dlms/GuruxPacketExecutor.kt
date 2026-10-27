@@ -4,6 +4,7 @@ import gurux.dlms.GXByteBuffer
 import gurux.dlms.GXDLMSException
 import gurux.dlms.GXReplyData
 import gurux.dlms.enums.DataType
+import gurux.dlms.enums.RequestTypes
 import gurux.dlms.objects.GXDLMSObject
 import gurux.dlms.objects.GXDLMSProfileGeneric
 import gurux.dlms.secure.GXDLMSSecureClient
@@ -19,7 +20,7 @@ class GuruxPacketExecutor(
     private val transport: OpticalUsbTransport,
     private val client: GXDLMSSecureClient,
     private val maxRetries: Int = 3,
-    private val packetTimeoutMs: Long = 3000L
+    private val packetTimeoutMs: Long = 5000L
 ) {
     suspend fun readDLMSPacket(data: ByteArray, reply: GXReplyData) {
         if (data.isEmpty()) return
@@ -75,6 +76,10 @@ class GuruxPacketExecutor(
 
         readDLMSPacket(data, reply)
         while (reply.isMoreData) {
+            when {
+                reply.isStreaming() || reply.moreData.contains(RequestTypes.FRAME) -> delay(250)
+                reply.moreData.contains(RequestTypes.DATABLOCK) -> delay(90)
+            }
             val nextFrame = client.receiverReady(reply)
             if (nextFrame.isEmpty()) break
             readDLMSPacket(nextFrame, reply)
@@ -82,6 +87,7 @@ class GuruxPacketExecutor(
     }
 
     suspend fun readObject(item: GXDLMSObject, attributeIndex: Int): Any? {
+        delay(60)
         val data = client.read(item, attributeIndex)
         val reply = GXReplyData()
         readDataBlock(data, reply)
