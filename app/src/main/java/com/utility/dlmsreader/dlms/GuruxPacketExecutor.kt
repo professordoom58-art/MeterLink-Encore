@@ -13,6 +13,7 @@ import com.utility.dlmsreader.transport.OpticalUsbTransport
 import com.utility.dlmsreader.transport.TraceDirection
 import com.utility.dlmsreader.transport.toHexString
 import kotlinx.coroutines.delay
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.Date
 import java.util.concurrent.TimeoutException
@@ -29,8 +30,9 @@ class GuruxPacketExecutor(
     private val packetTimeoutMs: Long = 8000L
 ) {
     companion object {
-        const val RR_FRAME_DELAY_MS = 250L
+        const val RR_FRAME_DELAY_MS = 90L
         const val RR_BLOCK_DELAY_MS = 90L
+        const val RR_TIMEOUT_RETRY_DELAY_MS = 200L
     }
 
     suspend fun readDLMSPacket(
@@ -48,6 +50,7 @@ class GuruxPacketExecutor(
             attempt++
             reply.error = 0
             rd.clear()
+            val rxFrame = ByteArrayOutputStream()
 
             try {
                 transport.write(data, 1000)
@@ -60,7 +63,7 @@ class GuruxPacketExecutor(
 
                     val chunk = transport.readBytesRaw(128, 200)
                     if (chunk.isNotEmpty()) {
-                        transport.log(TraceDirection.RX, chunk.toHexString())
+                        rxFrame.write(chunk)
                         rd.set(chunk, 0, chunk.size)
                     }
                 }
@@ -68,10 +71,13 @@ class GuruxPacketExecutor(
                 if (reply.error != 0) {
                     throw GXDLMSException(reply.error.toInt())
                 }
+                if (rxFrame.size() > 0) transport.log(TraceDirection.RX, rxFrame.toByteArray().toHexString())
                 return
             } catch (e: GXDLMSException) {
+                if (rxFrame.size() > 0) transport.log(TraceDirection.RX, rxFrame.toByteArray().toHexString())
                 throw e
             } catch (e: Exception) {
+                if (rxFrame.size() > 0) transport.log(TraceDirection.RX, rxFrame.toByteArray().toHexString())
                 if (attempt >= retries) {
                     throw IOException("Failed after $retries attempts: ${e.message}", e)
                 }
@@ -98,8 +104,28 @@ class GuruxPacketExecutor(
             }
             val nextFrame = client.receiverReady(reply)
             if (nextFrame.isEmpty()) break
-            readDLMSPacket(nextFrame, reply, maxRetriesOverride = 1)
+            try {
+                readDLMSPacket(nextFrame, reply, maxRetriesOverride = 1)
+            } catch (error: IOException) {
+                if (isTimeout(error)) {
+                    delay(RR_TIMEOUT_RETRY_DELAY_MS)
+                    readDLMSPacket(nextFrame, reply, maxRetriesOverride = 1)
+                } else {
+                    throw error
+                }
+            }
         }
+    }
+
+    private fun isTimeout(error: IOException): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            if (current is TimeoutException || current.message?.contains("Timeout", ignoreCase = true) == true) {
+                return true
+            }
+            current = current.cause
+        }
+        return false
     }
 
     suspend fun readObject(item: GXDLMSObject, attributeIndex: Int): Any? {

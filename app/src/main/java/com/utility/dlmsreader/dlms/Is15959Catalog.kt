@@ -182,7 +182,8 @@ object Is15959Catalog {
         "1.0.9.29.0.255" to ObisMetadata("Block Energy - Apparent Import (kVAh)", "kVAh", ObisCategory.LOAD_SURVEY),
         // TODO: confirm with L&T documentation.
         "1.0.128.8.98.255" to ObisMetadata(
-            "Vendor Value (L&T) [unverified: looks like meter temperature, °C]",
+            "Meter Temp / Vendor (1.0.128.8.98.255)",
+            "°C",
             category = ObisCategory.VENDOR_SPECIFIC
         ),
         "1.0.84.0.0.255" to ObisMetadata("Billing XML Object", category = ObisCategory.BILLING),
