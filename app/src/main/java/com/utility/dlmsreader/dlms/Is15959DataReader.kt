@@ -110,7 +110,8 @@ class Is15959DataReader(
     private val runtimeMetadata: Map<String, ObisMetadata> = emptyMap(),
     private val meterMake: String? = null
 ) {
-    private var meterRtc: Date? = null
+    private var meterRtc: GXDateTime? = null
+    private var meterTimeConventionChecked = false
     private val executor = GuruxPacketExecutor(
         transport,
         client,
@@ -128,7 +129,7 @@ class Is15959DataReader(
         runCatching {
             val clock = GXDLMSClock("0.0.1.0.0.255")
             val value = executor.readObject(clock, 2)
-            meterRtc = (value as? GXDateTime)?.getLocalCalendar()?.time
+            acceptMeterRtc(value)
             addRow(rows, "0.0.1.0.0.255", value)
         }
         val nameplate = runCatching {
@@ -310,14 +311,16 @@ class Is15959DataReader(
         if (scalers.isEmpty()) loadCaptureScalers(profile)
 
         try {
-            val endDate = readMeterRtc() ?: Date()
+            val endDate = readMeterRtc() ?: error("Meter RTC unavailable for selective range access.")
             val rangeDays = if (obis == "1.0.99.1.0.255") 2 else 15
-            val startCalendar = Calendar.getInstance().apply {
-                time = endDate
+            val startCalendar = MeterTime.wallClock(endDate).apply {
                 add(Calendar.DAY_OF_YEAR, -rangeDays)
             }
-            progress("Reading $title range ${startCalendar.time} to $endDate using meter RTC")
-            executor.readRowsByRange(profile, startCalendar.time, endDate)
+            val startDate = GXDateTime(startCalendar)
+            progress(
+                "Reading $title range ${MeterTime.format(startDate)} to ${MeterTime.format(endDate)} using meter RTC"
+            )
+            executor.readRowsByRange(profile, startDate, endDate)
             trimProfileBuffer(profile, maxEntries)
         } catch (_: Exception) {
             // Some L&T firmware rejects selective access for load surveys. The
@@ -345,13 +348,27 @@ class Is15959DataReader(
         }
     }
 
-    private suspend fun readMeterRtc(): Date? {
+    private suspend fun readMeterRtc(): GXDateTime? {
         meterRtc?.let { return it }
         val clock = GXDLMSClock("0.0.1.0.0.255")
         val value = executor.readObject(clock, 2)
-        val date = (value as? GXDateTime)?.getLocalCalendar()?.time
-        meterRtc = date
-        return date
+        return acceptMeterRtc(value)
+    }
+
+    private fun acceptMeterRtc(value: Any?): GXDateTime? {
+        val dateTime = value as? GXDateTime ?: return null
+        meterRtc = dateTime
+        if (!meterTimeConventionChecked) {
+            meterTimeConventionChecked = true
+            if (dateTime.deviation == 330) {
+                client.setUseUtc2NormalTime(true)
+                transport.log(
+                    com.utility.dlmsreader.transport.TraceDirection.INFO,
+                    "Meter RTC uses positive IST deviation (+330); enabled Gurux UTC-to-normal time conversion."
+                )
+            }
+        }
+        return dateTime
     }
 
     private suspend fun loadCaptureScalers(profile: GXDLMSProfileGeneric) {
