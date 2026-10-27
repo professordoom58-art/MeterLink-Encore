@@ -46,7 +46,7 @@ jobs:
           name: "MeterLink v1.0.${{ github.run_number }} APK"
           body: |
             ### MeterLink v1.0.${{ github.run_number }} APK is live!
-            Fresh off the LOQ from commit `${{ github.sha }}`.
+            Commit `${{ github.sha }}`.
 
             **How to use:**
             Grab **`MeterLink-v1.0.${{ github.run_number }}.apk`** under **Assets** below.
