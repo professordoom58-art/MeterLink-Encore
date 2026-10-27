@@ -19,6 +19,12 @@ import kotlin.math.pow
 const val DAILY_LOAD_MAX_ENTRIES = 400
 const val BLOCK_LOAD_MAX_ENTRIES = 48
 
+enum class LoadSurveySelection {
+    RECENT,
+    LAST_30_DAYS,
+    FULL_BUFFER
+}
+
 data class ParameterRow(
     val parameterName: String,
     val obisCode: String,
@@ -46,7 +52,8 @@ data class ProfileSection(
     val profileObis: String,
     val columns: List<ProfileColumn>,
     val rows: List<List<String>>,
-    val totalRows: Int = rows.size
+    val totalRows: Int = rows.size,
+    val readMethod: String = "Selector 0 full buffer"
 )
 
 private data class ProfileScaler(
@@ -119,7 +126,8 @@ class Is15959DataReader(
     packetTimeoutMs: Long = 3000L,
     private val onProgress: suspend (String) -> Unit = {},
     private val runtimeMetadata: Map<String, ObisMetadata> = emptyMap(),
-    private val meterMake: String? = null
+    private val meterMake: String? = null,
+    private val loadSurveySelection: LoadSurveySelection = LoadSurveySelection.RECENT
 ) {
     private var meterRtc: GXDateTime? = null
     private var meterTimeConventionChecked = false
@@ -341,7 +349,7 @@ class Is15959DataReader(
         val scalers = loadCompanionScalers(scalerObis ?: Is15959Catalog.profileByDataObis(obis).scalerObis)
         if (scalers.isEmpty()) loadCaptureScalers(profile)
         executor.readObject(profile, 2)
-        return formatProfile(profile, title, scalers)
+        return formatProfile(profile, title, scalers, readMethod = "Selector 0 full buffer")
     }
 
     private suspend fun loadRecentProfile(
@@ -359,20 +367,51 @@ class Is15959DataReader(
 
         var totalRows = profile.buffer.size
         var loaded = false
+        var readMethod = "Selector 0 full buffer"
+
+        if (loadSurveySelection == LoadSurveySelection.FULL_BUFFER) {
+            progress("Tier3 full: forced by Load Survey selector")
+            executor.readObject(profile, 2)
+            totalRows = profile.buffer.size
+            progress("Tier3 full: success(${profile.buffer.size})")
+            trimProfileBuffer(profile, maxEntries = Int.MAX_VALUE)
+            return formatProfile(profile, title, scalers, totalRows, "Selector 0 full buffer")
+        }
+
         val endDate = readMeterRtc() ?: error("Meter RTC unavailable for selective range access.")
-        val rangeDays = if (obis == "1.0.99.1.0.255") 2 else 15
+        val rangeDays = when {
+            obis == "1.0.99.2.0.255" -> 35
+            loadSurveySelection == LoadSurveySelection.LAST_30_DAYS -> 30
+            else -> 2
+        }
         val startCalendar = MeterTime.wallClock(endDate).apply {
             add(Calendar.DAY_OF_YEAR, -rangeDays)
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val endCalendar = MeterTime.wallClock(endDate).apply {
+            set(Calendar.HOUR_OF_DAY, 23)
+            set(Calendar.MINUTE, 59)
+            set(Calendar.SECOND, 59)
+            set(Calendar.MILLISECOND, 0)
         }
         val startDate = GXDateTime(startCalendar)
+        val rangeEndDate = GXDateTime(endCalendar)
 
         if (!rangeTierDenied) {
             try {
-                progress("Tier1 range: requesting ${MeterTime.format(startDate)} to ${MeterTime.format(endDate)}")
-                executor.readRowsByRange(profile, startDate, endDate)
-                progress("Tier1 range: success(${profile.buffer.size})")
-                totalRows = profile.buffer.size
-                loaded = true
+                progress("Tier1 range: requesting ${MeterTime.format(startDate)} to ${MeterTime.format(rangeEndDate)}")
+                val rows = executor.readRowsByRange(profile, startDate, rangeEndDate)
+                if (rows.isEmpty()) {
+                    progress("Tier1 range returned 0 rows; falling back to Tier2/Tier3...")
+                } else {
+                    progress("Tier1 range: success(${rows.size})")
+                    totalRows = rows.size
+                    readMethod = "Selector 1 range"
+                    loaded = true
+                }
             } catch (error: GXDLMSException) {
                 rangeTierDenied = true
                 progress("Tier1 range: denied(${error.errorCode})")
@@ -381,16 +420,21 @@ class Is15959DataReader(
                         deviation = 0x8000
                         skip.add(DateTimeSkips.DEVIATION)
                     }
-                    val variantEnd = GXDateTime(endDate).apply {
+                    val variantEnd = GXDateTime(rangeEndDate).apply {
                         deviation = 0x8000
                         skip.add(DateTimeSkips.DEVIATION)
                     }
                     try {
                         progress("Tier1 range variant: requesting deviation 0x8000")
-                        executor.readRowsByRange(profile, variantStart, variantEnd)
-                        progress("Tier1 range variant: success(${profile.buffer.size})")
-                        totalRows = profile.buffer.size
-                        loaded = true
+                        val rows = executor.readRowsByRange(profile, variantStart, variantEnd)
+                        if (rows.isEmpty()) {
+                            progress("Tier1 range variant returned 0 rows; falling back to Tier2/Tier3...")
+                        } else {
+                            progress("Tier1 range variant: success(${rows.size})")
+                            totalRows = rows.size
+                            readMethod = "Selector 1 range variant"
+                            loaded = true
+                        }
                     } catch (variantError: GXDLMSException) {
                         rangeVariantTierDenied = true
                         progress("Tier1 range variant: denied(${variantError.errorCode})")
@@ -403,15 +447,34 @@ class Is15959DataReader(
 
         if (!loaded && !entryTierDenied) {
             try {
-                val entriesRaw = executor.readObject(profile, 7)
-                val entriesInUse = (entriesRaw as? Number)?.toInt()?.takeIf { it > 0 }
-                    ?: profile.entriesInUse
-                val index = maxOf(1, entriesInUse - maxEntries + 1)
-                progress("Tier2 entry: requesting index=$index count=$maxEntries of $entriesInUse")
-                executor.readRowsByEntry(profile, index, maxEntries)
-                progress("Tier2 entry: success(${profile.buffer.size})")
-                totalRows = entriesInUse
-                loaded = true
+                val entriesRaw = try {
+                    executor.readObject(profile, 7)
+                } catch (error: GXDLMSException) {
+                    progress("Tier2 entry: entriesInUse read denied(${error.errorCode}); using profile metadata")
+                    null
+                }
+                val entriesInUse = (entriesRaw as? Number)?.toInt() ?: profile.entriesInUse
+                val entriesConfirmedEmpty = entriesRaw is Number && entriesInUse == 0
+                if (entriesConfirmedEmpty) {
+                    progress("Tier2 entry: success(0; entriesInUse=0)")
+                    totalRows = 0
+                    readMethod = "Selector 2 entry (empty profile)"
+                    loaded = true
+                } else if (entriesInUse > 0) {
+                    val index = maxOf(1, entriesInUse - maxEntries + 1)
+                    progress("Tier2 entry: requesting index=$index count=$maxEntries of $entriesInUse")
+                    val rows = executor.readRowsByEntry(profile, index, maxEntries)
+                    if (rows.isEmpty()) {
+                        progress("Tier2 entry returned 0 rows; falling back to Tier3...")
+                    } else {
+                        progress("Tier2 entry: success(${rows.size})")
+                        totalRows = entriesInUse
+                        readMethod = "Selector 2 entry"
+                        loaded = true
+                    }
+                } else {
+                    progress("Tier2 entry: no confirmed entries; falling back to Tier3...")
+                }
             } catch (error: GXDLMSException) {
                 entryTierDenied = true
                 progress("Tier2 entry: denied(${error.errorCode})")
@@ -425,9 +488,10 @@ class Is15959DataReader(
             executor.readObject(profile, 2)
             progress("Tier3 full: success(${profile.buffer.size})")
             totalRows = profile.buffer.size
+            readMethod = "Selector 0 fallback"
         }
         trimProfileBuffer(profile, maxEntries)
-        return formatProfile(profile, title, scalers, totalRows)
+        return formatProfile(profile, title, scalers, totalRows, readMethod)
     }
 
     private fun trimProfileBuffer(profile: GXDLMSProfileGeneric, maxEntries: Int) {
@@ -502,7 +566,8 @@ class Is15959DataReader(
         profile: GXDLMSProfileGeneric,
         title: String,
         scalers: Map<String, ProfileScaler> = emptyMap(),
-        totalRows: Int = profile.buffer.size
+        totalRows: Int = profile.buffer.size,
+        readMethod: String = "Selector 0 full buffer"
     ): ProfileSection {
         val captures = profile.captureObjects
         val objects = captures.map { it.key }
@@ -549,7 +614,7 @@ class Is15959DataReader(
                 )
             }
         }
-        return ProfileSection(title, profile.logicalName, columns, rows, totalRows)
+        return ProfileSection(title, profile.logicalName, columns, rows, totalRows, readMethod)
     }
 
     private suspend fun readTamperProfile(compartment: String, obis: String): List<TamperEventRow> {
