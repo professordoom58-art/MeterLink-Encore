@@ -106,12 +106,15 @@ class Is15959DataReader(
     private val transport: OpticalUsbTransport,
     private val client: gurux.dlms.secure.GXDLMSSecureClient,
     packetTimeoutMs: Long = 3000L,
-    private val onProgress: suspend (String) -> Unit = {}
+    private val onProgress: suspend (String) -> Unit = {},
+    private val runtimeMetadata: Map<String, ObisMetadata> = emptyMap(),
+    private val meterMake: String? = null
 ) {
+    private var meterRtc: Date? = null
     private val executor = GuruxPacketExecutor(
         transport,
         client,
-        packetTimeoutMs = packetTimeoutMs.coerceAtLeast(5000L)
+        packetTimeoutMs = packetTimeoutMs.coerceAtLeast(8000L)
     )
 
     suspend fun readIdentityAndNameplate(): IdentitySection {
@@ -125,6 +128,7 @@ class Is15959DataReader(
         runCatching {
             val clock = GXDLMSClock("0.0.1.0.0.255")
             val value = executor.readObject(clock, 2)
+            meterRtc = (value as? GXDateTime)?.getLocalCalendar()?.time
             addRow(rows, "0.0.1.0.0.255", value)
         }
         val nameplate = runCatching {
@@ -140,6 +144,7 @@ class Is15959DataReader(
         readTextObject("0.0.42.0.0.255", rows)
         readTextObject("0.0.96.1.0.255", rows)
         readTextObject("0.0.96.1.1.255", rows)
+        runCatching { readMeterRtc() }
         return IdentitySection(rows)
     }
 
@@ -203,6 +208,10 @@ class Is15959DataReader(
                 .onFailure {
                     val message = "$name unavailable: ${it.message ?: "unsupported or unreadable"}"
                     errors += message
+                    transport.log(
+                        com.utility.dlmsreader.transport.TraceDirection.ERROR,
+                        "Section $name failed: ${it.message ?: "unsupported or unreadable"}"
+                    )
                     progress(message)
                 }
         }
@@ -243,17 +252,26 @@ class Is15959DataReader(
     private suspend fun readRegister(obis: String, extended: Boolean): RegisterReading {
         val register = if (extended) GXDLMSExtendedRegister(obis) else GXDLMSRegister(obis)
         executor.readObject(register, 3)
-        val raw = executor.readObject(register, 2)
+        val rawRead = executor.readObjectWithRaw(register, 2)
+        val raw = rawRead.value
+        if (obis == "1.0.1.8.0.255") {
+            transport.log(
+                com.utility.dlmsreader.transport.TraceDirection.INFO,
+                "OBIS $obis raw=${rawRead.raw} scaler=${register.scaler} unit=${register.unit}"
+            )
+        }
         if (register is GXDLMSExtendedRegister) {
             runCatching { executor.readObject(register, 5) }
         }
-        val descriptor = Is15959Formatter.getObisLabelAndUnit(obis)
+        val descriptor = descriptor(obis)
         val formatted = Is15959Formatter.formatValue(
             raw,
             scaler = 1.0,
             unit = register.unit,
             obis = obis,
-            includeUnit = false
+            includeUnit = false,
+            runtimeMetadata = runtimeMetadata,
+            meterMake = meterMake
         )
         val capture = if (register is GXDLMSExtendedRegister) {
             Is15959Formatter.formatValue(register.captureTime)
@@ -270,6 +288,8 @@ class Is15959DataReader(
     private suspend fun loadProfile(obis: String, title: String, scalerObis: String? = null): ProfileSection {
         val profile = GXDLMSProfileGeneric(obis)
         executor.readObject(profile, 3)
+        configureRangeRestrictingObject(profile)
+        progress("Profile $obis captureObjects count=${profile.captureObjects.size}, scaler=$scalerObis")
         val scalers = loadCompanionScalers(scalerObis ?: Is15959Catalog.profileByDataObis(obis).scalerObis)
         if (scalers.isEmpty()) loadCaptureScalers(profile)
         executor.readObject(profile, 2)
@@ -284,14 +304,20 @@ class Is15959DataReader(
     ): ProfileSection {
         val profile = GXDLMSProfileGeneric(obis)
         executor.readObject(profile, 3)
+        configureRangeRestrictingObject(profile)
+        progress("Profile $obis captureObjects count=${profile.captureObjects.size}, scaler=$scalerObis")
         val scalers = loadCompanionScalers(scalerObis)
         if (scalers.isEmpty()) loadCaptureScalers(profile)
 
         try {
-            val endCalendar = Calendar.getInstance()
-            val startCalendar = endCalendar.clone() as Calendar
-            startCalendar.add(Calendar.DAY_OF_YEAR, -7)
-            executor.readRowsByRange(profile, startCalendar.time, endCalendar.time)
+            val endDate = readMeterRtc() ?: Date()
+            val rangeDays = if (obis == "1.0.99.1.0.255") 2 else 15
+            val startCalendar = Calendar.getInstance().apply {
+                time = endDate
+                add(Calendar.DAY_OF_YEAR, -rangeDays)
+            }
+            progress("Reading $title range ${startCalendar.time} to $endDate using meter RTC")
+            executor.readRowsByRange(profile, startCalendar.time, endDate)
             trimProfileBuffer(profile, maxEntries)
         } catch (_: Exception) {
             // Some L&T firmware rejects selective access for load surveys. The
@@ -307,6 +333,25 @@ class Is15959DataReader(
         if (profile.buffer.size <= maxEntries) return
         val latestRows = profile.buffer.takeLast(maxEntries.coerceAtLeast(1))
         profile.setBuffer(latestRows.map { rowValues(it).toTypedArray() }.toTypedArray())
+    }
+
+    private fun configureRangeRestrictingObject(profile: GXDLMSProfileGeneric) {
+        if (profile.captureObjects.isEmpty()) return
+        val first = profile.captureObjects.first().key
+        if (first.logicalName == "0.0.1.0.0.255") {
+            profile.setSortObject(first)
+            profile.setSortObjectAttributeIndex(2)
+            profile.setSortObject(0)
+        }
+    }
+
+    private suspend fun readMeterRtc(): Date? {
+        meterRtc?.let { return it }
+        val clock = GXDLMSClock("0.0.1.0.0.255")
+        val value = executor.readObject(clock, 2)
+        val date = (value as? GXDateTime)?.getLocalCalendar()?.time
+        meterRtc = date
+        return date
     }
 
     private suspend fun loadCaptureScalers(profile: GXDLMSProfileGeneric) {
@@ -345,7 +390,7 @@ class Is15959DataReader(
         val objects = profile.captureObjects.map { it.key }
         val columns = objects.map { obj ->
             val obis = obj.logicalName
-            val descriptor = Is15959Formatter.getObisLabelAndUnit(obis)
+            val descriptor = descriptor(obis)
             val profileScaler = scalers[obis]
             ProfileColumn(
                 parameterName = descriptor.label,
@@ -379,12 +424,15 @@ class Is15959DataReader(
         executor.readObject(profile, 2)
         val formatted = formatProfile(profile, "$compartment Tamper Events", scalers)
         val objects = profile.captureObjects.map { it.key }
-        val dateIndex = objects.indexOfFirst { it is GXDLMSClock || Is15959Formatter.getObisLabelAndUnit(it.logicalName).label.contains("time", true) }
-        val eventIndex = objects.indexOfFirst { Is15959Formatter.getObisLabelAndUnit(it.logicalName).label.contains("event", true) || Is15959Formatter.getObisLabelAndUnit(it.logicalName).label.contains("code", true) }
-        val voltageIndex = objects.indexOfFirst { Is15959Formatter.getObisLabelAndUnit(it.logicalName).unit == "V" }
-        val currentIndex = objects.indexOfFirst { Is15959Formatter.getObisLabelAndUnit(it.logicalName).unit == "A" }
-        val pfIndex = objects.indexOfFirst { Is15959Formatter.getObisLabelAndUnit(it.logicalName).label.contains("PF", true) }
-        val energyIndex = objects.indexOfFirst { Is15959Formatter.getObisLabelAndUnit(it.logicalName).unit.contains("Wh") }
+        val dateIndex = objects.indexOfFirst { it is GXDLMSClock || descriptor(it.logicalName).label.contains("time", true) }
+        val eventIndex = objects.indexOfFirst {
+            descriptor(it.logicalName).label.contains("event", true) ||
+                descriptor(it.logicalName).label.contains("code", true)
+        }
+        val voltageIndex = objects.indexOfFirst { descriptor(it.logicalName).unit == "V" }
+        val currentIndex = objects.indexOfFirst { descriptor(it.logicalName).unit == "A" }
+        val pfIndex = objects.indexOfFirst { descriptor(it.logicalName).label.contains("PF", true) }
+        val energyIndex = objects.indexOfFirst { descriptor(it.logicalName).unit.contains("Wh") }
 
         return profile.buffer.mapIndexed { rowIndex, rawRow ->
             val raw = rowValues(rawRow)
@@ -419,20 +467,31 @@ class Is15959DataReader(
             scaler = profileScaler?.multiplier ?: 1.0,
             unit = unit,
             obis = obj.logicalName,
-            includeUnit = false
+            includeUnit = false,
+            runtimeMetadata = runtimeMetadata,
+            meterMake = meterMake
         )
         return value
     }
 
     private fun addRow(rows: MutableList<ParameterRow>, obis: String, raw: Any?) {
-        val descriptor = Is15959Formatter.getObisLabelAndUnit(obis)
+        val descriptor = descriptor(obis)
         rows += ParameterRow(
             descriptor.label,
             obis,
-            Is15959Formatter.formatValue(raw, obis = obis, includeUnit = false),
+            Is15959Formatter.formatValue(
+                raw,
+                obis = obis,
+                includeUnit = false,
+                runtimeMetadata = runtimeMetadata,
+                meterMake = meterMake
+            ),
             descriptor.unit
         )
     }
+
+    private fun descriptor(obis: String): ObisDescriptor =
+        Is15959Formatter.getObisLabelAndUnit(obis, runtimeMetadata, meterMake)
 
     private suspend fun progress(message: String) {
         onProgress(message)

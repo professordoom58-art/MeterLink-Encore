@@ -30,6 +30,8 @@ data class ConnectionParams(
     val authentication: Authentication = Authentication.LOW,
     val password: String = "lnt1",
     val passwordCandidates: List<String> = emptyList(),
+    val autoTryAlternatePasswords: Boolean = false,
+    val vendorName: String = "Unknown",
     val baudRate: Int = 9600,
     val useModeE: Boolean = false,
     val responseTimeoutMs: Long = 3000L,
@@ -71,12 +73,46 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
         module: MeterDataModule,
         onProgress: suspend (String) -> Unit = {}
     ): Result<MeterDataReport> = withContext(Dispatchers.IO) {
+        val candidates = buildList {
+            add(params.password)
+            if (params.autoTryAlternatePasswords) addAll(params.passwordCandidates)
+        }.filter { it.isNotEmpty() }.distinct()
+
+        var result: Result<MeterDataReport> = Result.failure(IOException("Meter data read did not start."))
+        for ((index, password) in candidates.withIndex()) {
+            if (index > 0) {
+                transport.log(
+                    TraceDirection.INFO,
+                    "Explicit alternate-password retry #$index requested by operator."
+                )
+            }
+            result = readMeterModuleOnce(
+                params.copy(
+                    password = password,
+                    passwordCandidates = emptyList(),
+                    autoTryAlternatePasswords = false
+                ),
+                module,
+                onProgress
+            )
+            if (result.isSuccess) return@withContext result
+            if (!params.autoTryAlternatePasswords || !isAuthenticationFailure(result.exceptionOrNull())) break
+        }
+        result
+    }
+
+    private suspend fun readMeterModuleOnce(
+        params: ConnectionParams,
+        module: MeterDataModule,
+        onProgress: suspend (String) -> Unit = {}
+    ): Result<MeterDataReport> = withContext(Dispatchers.IO) {
         runCatching {
             suspend fun reportProgress(message: String) {
                 onProgress(message)
                 transport.log(TraceDirection.INFO, message)
             }
 
+            reportProgress("Connecting as Client ${params.clientAddress} (Vendor: ${params.vendorName})...")
             transport.openPort(params.baudRate, params.useModeE).getOrThrow()
             reportProgress("Starting Public Client (0x10) discovery...")
             val publicClient = GXDLMSSecureClient().apply {
@@ -105,13 +141,34 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
             val reply = GXReplyData()
             var linked = false
             try {
-                establishSession(client, executor, reply)
+                try {
+                    establishSession(client, executor, reply)
+                } catch (e: Exception) {
+                    if (isAuthenticationFailure(e)) {
+                        val message = authenticationRejectedMessage()
+                        transport.log(TraceDirection.ERROR, message)
+                        runCatching {
+                            executor.readDLMSPacket(client.disconnectRequest(), GXReplyData())
+                        }
+                        transport.closePort(preserveStatus = true)
+                        throw IOException(message, e)
+                    }
+                    throw e
+                }
                 linked = true
-                val reader = Is15959DataReader(transport, client, params.responseTimeoutMs, onProgress)
+                val reader = Is15959DataReader(
+                    transport = transport,
+                    client = client,
+                    packetTimeoutMs = params.responseTimeoutMs,
+                    onProgress = onProgress,
+                    meterMake = params.vendorName
+                )
                 val identityHeader = if (module != MeterDataModule.IDENTITY && module != MeterDataModule.ALL) {
                     reader.readIdentityHeader()
                 } else null
-                val moduleReport = when (module) {
+                reportProgress(sectionMilestone(module))
+                val moduleReport = try {
+                    when (module) {
                     MeterDataModule.IDENTITY -> MeterDataReport(identity = reader.readIdentityAndNameplate())
                     MeterDataModule.ENERGY -> MeterDataReport(cumulativeEnergies = reader.readCumulativeEnergies())
                     MeterDataModule.INSTANTANEOUS -> MeterDataReport(instantaneous = reader.readInstantaneousProfile())
@@ -120,6 +177,13 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     MeterDataModule.DAILY_LOAD -> MeterDataReport(dailyLoad = reader.readDailyLoadSurvey())
                     MeterDataModule.TAMPER -> MeterDataReport(tamperEvents = reader.readTamperEventLogs())
                     MeterDataModule.ALL -> reader.readAllMeterData()
+                    }
+                } catch (e: Exception) {
+                    transport.log(
+                        TraceDirection.ERROR,
+                        "Section ${module.name.replace('_', ' ')} failed: ${e.message ?: "unknown error"}"
+                    )
+                    throw e
                 }
                 moduleReport.copy(identity = identityHeader ?: moduleReport.identity)
             } finally {
@@ -133,6 +197,20 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
             }
         }
     }
+
+    private fun sectionMilestone(module: MeterDataModule): String = when (module) {
+        MeterDataModule.IDENTITY -> "Reading Section: Identity (OBIS: 0.0.42.0.0.255)..."
+        MeterDataModule.ENERGY -> "Reading Section: Energy & MD (OBIS: 1.0.1.8.0.255)..."
+        MeterDataModule.INSTANTANEOUS -> "Reading Section: Instantaneous (OBIS: 1.0.94.91.0.255)..."
+        MeterDataModule.BILLING -> "Reading Section: Billing (OBIS: 1.0.98.1.0.255)..."
+        MeterDataModule.BLOCK_LOAD -> "Reading Section: Block Load (OBIS: 1.0.99.1.0.255)..."
+        MeterDataModule.DAILY_LOAD -> "Reading Section: Daily Load (OBIS: 1.0.99.2.0.255)..."
+        MeterDataModule.TAMPER -> "Reading Section: Tamper Logs (OBIS: 0.0.99.98.0.255)..."
+        MeterDataModule.ALL -> "Reading Section: Full Meter Dump..."
+    }
+
+    private fun authenticationRejectedMessage(): String =
+        "Authentication rejected by meter. Verify vendor password (if wrong password was tried multiple times, wait 60-120s for meter security lockout to clear)."
 
     private suspend fun establishSession(
         client: GXDLMSSecureClient,
@@ -206,7 +284,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
     suspend fun readMeter(params: ConnectionParams): Result<MeterReadSnapshot> = withContext(Dispatchers.IO) {
         val candidates = buildList {
             add(params.password)
-            addAll(params.passwordCandidates)
+            if (params.autoTryAlternatePasswords) addAll(params.passwordCandidates)
         }.filter { it.isNotEmpty() }.distinct()
 
         var result: Result<MeterReadSnapshot> = Result.failure(IOException("Meter read did not start."))
@@ -240,7 +318,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
 
     private suspend fun readMeterOnce(params: ConnectionParams): Result<MeterReadSnapshot> =
         withContext(Dispatchers.IO) {
-            runCatching {
+        runCatching {
                 transport.openPort(params.baudRate, params.useModeE).getOrThrow()
 
                 val identity = try {
@@ -427,6 +505,11 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     transport.closePort(preserveStatus = true)
                 }
             }
+        }.recoverCatching { failure ->
+            if (isAuthenticationFailure(failure)) {
+                throw IOException(authenticationRejectedMessage(), failure)
+            }
+            throw failure
         }
 
     private suspend fun readDataString(

@@ -16,19 +16,29 @@ import java.io.IOException
 import java.util.Date
 import java.util.concurrent.TimeoutException
 
+data class GuruxReadResult(
+    val raw: Any?,
+    val value: Any?
+)
+
 class GuruxPacketExecutor(
     private val transport: OpticalUsbTransport,
     private val client: GXDLMSSecureClient,
     private val maxRetries: Int = 3,
-    private val packetTimeoutMs: Long = 5000L
+    private val packetTimeoutMs: Long = 8000L
 ) {
-    suspend fun readDLMSPacket(data: ByteArray, reply: GXReplyData) {
+    suspend fun readDLMSPacket(
+        data: ByteArray,
+        reply: GXReplyData,
+        maxRetriesOverride: Int? = null
+    ) {
         if (data.isEmpty()) return
 
         var attempt = 0
         val rd = GXByteBuffer()
+        val retries = maxRetriesOverride ?: maxRetries
 
-        while (attempt < maxRetries) {
+        while (attempt < retries) {
             attempt++
             reply.error = 0
             rd.clear()
@@ -39,7 +49,7 @@ class GuruxPacketExecutor(
 
                 while (!client.getData(rd, reply)) {
                     if (System.currentTimeMillis() >= deadline) {
-                        throw TimeoutException("Timeout waiting for DLMS packet (Attempt $attempt/$maxRetries)")
+                        throw TimeoutException("Timeout waiting for DLMS packet (Attempt $attempt/$retries)")
                     }
 
                     val chunk = transport.readBytesRaw(128, 200)
@@ -56,8 +66,8 @@ class GuruxPacketExecutor(
             } catch (e: GXDLMSException) {
                 throw e
             } catch (e: Exception) {
-                if (attempt >= maxRetries) {
-                    throw IOException("Failed after $maxRetries attempts: ${e.message}", e)
+                if (attempt >= retries) {
+                    throw IOException("Failed after $retries attempts: ${e.message}", e)
                 }
                 delay(250)
             }
@@ -82,7 +92,7 @@ class GuruxPacketExecutor(
             }
             val nextFrame = client.receiverReady(reply)
             if (nextFrame.isEmpty()) break
-            readDLMSPacket(nextFrame, reply)
+            readDLMSPacket(nextFrame, reply, maxRetriesOverride = 1)
         }
     }
 
@@ -95,6 +105,18 @@ class GuruxPacketExecutor(
             item.setDataType(attributeIndex, reply.valueType)
         }
         return client.updateValue(item, attributeIndex, reply.value)
+    }
+
+    suspend fun readObjectWithRaw(item: GXDLMSObject, attributeIndex: Int): GuruxReadResult {
+        delay(60)
+        val data = client.read(item, attributeIndex)
+        val reply = GXReplyData()
+        readDataBlock(data, reply)
+        if (item.getDataType(attributeIndex) == DataType.NONE) {
+            item.setDataType(attributeIndex, reply.valueType)
+        }
+        val raw = reply.value
+        return GuruxReadResult(raw, client.updateValue(item, attributeIndex, raw))
     }
 
     suspend fun readRowsByEntry(
