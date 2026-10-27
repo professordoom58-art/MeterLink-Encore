@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.util.ArrayDeque
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 
 enum class TraceDirection { TX, RX, INFO, ERROR }
@@ -27,6 +29,13 @@ data class TraceLog(
     val timestampMs: Long = System.currentTimeMillis(),
     val direction: TraceDirection,
     val hexOrMessage: String
+)
+
+data class TraceCounters(
+    val tx: Long = 0,
+    val rx: Long = 0,
+    val info: Long = 0,
+    val error: Long = 0
 )
 
 class OpticalUsbTransport(private val context: Context) {
@@ -47,6 +56,35 @@ class OpticalUsbTransport(private val context: Context) {
     private val _traceFlow = MutableSharedFlow<TraceLog>(extraBufferCapacity = 5000)
     val traceFlow: SharedFlow<TraceLog> = _traceFlow
     private val connectionDiagnostics = ConnectionDiagnostics()
+    private val txCounter = AtomicLong()
+    private val rxCounter = AtomicLong()
+    private val infoCounter = AtomicLong()
+    private val errorCounter = AtomicLong()
+    private val exportTraceLogs = ArrayDeque<TraceLog>()
+    private var droppedTraceLines = 0L
+    private val traceLock = Any()
+
+    fun resetTraceDiagnostics() {
+        txCounter.set(0)
+        rxCounter.set(0)
+        infoCounter.set(0)
+        errorCounter.set(0)
+        synchronized(traceLock) {
+            exportTraceLogs.clear()
+            droppedTraceLines = 0
+        }
+    }
+
+    fun traceSnapshot(): List<TraceLog> = synchronized(traceLock) { exportTraceLogs.toList() }
+
+    fun traceCounters(): TraceCounters = TraceCounters(
+        tx = txCounter.get(),
+        rx = rxCounter.get(),
+        info = infoCounter.get(),
+        error = errorCounter.get()
+    )
+
+    fun droppedTraceLineCount(): Long = synchronized(traceLock) { droppedTraceLines }
 
     fun refreshProbeStatus() {
         val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
@@ -61,6 +99,7 @@ class OpticalUsbTransport(private val context: Context) {
         withContext(Dispatchers.IO) {
             runCatching {
                 closePort()
+                resetTraceDiagnostics()
                 val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
                 if (drivers.isEmpty()) throw IOException("No USB-Serial optical probe found.")
 
@@ -295,7 +334,21 @@ class OpticalUsbTransport(private val context: Context) {
     }
 
     fun log(direction: TraceDirection, message: String) {
-        _traceFlow.tryEmit(TraceLog(direction = direction, hexOrMessage = message))
+        when (direction) {
+            TraceDirection.TX -> txCounter.incrementAndGet()
+            TraceDirection.RX -> rxCounter.incrementAndGet()
+            TraceDirection.INFO -> infoCounter.incrementAndGet()
+            TraceDirection.ERROR -> errorCounter.incrementAndGet()
+        }
+        val trace = TraceLog(direction = direction, hexOrMessage = message)
+        synchronized(traceLock) {
+            if (exportTraceLogs.size >= 100_000) {
+                exportTraceLogs.removeFirst()
+                droppedTraceLines++
+            }
+            exportTraceLogs.addLast(trace)
+        }
+        _traceFlow.tryEmit(trace)
     }
 
     fun closePort(preserveStatus: Boolean = false) {

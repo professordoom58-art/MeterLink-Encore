@@ -158,7 +158,12 @@ fun MeterReaderScreen(
                     meterReport = mergedReport
                     if (module == MeterDataModule.ALL) {
                         runCatching {
-                            val bundle = MeterLinkPdfExporter(context).exportBundle(mergedReport, traceLogs.toList())
+                            val bundle = MeterLinkPdfExporter(context).exportBundle(
+                                mergedReport,
+                                transport.traceSnapshot(),
+                                transport.traceCounters(),
+                                transport.droppedTraceLineCount()
+                            )
                             lastHexLogFile = bundle.hexLog
                             reportStatusText = "✓ Read All saved ${bundle.pdf.name} and ${bundle.hexLog.name}."
                         }.onFailure {
@@ -179,7 +184,12 @@ fun MeterReaderScreen(
     fun exportReport() {
         runCatching {
             val exporter = MeterLinkPdfExporter(context)
-            val bundle = exporter.exportBundle(meterReport, traceLogs.toList())
+            val bundle = exporter.exportBundle(
+                meterReport,
+                transport.traceSnapshot(),
+                transport.traceCounters(),
+                transport.droppedTraceLineCount()
+            )
             lastHexLogFile = bundle.hexLog
             exporter.share(bundle.pdf)
             reportStatusText = "✓ PDF saved as ${bundle.pdf.name}; Hex Log saved as ${bundle.hexLog.name}."
@@ -189,7 +199,12 @@ fun MeterReaderScreen(
     fun exportHexLog() {
         runCatching {
             val exporter = MeterLinkPdfExporter(context)
-            val file = exporter.exportHexLog(meterReport, traceLogs.toList())
+            val file = exporter.exportHexLog(
+                meterReport,
+                transport.traceSnapshot(),
+                transport.traceCounters(),
+                transport.droppedTraceLineCount()
+            )
             lastHexLogFile = file
             exporter.shareText(file)
             reportStatusText = "✓ Hex log saved as ${file.name} and ready to share."
