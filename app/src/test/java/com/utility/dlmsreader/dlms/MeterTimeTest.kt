@@ -27,6 +27,8 @@ class MeterTimeTest {
                 vectors.forEach { (bytes, expected) ->
                     val dateTime = GXDLMSClient.changeType(bytes, DataType.DATETIME, false) as GXDateTime
                     assertEquals(expected, MeterTime.format(dateTime))
+                    val flippedDateTime = GXDLMSClient.changeType(bytes, DataType.DATETIME, true) as GXDateTime
+                    assertEquals(expected, MeterTime.format(flippedDateTime))
                 }
             }
         } finally {

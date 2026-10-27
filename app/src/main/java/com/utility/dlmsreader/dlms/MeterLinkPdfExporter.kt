@@ -267,7 +267,7 @@ class MeterLinkPdfExporter(private val context: Context) {
             }
         }
 
-        val chunks = mutableListOf<List<Int>>()
+        val chunks = mutableListOf<MutableList<Int>>()
         var current = mutableListOf<Int>()
         units.forEach { unit ->
             if (current.isNotEmpty() && current.size + unit.size > 7) {
@@ -277,6 +277,22 @@ class MeterLinkPdfExporter(private val context: Context) {
             current.addAll(unit)
         }
         if (current.isNotEmpty()) chunks += current
+        if (chunks.size > 1 && chunks.last().size == 1) {
+            val previous = chunks[chunks.lastIndex - 1].toMutableList()
+            val moveCount = if (previous.size >= 2) {
+                val valueColumn = section.columns[previous[previous.lastIndex - 1]]
+                val timeColumn = section.columns[previous.last()]
+                if (valueColumn.attributeIndex == 2 && timeColumn.attributeIndex == 5 &&
+                    valueColumn.obisCode == timeColumn.obisCode
+                ) 2 else 1
+            } else 1
+            if (previous.size > moveCount) {
+                val moved = previous.takeLast(moveCount)
+                repeat(moveCount) { previous.removeAt(previous.lastIndex) }
+                chunks[chunks.lastIndex - 1] = previous
+                chunks[chunks.lastIndex].addAll(0, moved)
+            }
+        }
         chunks.forEachIndexed { chunkIndex, chunk ->
             val chunkTitle = if (chunks.size == 1) title else "$title (Part ${chunkIndex + 1} of ${chunks.size})"
             layout.subsection(chunkTitle)
