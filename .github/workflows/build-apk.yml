@@ -1,8 +1,9 @@
-name:  Ship MeterLink APK
+
+name: Ship MeterLink APK
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: ["main", "master"]
   workflow_dispatch:
 
 permissions:
@@ -12,6 +13,7 @@ jobs:
   build:
     name: Forge MeterLink v1.0.${{ github.run_number }} APK
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Source
         uses: actions/checkout@v4
@@ -19,27 +21,27 @@ jobs:
       - name: Spin Up JDK 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          java-version: "17"
+          distribution: temurin
 
       - name: Prime Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
+          gradle-version: "8.9"
 
-      - name: Compile MeterLink v1.0.${{ github.run_number }} APK
+      - name: Compile MeterLink APK
         run: gradle assembleDebug
 
-      - name: Stamp MeterLink v1.0.${{ github.run_number }} APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk MeterLink-v1.0.${{ github.run_number }}.apk
+      - name: Stamp MeterLink APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk "MeterLink-v1.0.${{ github.run_number }}.apk"
 
-      - name:  Stash Artifact in Actions Tab
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: MeterLink-v1.0.${{ github.run_number }}-APK
           path: MeterLink-v1.0.${{ github.run_number }}.apk
 
-      - name: Drop MeterLink v1.0.${{ github.run_number }} APK to Releases
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.${{ github.run_number }}
@@ -49,6 +51,17 @@ jobs:
             Commit `${{ github.sha }}`.
 
             **How to use:**
-            Grab **`MeterLink-v1.0.${{ github.run_number }}.apk`** under **Assets** below.
-            
-          files: MeterLink-v1.0.${{ github.run_number }}.apk
+            Grab the APK under Assets below.
+          files: "MeterLink-v1.0.${{ github.run_number }}.apk"
+
+      - name: Keep only the latest 3 releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list --limit 100 --json tagName --jq '.[3:][].tagName' |
+          while read -r tag; do
+            if [ -n "$tag" ]; then
+              echo "Deleting old release and tag: $tag"
+              gh release delete "$tag" --cleanup-tag --yes
+            fi
+          done
