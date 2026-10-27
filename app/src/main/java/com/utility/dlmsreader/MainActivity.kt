@@ -726,6 +726,20 @@ private fun ProfileTable(section: ProfileSection) {
         return
     }
     ReportTable(section.columns.map { it.parameterName }, section.rows)
+    if (section.rows.size < section.totalRows) {
+        Text(
+            "Showing ${section.rows.size} of ${section.totalRows} entries (oldest shown: ${section.rows.firstOrNull()?.firstOrNull() ?: "N/A"})",
+            color = Color.Gray,
+            fontSize = 10.sp
+        )
+    }
+    if (section.title.contains("Block Load", ignoreCase = true)) {
+        Text(
+            "Timestamps are interval-end. Zero rows before a power restoration are meter zero-fill.",
+            color = Color.Gray,
+            fontSize = 10.sp
+        )
+    }
 }
 
 @Composable

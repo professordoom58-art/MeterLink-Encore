@@ -112,7 +112,9 @@ class MeterLinkPdfExporter(private val context: Context) {
                 listOf("Parameter", "OBIS Code", "Value", "Unit"),
                 identity.rows.map { listOf(it.parameterName, it.obisCode, it.formattedValue, it.unit) }
             )
-            identity.nameplate?.let { drawProfile(layout, it) }
+            identity.nameplate?.let {
+                drawProfile(layout, it, identity.rows.map { row -> row.obisCode }.toSet())
+            }
         }
 
         if (report.cumulativeEnergies.isNotEmpty()) {
@@ -178,12 +180,18 @@ class MeterLinkPdfExporter(private val context: Context) {
     }
 
     private fun drawProfile(layout: ReportLayout, section: ProfileSection) {
+        drawProfile(layout, section, emptySet())
+    }
+
+    private fun drawProfile(layout: ReportLayout, section: ProfileSection, excludedObis: Set<String>) {
+        val included = section.columns.withIndex().filter { it.value.obisCode !in excludedObis }
         val rows = section.rows.flatMap { row ->
-            section.columns.mapIndexed { index, column ->
-                listOf(column.parameterName, column.obisCode, row.getOrNull(index) ?: "N/A", column.unit)
+            included.map { indexed ->
+                val column = indexed.value
+                listOf(column.parameterName, column.obisCode, row.getOrNull(indexed.index) ?: "N/A", column.unit)
             }
         }
-        layout.table(listOf("Parameter", "OBIS Code", "Value", "Unit"), rows)
+        if (rows.isNotEmpty()) layout.table(listOf("Parameter", "OBIS Code", "Value", "Unit"), rows)
     }
 
     private fun drawWideProfile(layout: ReportLayout, section: ProfileSection) {
@@ -192,6 +200,13 @@ class MeterLinkPdfExporter(private val context: Context) {
             layout.table(listOf("Profile", "Status"), listOf(listOf(section.profileObis, "No rows returned")))
         } else {
             drawProfileChunks(layout, section, section.columns.indices.toList(), section.title)
+            if (section.rows.size < section.totalRows) {
+                val oldestShown = section.rows.firstOrNull()?.firstOrNull() ?: "N/A"
+                layout.note("Showing ${section.rows.size} of ${section.totalRows} entries (oldest shown: $oldestShown)")
+            }
+            if (section.title.contains("Block Load", ignoreCase = true)) {
+                layout.note("Timestamps are interval-end. Zero rows before a power restoration are meter zero-fill.")
+            }
         }
     }
 
@@ -199,7 +214,7 @@ class MeterLinkPdfExporter(private val context: Context) {
         if (section.columns.isEmpty()) {
             layout.table(listOf("Profile", "Status"), listOf(listOf(section.profileObis, "No rows returned")))
         } else {
-            drawProfileChunks(layout, section, section.columns.indices.toList(), "Billing History Profile")
+            drawProfileChunks(layout, section, section.columns.indices.toList(), "Billing History Profile", billing = true)
         }
     }
 
@@ -217,21 +232,45 @@ class MeterLinkPdfExporter(private val context: Context) {
         layout: ReportLayout,
         section: ProfileSection,
         indexes: List<Int>,
-        title: String
+        title: String,
+        billing: Boolean = false
     ) {
-        if (indexes.size <= 7) {
-            layout.subsection(title)
-            drawSelectedProfile(layout, section, indexes.map { it to section.columns[it].parameterName })
-            return
+        val units = mutableListOf<List<Int>>()
+        var position = 0
+        while (position < indexes.size) {
+            val index = indexes[position]
+            val column = section.columns[index]
+            val next = indexes.getOrNull(position + 1)?.let { section.columns[it] }
+            if (column.attributeIndex == 2 && next != null && next.attributeIndex == 5 && next.obisCode == column.obisCode) {
+                units += listOf(index, indexes[position + 1])
+                position += 2
+            } else {
+                units += listOf(index)
+                position++
+            }
         }
 
-        val firstIndex = indexes.first()
-        val chunks = indexes.drop(1).chunked(6)
+        val chunks = mutableListOf<List<Int>>()
+        var current = mutableListOf<Int>()
+        units.forEach { unit ->
+            if (current.isNotEmpty() && current.size + unit.size > 7) {
+                chunks += current
+                current = mutableListOf()
+            }
+            current.addAll(unit)
+        }
+        if (current.isNotEmpty()) chunks += current
         chunks.forEachIndexed { chunkIndex, chunk ->
-            val chunkTitle = "$title (Part ${chunkIndex + 1} of ${chunks.size})"
+            val chunkTitle = if (chunks.size == 1) title else "$title (Part ${chunkIndex + 1} of ${chunks.size})"
             layout.subsection(chunkTitle)
-            val selected = listOf(firstIndex) + chunk
-            drawSelectedProfile(layout, section, selected.map { it to section.columns[it].parameterName })
+            val selected = chunk.map { index ->
+                val column = section.columns[index]
+                val label = if (billing && column.obisCode == "0.0.94.91.14.255" && column.attributeIndex == 2) {
+                    "Power-On Duration in Period (min)"
+                } else column.parameterName
+                index to label
+            }
+            drawSelectedProfile(layout, section, selected)
         }
     }
 
@@ -315,14 +354,28 @@ class MeterLinkPdfExporter(private val context: Context) {
             y += 22f
         }
 
+        fun note(text: String) {
+            ensure(22f)
+            add(Op.Text(text, LEFT, y + 12f, 8f, Color.DKGRAY, false))
+            y += 18f
+        }
+
         fun table(headers: List<String>, rows: List<List<String>>) {
             if (headers.isEmpty()) return
             currentTableHeaders = headers
             val widths = widths(headers.size)
             tableHeader(headers, widths)
             rows.forEachIndexed { rowIndex, row ->
+                val numeric = headers.indices.map { index ->
+                    (row.getOrNull(index) ?: "").matches(Regex("[-+]?([0-9][0-9,]*)(\\.[0-9]+)?(.*)"))
+                }
+                val fitted = headers.indices.map { index ->
+                    val value = row.getOrNull(index) ?: ""
+                    if (numeric[index]) fitNumeric(value, widths[index] - 8f) else null
+                }
                 val wrapped = headers.indices.map { index ->
-                    wrapText(row.getOrNull(index) ?: "", widths[index] - 8f, 8f)
+                    fitted[index]?.let { listOf(it.first) }
+                        ?: wrapText(row.getOrNull(index) ?: "", widths[index] - 8f, 8f)
                 }
                 val rowHeight = maxOf(20f, (wrapped.maxOfOrNull { it.size } ?: 1) * 10f + 8f)
                 if (y + rowHeight > BOTTOM) {
@@ -334,11 +387,11 @@ class MeterLinkPdfExporter(private val context: Context) {
                 var x = LEFT
                 headers.forEachIndexed { index, _ ->
                     val value = row.getOrNull(index) ?: ""
-                    val numeric = value.matches(Regex("[-+]?([0-9][0-9,]*)(\\.[0-9]+)?(.*)"))
-                    val align = if (numeric && index > 0) Paint.Align.RIGHT else Paint.Align.LEFT
+                    val align = if (numeric[index] && index > 0) Paint.Align.RIGHT else Paint.Align.LEFT
+                    val textSize = fitted[index]?.second ?: 8f
                     wrapped[index].forEachIndexed { lineIndex, line ->
                         val textX = if (align == Paint.Align.RIGHT) x + widths[index] - 4f else x + 4f
-                        add(Op.Text(line, textX, top + 14f + lineIndex * 10f, 8f, Color.rgb(30, 41, 59), false, align))
+                        add(Op.Text(line, textX, top + 14f + lineIndex * 10f, textSize, Color.rgb(30, 41, 59), false, align))
                     }
                     add(Op.Rect(x, top, x + widths[index], top + rowHeight, BORDER, false))
                     x += widths[index]
@@ -401,9 +454,11 @@ class MeterLinkPdfExporter(private val context: Context) {
             val weights = List(count) { index ->
                 val header = currentTableHeaders[index].lowercase(Locale.ENGLISH)
                 when {
-                    "date" in header || "time" in header || "description" in header -> 1.6f
+                    "date" in header || "time" in header -> 1.6f
                     "obis" in header || "code" in header || "unit" in header -> 0.6f
-                    header in setOf("v", "i", "pf", "kwh", "kvah", "kvarh") -> 0.6f
+                    header in setOf("v", "i", "pf") -> 0.6f
+                    header in setOf("kwh", "kvah", "kvarh", "neutral i") -> 0.85f
+                    "description" in header -> 1.3f
                     "parameter" in header -> 1.35f
                     else -> 1.0f
                 }
@@ -505,6 +560,20 @@ class MeterLinkPdfExporter(private val context: Context) {
                 typeface = if (bold) Typeface.create(Typeface.DEFAULT, Typeface.BOLD) else Typeface.DEFAULT
             }
             return paint.measureText(value)
+        }
+
+        private fun fitNumeric(value: String, width: Float): Pair<String, Float> {
+            listOf(8f, 7.5f, 7f, 6.5f, 6f).forEach { size ->
+                if (measureText(value, size, false) <= width) return value to size
+            }
+            var clipped = ""
+            for (character in value) {
+                val candidate = "$clipped$character…"
+                if (measureText(candidate, 6f, false) > width) break
+                clipped += character
+            }
+            clipped += '…'
+            return clipped to 6f
         }
     }
 }
