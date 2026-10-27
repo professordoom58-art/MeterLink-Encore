@@ -10,6 +10,7 @@ import android.graphics.pdf.PdfDocument
 import android.os.Environment
 import androidx.core.content.FileProvider
 import com.utility.dlmsreader.transport.TraceDirection
+import com.utility.dlmsreader.transport.TraceCounters
 import com.utility.dlmsreader.transport.TraceLog
 import java.io.File
 import java.io.FileOutputStream
@@ -38,7 +39,12 @@ class MeterLinkPdfExporter(private val context: Context) {
         return exportBundle(report, emptyList()).pdf
     }
 
-    fun exportBundle(report: MeterDataReport, traceLogs: List<TraceLog>): MeterLinkExportBundle {
+    fun exportBundle(
+        report: MeterDataReport,
+        traceLogs: List<TraceLog>,
+        counters: TraceCounters? = null,
+        droppedLineCount: Long = 0
+    ): MeterLinkExportBundle {
         require(report.hasData) { "No meter data is available for export." }
         val generated = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.ENGLISH).format(Date())
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ENGLISH).format(Date())
@@ -56,18 +62,23 @@ class MeterLinkPdfExporter(private val context: Context) {
             logicalDevice = identityValue(report, "0.0.42.0.0.255"),
             manufacturer = identityValue(report, "0.0.96.1.1.255")
         )
-        buildReport(layout, report, traceLogs)
+        buildReport(layout, report, traceLogs, counters, droppedLineCount)
 
         val document = PdfDocument()
         layout.render(document)
         FileOutputStream(file).use { document.writeTo(it) }
         document.close()
         val hexLog = File(directory, "MeterLink_HexLog_${serial}_$stamp.txt")
-        writeHexLog(hexLog, traceLogs, generated, serial)
+        writeHexLog(hexLog, traceLogs, generated, serial, counters, droppedLineCount)
         return MeterLinkExportBundle(file, hexLog)
     }
 
-    fun exportHexLog(report: MeterDataReport, traceLogs: List<TraceLog>): File {
+    fun exportHexLog(
+        report: MeterDataReport,
+        traceLogs: List<TraceLog>,
+        counters: TraceCounters? = null,
+        droppedLineCount: Long = 0
+    ): File {
         val generated = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.ENGLISH).format(Date())
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ENGLISH).format(Date())
         val serial = identityValue(report, "0.0.96.1.0.255")
@@ -76,7 +87,7 @@ class MeterLinkPdfExporter(private val context: Context) {
         val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
         directory.mkdirs()
         return File(directory, "MeterLink_HexLog_${serial}_$stamp.txt").also {
-            writeHexLog(it, traceLogs, generated, serial)
+            writeHexLog(it, traceLogs, generated, serial, counters, droppedLineCount)
         }
     }
 
@@ -105,7 +116,13 @@ class MeterLinkPdfExporter(private val context: Context) {
         })
     }
 
-    private fun buildReport(layout: ReportLayout, report: MeterDataReport, traceLogs: List<TraceLog>) {
+    private fun buildReport(
+        layout: ReportLayout,
+        report: MeterDataReport,
+        traceLogs: List<TraceLog>,
+        counters: TraceCounters?,
+        droppedLineCount: Long
+    ) {
         report.identity?.let { identity ->
             layout.section("Section 1: Meter Identity & Nameplate Summary")
             layout.table(
@@ -176,7 +193,7 @@ class MeterLinkPdfExporter(private val context: Context) {
             layout.table(listOf("Section", "Status"), report.errors.map { listOf("MeterLink", it) })
         }
         layout.section("Section 8: Diagnostic Protocol & Execution Log (Summary)")
-        layout.table(listOf("Category", "Details"), diagnosticRows(traceLogs))
+        layout.table(listOf("Category", "Details"), diagnosticRows(traceLogs, counters, droppedLineCount))
     }
 
     private fun drawProfile(layout: ReportLayout, section: ProfileSection) {
@@ -274,18 +291,25 @@ class MeterLinkPdfExporter(private val context: Context) {
         }
     }
 
-    private fun diagnosticRows(traceLogs: List<TraceLog>): List<List<String>> {
-        if (traceLogs.isEmpty()) return listOf(listOf("Trace", "No protocol trace lines captured."))
+    private fun diagnosticRows(
+        traceLogs: List<TraceLog>,
+        counters: TraceCounters? = null,
+        droppedLineCount: Long = 0
+    ): List<List<String>> {
         val counts = TraceDirection.entries.associateWith { direction ->
             traceLogs.count { it.direction == direction }
         }
+        val tx = counters?.tx ?: (counts[TraceDirection.TX] ?: 0)
+        val rx = counters?.rx ?: (counts[TraceDirection.RX] ?: 0)
+        val info = counters?.info ?: (counts[TraceDirection.INFO] ?: 0)
+        val error = counters?.error ?: (counts[TraceDirection.ERROR] ?: 0)
         val rows = mutableListOf(
             listOf(
-                "Packet counts",
-                "TX=${counts[TraceDirection.TX] ?: 0}, RX=${counts[TraceDirection.RX] ?: 0}, " +
-                    "INFO=${counts[TraceDirection.INFO] ?: 0}, ERROR=${counts[TraceDirection.ERROR] ?: 0}"
+                "Counters (full session)",
+                "TX=$tx, RX=$rx, INFO=$info, ERROR=$error"
             )
         )
+        rows += listOf("Log lines retained", "${traceLogs.size} (${droppedLineCount} dropped)")
         traceLogs.asReversed()
             .filter { it.direction == TraceDirection.INFO && it.hexOrMessage.startsWith("Reading Section:") }
             .distinctBy { it.hexOrMessage }
@@ -297,15 +321,31 @@ class MeterLinkPdfExporter(private val context: Context) {
         return rows
     }
 
-    private fun writeHexLog(file: File, traceLogs: List<TraceLog>, generated: String, serial: String) {
+    private fun writeHexLog(
+        file: File,
+        traceLogs: List<TraceLog>,
+        generated: String,
+        serial: String,
+        counters: TraceCounters? = null,
+        droppedLineCount: Long = 0
+    ) {
         val timeFormat = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss.SSS", Locale.ENGLISH)
         file.bufferedWriter().use { writer ->
             writer.appendLine("MeterLink Hex Terminal Log")
             writer.appendLine("Generated (phone time): $generated")
             writer.appendLine("Serial: $serial")
+            val counts = counters ?: TraceCounters(
+                tx = traceLogs.count { it.direction == TraceDirection.TX }.toLong(),
+                rx = traceLogs.count { it.direction == TraceDirection.RX }.toLong(),
+                info = traceLogs.count { it.direction == TraceDirection.INFO }.toLong(),
+                error = traceLogs.count { it.direction == TraceDirection.ERROR }.toLong()
+            )
+            writer.appendLine("Counters (full session): TX=${counts.tx}, RX=${counts.rx}, INFO=${counts.info}, ERROR=${counts.error}")
+            writer.appendLine("Log lines retained: ${traceLogs.size} ($droppedLineCount dropped)")
+            writer.appendLine("Timestamps: phone time")
             writer.appendLine()
             traceLogs.asReversed().forEach { log ->
-                writer.appendLine("${timeFormat.format(Date(log.timestampMs))} [${log.direction}] ${log.hexOrMessage}")
+                writer.appendLine("${timeFormat.format(Date(log.timestampMs))} (phone time) [${log.direction}] ${log.hexOrMessage}")
             }
         }
     }

@@ -28,6 +28,11 @@ class GuruxPacketExecutor(
     private val maxRetries: Int = 3,
     private val packetTimeoutMs: Long = 8000L
 ) {
+    companion object {
+        const val RR_FRAME_DELAY_MS = 250L
+        const val RR_BLOCK_DELAY_MS = 90L
+    }
+
     suspend fun readDLMSPacket(
         data: ByteArray,
         reply: GXReplyData,
@@ -88,8 +93,8 @@ class GuruxPacketExecutor(
         readDLMSPacket(data, reply)
         while (reply.isMoreData) {
             when {
-                reply.isStreaming() || reply.moreData.contains(RequestTypes.FRAME) -> delay(250)
-                reply.moreData.contains(RequestTypes.DATABLOCK) -> delay(90)
+                reply.isStreaming() || reply.moreData.contains(RequestTypes.FRAME) -> delay(RR_FRAME_DELAY_MS)
+                reply.moreData.contains(RequestTypes.DATABLOCK) -> delay(RR_BLOCK_DELAY_MS)
             }
             val nextFrame = client.receiverReady(reply)
             if (nextFrame.isEmpty()) break
