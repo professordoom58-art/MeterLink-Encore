@@ -24,6 +24,8 @@ object Is15959Formatter {
     private val dateFormat = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.ENGLISH)
     private val compactDateFormat = SimpleDateFormat("dd-MM-yy HH:mm", Locale.ENGLISH)
     private val yearFormat = DecimalFormat("0", DecimalFormatSymbols(Locale.ENGLISH))
+    private val twoDecimalFormat = DecimalFormat("#,##0.00", DecimalFormatSymbols(Locale.ENGLISH))
+    private val threeDecimalFormat = DecimalFormat("#,##0.000", DecimalFormatSymbols(Locale.ENGLISH))
 
     fun formatValue(
         raw: Any?,
@@ -38,13 +40,14 @@ object Is15959Formatter {
         is ByteArray -> formatBytes(raw)
         is Number -> {
             val displayUnit = displayUnit(unit, obis)
-            val value = raw.toDouble() * scaler * if (isEnergyOrPower(unit, obis)) 0.001 else 1.0
+            val scaledValue = raw.toDouble() * scaler
+            val value = scaledValue * if (isEnergyOrPower(unit, obis)) 0.001 else 1.0
             val formatted = if (isYearOfManufacture(obis)) {
                 yearFormat.format(value)
             } else if (isMeterType(obis)) {
-                meterTypeLabel(raw.toInt())
+                meterTypeLabel(scaledValue.toInt())
             } else {
-                numberFormat.format(value)
+                formatNumber(value, unit, obis)
             }
             if (includeUnit && displayUnit.isNotEmpty()) "$formatted $displayUnit" else formatted
         }
@@ -99,15 +102,15 @@ object Is15959Formatter {
         obis == "0.0.96.1.1.255" -> ObisDescriptor("Manufacturer Name")
         obis == "0.0.96.1.4.255" -> ObisDescriptor("Year of Manufacture")
         obis == "1.0.0.2.0.255" -> ObisDescriptor("Firmware Version")
-        obis == "0.0.94.91.9.255" -> ObisDescriptor("Meter Type")
+        obis == "0.0.94.91.9.255" -> ObisDescriptor("Meter Type (5=1P-2W, 1=3P-3W, 2=3P-4W)")
         obis == "0.0.94.91.11.255" -> ObisDescriptor("Meter Category")
         obis == "0.0.94.91.12.255" -> ObisDescriptor("Current Rating")
         obis == "0.0.94.91.14.255" -> ObisDescriptor("Cumulative Power-On Duration (min)", "min")
         obis == "0.0.96.2.0.255" -> ObisDescriptor("Cumulative Programming Count")
-        obis == "0.128.169.128.128.255" -> ObisDescriptor("L&T Internal Config ID")
+        obis == "0.128.169.128.128.255" -> ObisDescriptor("L&T Config ID")
         obis == "0.128.176.128.128.255" -> ObisDescriptor("Meter Constant (imp/kWh)")
         obis == "0.0.0.1.2.255" -> ObisDescriptor("Billing Date")
-        obis == "1.0.13.0.0.255" -> ObisDescriptor("Average Billing PF", "PF")
+        obis == "1.0.13.0.0.255" -> ObisDescriptor("Average Billing Power Factor", "PF")
         isTodEnergyObis(obis, 1) -> ObisDescriptor("kWh ToD Zone ${todZone(obis)}", "kWh")
         isTodEnergyObis(obis, 9) -> ObisDescriptor("kVAh ToD Zone ${todZone(obis)}", "kVAh")
         obis == "0.0.1.0.0.255" -> ObisDescriptor("Real-Time Clock")
@@ -140,52 +143,52 @@ object Is15959Formatter {
     }
 
     fun decodeTamperEvent(code: Int): String = when (code) {
-        1 -> "R-Phase Voltage Missing - Occurrence"
-        2 -> "R-Phase Voltage Missing - Restoration"
-        3 -> "Y-Phase Voltage Missing - Occurrence"
-        4 -> "Y-Phase Voltage Missing - Restoration"
-        5 -> "B-Phase Voltage Missing - Occurrence"
-        6 -> "B-Phase Voltage Missing - Restoration"
-        7 -> "Over Voltage - Occurrence"
-        8 -> "Over Voltage - Restoration"
-        9 -> "Low Voltage - Occurrence"
-        10 -> "Low Voltage - Restoration"
+        1 -> "R-Phase VT Link Missing (Missing Potential) - Occurrence"
+        2 -> "R-Phase VT Link Missing (Missing Potential) - Restoration"
+        3 -> "Y-Phase VT Link Missing (Missing Potential) - Occurrence"
+        4 -> "Y-Phase VT Link Missing (Missing Potential) - Restoration"
+        5 -> "B-Phase VT Link Missing (Missing Potential) - Occurrence"
+        6 -> "B-Phase VT Link Missing (Missing Potential) - Restoration"
+        7 -> "Over Voltage in Any Phase - Occurrence"
+        8 -> "Over Voltage in Any Phase - Restoration"
+        9 -> "Low Voltage in Any Phase - Occurrence"
+        10 -> "Low Voltage in Any Phase - Restoration"
         11 -> "Voltage Unbalance - Occurrence"
         12 -> "Voltage Unbalance - Restoration"
-        51 -> "R-Phase Current Reversal - Occurrence"
-        52 -> "R-Phase Current Reversal - Restoration"
-        53 -> "Y-Phase Current Reversal - Occurrence"
-        54 -> "Y-Phase Current Reversal - Restoration"
-        55 -> "B-Phase Current Reversal - Occurrence"
-        56 -> "B-Phase Current Reversal - Restoration"
-        57 -> "R-Phase Current Open - Occurrence"
-        58 -> "R-Phase Current Open - Restoration"
-        59 -> "Y-Phase Current Open - Occurrence"
-        60 -> "Y-Phase Current Open - Restoration"
-        61 -> "B-Phase Current Open - Occurrence"
-        62 -> "B-Phase Current Open - Restoration"
+        51 -> "R-Phase CT Reverse - Occurrence"
+        52 -> "R-Phase CT Reverse - Restoration"
+        53 -> "Y-Phase CT Reverse - Occurrence"
+        54 -> "Y-Phase CT Reverse - Restoration"
+        55 -> "B-Phase CT Reverse - Occurrence"
+        56 -> "B-Phase CT Reverse - Restoration"
+        57 -> "R-Phase CT Open - Occurrence"
+        58 -> "R-Phase CT Open - Restoration"
+        59 -> "Y-Phase CT Open - Occurrence"
+        60 -> "Y-Phase CT Open - Restoration"
+        61 -> "B-Phase CT Open - Occurrence"
+        62 -> "B-Phase CT Open - Restoration"
         63 -> "Current Unbalance - Occurrence"
         64 -> "Current Unbalance - Restoration"
-        67 -> "Over Current - Occurrence"
-        68 -> "Over Current - Restoration"
-        69 -> "Current Bypass / Short - Occurrence"
-        70 -> "Current Bypass / Short - Restoration"
+        65 -> "CT Bypass - Occurrence"
+        66 -> "CT Bypass - Restoration"
+        67 -> "Over Current in Any Phase - Occurrence"
+        68 -> "Over Current in Any Phase - Restoration"
+        69 -> "Earth Loading - Occurrence"
+        70 -> "Earth Loading - Restoration"
         101 -> "Power Failure - Occurrence"
         102 -> "Power Failure - Restoration"
-        151 -> "Real Time Clock Changed"
+        151 -> "Real Time Clock (Date & Time) Changed"
         152 -> "Demand Integration Period Changed"
         153 -> "Profile Capture Period Changed"
-        154 -> "Single-Action Billing Schedule Changed"
-        155 -> "Activity Calendar (ToD) Changed"
-        201 -> "Magnetic Influence - Occurrence"
-        202 -> "Magnetic Influence - Restoration"
-        203 -> "Neutral Disturbance - Occurrence"
-        204 -> "Neutral Disturbance - Restoration"
-        205 -> "Low Power Factor - Occurrence"
-        206 -> "Low Power Factor - Restoration"
-        207 -> "Single Wire / Earth Load - Occurrence"
-        208 -> "Single Wire / Earth Load - Restoration"
-        251 -> "Meter Cover Open - Occurrence"
+        154 -> "Single-Action Schedule for Billing Dates Changed"
+        155 -> "Activity Calendar for Time Zones Changed"
+        201 -> "Influence of Permanent/Electromagnet - Occurrence"
+        202 -> "Influence of Permanent/Electromagnet - Restoration"
+        203 -> "Neutral Disturbance (HF & DC) - Occurrence"
+        204 -> "Neutral Disturbance (HF & DC) - Restoration"
+        205 -> "Very Low PF - Occurrence"
+        206 -> "Very Low PF - Restoration"
+        251 -> "Meter Cover Opening - Occurrence"
         else -> "Event Code $code"
     }
 
@@ -200,6 +203,14 @@ object Is15959Formatter {
             if (dateTime != null) return formatDateTime(dateTime)
         }
         return raw.joinToString("") { "%02X".format(it.toInt() and 0xFF) }
+    }
+
+    private fun formatNumber(value: Double, unit: DlmsUnit?, obis: String?): String = when {
+        isEnergyOrPower(unit, obis) -> threeDecimalFormat.format(value)
+        unit == DlmsUnit.VOLTAGE || unit == DlmsUnit.CURRENT ||
+            unit == DlmsUnit.FREQUENCY || unit == DlmsUnit.PERCENTAGE ||
+            unit == DlmsUnit.PHASE_ANGLE_DEGREE -> twoDecimalFormat.format(value)
+        else -> numberFormat.format(value)
     }
 
     /** Returns the meter scaler only. Display-unit conversion is done by formatValue. */
