@@ -140,14 +140,34 @@ class MeterLinkPdfExporter(private val context: Context) {
             layout.section("Section 6: Block Load Survey Profile")
             drawWideProfile(layout, it)
         }
-        if (report.tamperEvents.isNotEmpty()) {
+        if (report.tamperEvents.isNotEmpty() || report.eventLogStatus.isNotEmpty()) {
             layout.section("Section 7: Tamper & Event Logs")
-            layout.table(
-                listOf("Compartment", "Date/Time", "Event Code", "Event Description", "V", "I", "PF", "kWh"),
-                report.tamperEvents.map {
-                    listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription, it.voltage, it.current, it.powerFactor, it.energy)
+            if (report.eventLogStatus.isNotEmpty()) {
+                layout.table(
+                    listOf("Compartment", "Status"),
+                    report.eventLogStatus.map { listOf(it.first, it.second) }
+                )
+            }
+            report.tamperEvents.groupBy { it.compartment }.forEach { (compartment, rows) ->
+                val compact = rows.all { row ->
+                    listOf(row.voltage, row.current, row.powerFactor, row.energy, row.kvah, row.neutralCurrent)
+                        .all { it == "N/A" }
                 }
-            )
+                val headers = if (compact) {
+                    listOf("Compartment", "Date/Time", "Event Code", "Event Description")
+                } else {
+                    listOf("Compartment", "Date/Time", "Event Code", "Event Description", "V", "I", "PF", "kWh", "kVAh", "Neutral I")
+                }
+                val values = rows.map { row ->
+                    if (compact) {
+                        listOf(row.compartment, row.dateTime, row.eventCode, row.eventDescription)
+                    } else {
+                        listOf(row.compartment, row.dateTime, row.eventCode, row.eventDescription, row.voltage, row.current, row.powerFactor, row.energy, row.kvah, row.neutralCurrent)
+                    }
+                }
+                layout.subsection(compartment)
+                layout.table(headers, values)
+            }
         }
         if (report.errors.isNotEmpty()) {
             layout.section("Read Notes")

@@ -696,12 +696,18 @@ private fun MeterDataReportView(report: MeterDataReport) {
     report.billing?.let { ReportCard(it.title) { ProfileTable(it) } }
     report.dailyLoad?.let { ReportCard(it.title) { ProfileTable(it) } }
     report.blockLoad?.let { ReportCard(it.title) { ProfileTable(it) } }
-    if (report.tamperEvents.isNotEmpty()) {
+    if (report.tamperEvents.isNotEmpty() || report.eventLogStatus.isNotEmpty()) {
         ReportCard("Tamper & Event Logs") {
+            if (report.eventLogStatus.isNotEmpty()) {
+                ReportTable(
+                    headers = listOf("Compartment", "Status"),
+                    rows = report.eventLogStatus.map { listOf(it.first, it.second) }
+                )
+            }
             ReportTable(
-                headers = listOf("Compartment", "Date/Time", "Code", "Description", "V", "I", "PF", "kWh"),
+                headers = listOf("Compartment", "Date/Time", "Code", "Description", "V", "I", "PF", "kWh", "kVAh", "Neutral I"),
                 rows = report.tamperEvents.map {
-                    listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription, it.voltage, it.current, it.powerFactor, it.energy)
+                    listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription, it.voltage, it.current, it.powerFactor, it.energy, it.kvah, it.neutralCurrent)
                 }
             )
         }

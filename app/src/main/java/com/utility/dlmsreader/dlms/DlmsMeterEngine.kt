@@ -175,7 +175,10 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     MeterDataModule.BILLING -> MeterDataReport(billing = reader.readBillingProfile())
                     MeterDataModule.BLOCK_LOAD -> MeterDataReport(blockLoad = reader.readBlockLoadSurvey())
                     MeterDataModule.DAILY_LOAD -> MeterDataReport(dailyLoad = reader.readDailyLoadSurvey())
-                    MeterDataModule.TAMPER -> MeterDataReport(tamperEvents = reader.readTamperEventLogs())
+                    MeterDataModule.TAMPER -> MeterDataReport(
+                        tamperEvents = reader.readTamperEventLogs(),
+                        eventLogStatus = reader.eventLogStatus
+                    )
                     MeterDataModule.ALL -> reader.readAllMeterData()
                     }
                 } catch (e: Exception) {
