@@ -14,6 +14,9 @@ import java.util.Calendar
 import java.util.Date
 import kotlin.math.pow
 
+const val DAILY_LOAD_MAX_ENTRIES = 400
+const val BLOCK_LOAD_MAX_ENTRIES = 48
+
 data class ParameterRow(
     val parameterName: String,
     val obisCode: String,
@@ -32,14 +35,16 @@ data class RegisterReading(
 data class ProfileColumn(
     val parameterName: String,
     val obisCode: String,
-    val unit: String = ""
+    val unit: String = "",
+    val attributeIndex: Int = 2
 )
 
 data class ProfileSection(
     val title: String,
     val profileObis: String,
     val columns: List<ProfileColumn>,
-    val rows: List<List<String>>
+    val rows: List<List<String>>,
+    val totalRows: Int = rows.size
 )
 
 private data class ProfileScaler(
@@ -184,13 +189,13 @@ class Is15959DataReader(
         return loadProfile(profile.dataObis, "Billing History Profile", profile.scalerObis)
     }
 
-    suspend fun readBlockLoadSurvey(maxEntries: Int = 48): ProfileSection {
+    suspend fun readBlockLoadSurvey(maxEntries: Int = BLOCK_LOAD_MAX_ENTRIES): ProfileSection {
         progress("Reading block load survey...")
         val profile = Is15959Catalog.profileByName("Block Load Profile")
         return loadRecentProfile(profile.dataObis, "Block Load Survey", maxEntries, profile.scalerObis)
     }
 
-    suspend fun readDailyLoadSurvey(maxEntries: Int = 35): ProfileSection {
+    suspend fun readDailyLoadSurvey(maxEntries: Int = DAILY_LOAD_MAX_ENTRIES): ProfileSection {
         progress("Reading daily load survey...")
         val profile = Is15959Catalog.profileByName("Daily Load Profile")
         return loadRecentProfile(profile.dataObis, "Daily Load Survey", maxEntries, profile.scalerObis)
@@ -311,7 +316,7 @@ class Is15959DataReader(
             meterMake = meterMake
         )
         val capture = if (register is GXDLMSExtendedRegister) {
-            Is15959Formatter.formatValue(register.captureTime)
+            if (isZeroValue(raw)) "—" else Is15959Formatter.formatValue(register.captureTime)
         } else ""
         return RegisterReading(
             parameterName = descriptor.label,
@@ -346,6 +351,7 @@ class Is15959DataReader(
         val scalers = loadCompanionScalers(scalerObis)
         if (scalers.isEmpty()) loadCaptureScalers(profile)
 
+        var totalRows = profile.buffer.size
         try {
             val endDate = readMeterRtc() ?: error("Meter RTC unavailable for selective range access.")
             val rangeDays = if (obis == "1.0.99.1.0.255") 2 else 15
@@ -357,15 +363,17 @@ class Is15959DataReader(
                 "Reading $title range ${MeterTime.format(startDate)} to ${MeterTime.format(endDate)} using meter RTC"
             )
             executor.readRowsByRange(profile, startDate, endDate)
+            totalRows = profile.buffer.size
             trimProfileBuffer(profile, maxEntries)
         } catch (_: Exception) {
             // Some L&T firmware rejects selective access for load surveys. The
             // complete buffer is reliable, and is trimmed locally for the PDF.
             progress("Selective access rejected by meter, retrying full buffer download (Selector 0)...")
             executor.readObject(profile, 2)
+            totalRows = profile.buffer.size
             trimProfileBuffer(profile, maxEntries)
         }
-        return formatProfile(profile, title, scalers)
+        return formatProfile(profile, title, scalers, totalRows)
     }
 
     private fun trimProfileBuffer(profile: GXDLMSProfileGeneric, maxEntries: Int) {
@@ -438,35 +446,55 @@ class Is15959DataReader(
     private fun formatProfile(
         profile: GXDLMSProfileGeneric,
         title: String,
-        scalers: Map<String, ProfileScaler> = emptyMap()
+        scalers: Map<String, ProfileScaler> = emptyMap(),
+        totalRows: Int = profile.buffer.size
     ): ProfileSection {
-        val objects = profile.captureObjects.map { it.key }
-        val columns = objects.map { obj ->
+        val captures = profile.captureObjects
+        val objects = captures.map { it.key }
+        val hasCaptureTime = captures.any { it.value.attributeIndex == 5 }
+        val columns = captures.map { capture ->
+            val obj = capture.key
             val obis = obj.logicalName
             val descriptor = descriptor(obis)
             val profileScaler = scalers[obis]
+            val attributeIndex = capture.value.attributeIndex
+            val label = when {
+                attributeIndex == 5 -> "${descriptor.label} — Capture Time"
+                attributeIndex == 2 && hasCaptureTime && captures.any {
+                    it.key.logicalName == obis && it.value.attributeIndex == 5
+                } -> "${descriptor.label} — Value"
+                else -> descriptor.label
+            }
             ProfileColumn(
-                parameterName = descriptor.label,
+                parameterName = label,
                 obisCode = obis,
-                unit = descriptor.unit.ifEmpty {
+                unit = if (attributeIndex == 5) "" else descriptor.unit.ifEmpty {
                     profileScaler?.unit?.let { Is15959Formatter.unitSymbol(it) }
                         ?: (obj as? GXDLMSRegister)?.let { Is15959Formatter.unitSymbol(it.unit) }
                         ?: (obj as? GXDLMSDemandRegister)?.let { Is15959Formatter.unitSymbol(it.unit) }
                         ?: ""
-                }
+                },
+                attributeIndex = attributeIndex
             )
         }
         val rows = profile.buffer.map { row ->
             val values = rowValues(row)
             objects.indices.map { index ->
+                val capture = captures[index].value
+                val pairedValueIndex = objects.indices.firstOrNull { candidate ->
+                    captures[candidate].value.attributeIndex == 2 &&
+                        captures[candidate].key.logicalName == objects[index].logicalName
+                }
                 formatProfileValue(
                     objects[index],
                     values.getOrNull(index),
-                    scalers[objects[index].logicalName]
+                    scalers[objects[index].logicalName],
+                    zeroSentinel = capture.attributeIndex == 5 &&
+                        pairedValueIndex != null && isZeroValue(values.getOrNull(pairedValueIndex))
                 )
             }
         }
-        return ProfileSection(title, profile.logicalName, columns, rows)
+        return ProfileSection(title, profile.logicalName, columns, rows, totalRows)
     }
 
     private suspend fun readTamperProfile(compartment: String, obis: String): List<TamperEventRow> {
@@ -517,8 +545,10 @@ class Is15959DataReader(
     private fun formatProfileValue(
         obj: GXDLMSObject,
         raw: Any?,
-        profileScaler: ProfileScaler?
+        profileScaler: ProfileScaler?,
+        zeroSentinel: Boolean = false
     ): String {
+        if (zeroSentinel) return "—"
         if (raw is GXDateTime || raw is Date || (raw is ByteArray && raw.size == 12)) {
             return Is15959Formatter.formatCompactDateTime(raw)
         }
@@ -535,6 +565,12 @@ class Is15959DataReader(
             meterMake = meterMake
         )
         return value
+    }
+
+    private fun isZeroValue(raw: Any?): Boolean = when (raw) {
+        is Number -> raw.toDouble() == 0.0
+        is ByteArray -> raw.all { it.toInt() == 0 }
+        else -> raw?.toString()?.trim()?.toDoubleOrNull() == 0.0
     }
 
     private fun addRow(rows: MutableList<ParameterRow>, obis: String, raw: Any?) {
