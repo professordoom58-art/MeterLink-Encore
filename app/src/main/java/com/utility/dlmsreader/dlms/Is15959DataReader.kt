@@ -108,7 +108,11 @@ class Is15959DataReader(
     packetTimeoutMs: Long = 3000L,
     private val onProgress: suspend (String) -> Unit = {}
 ) {
-    private val executor = GuruxPacketExecutor(transport, client, packetTimeoutMs = packetTimeoutMs)
+    private val executor = GuruxPacketExecutor(
+        transport,
+        client,
+        packetTimeoutMs = packetTimeoutMs.coerceAtLeast(5000L)
+    )
 
     suspend fun readIdentityAndNameplate(): IdentitySection {
         progress("Reading identity and nameplate...")
@@ -292,6 +296,7 @@ class Is15959DataReader(
         } catch (_: Exception) {
             // Some L&T firmware rejects selective access for load surveys. The
             // complete buffer is reliable, and is trimmed locally for the PDF.
+            progress("Selective access rejected by meter, retrying full buffer download (Selector 0)...")
             executor.readObject(profile, 2)
             trimProfileBuffer(profile, maxEntries)
         }
