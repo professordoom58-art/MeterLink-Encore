@@ -3,6 +3,7 @@ package com.utility.dlmsreader.dlms
 import gurux.dlms.GXDLMSClient
 import gurux.dlms.GXDateTime
 import gurux.dlms.enums.DataType
+import gurux.dlms.enums.DateTimeSkips
 import java.util.TimeZone
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -44,5 +45,15 @@ class MeterTimeTest {
         )
         val dateTime = GXDLMSClient.changeType(bytes, DataType.DATETIME, false) as GXDateTime
         assertEquals(330, dateTime.deviation)
+    }
+
+    @Test
+    fun `unspecified deviation is not treated as positive IST`() {
+        val bytes = byteArrayOf(
+            0x07, 0xE6.toByte(), 0x07, 0x05, 0xFF.toByte(), 0x00, 0x00, 0x00,
+            0xFF.toByte(), 0x80.toByte(), 0x00, 0x00
+        )
+        val dateTime = GXDLMSClient.changeType(bytes, DataType.DATETIME, false) as GXDateTime
+        assertEquals(true, dateTime.skip.contains(DateTimeSkips.DEVIATION))
     }
 }
