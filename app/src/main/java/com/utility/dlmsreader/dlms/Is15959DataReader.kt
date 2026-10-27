@@ -2,6 +2,8 @@ package com.utility.dlmsreader.dlms
 
 import com.utility.dlmsreader.transport.OpticalUsbTransport
 import gurux.dlms.GXDateTime
+import gurux.dlms.GXDLMSException
+import gurux.dlms.enums.DateTimeSkips
 import gurux.dlms.enums.Unit as DlmsUnit
 import gurux.dlms.objects.GXDLMSClock
 import gurux.dlms.objects.GXDLMSData
@@ -13,6 +15,9 @@ import gurux.dlms.objects.GXDLMSRegister
 import java.util.Calendar
 import java.util.Date
 import kotlin.math.pow
+
+const val DAILY_LOAD_MAX_ENTRIES = 400
+const val BLOCK_LOAD_MAX_ENTRIES = 48
 
 data class ParameterRow(
     val parameterName: String,
@@ -32,14 +37,16 @@ data class RegisterReading(
 data class ProfileColumn(
     val parameterName: String,
     val obisCode: String,
-    val unit: String = ""
+    val unit: String = "",
+    val attributeIndex: Int = 2
 )
 
 data class ProfileSection(
     val title: String,
     val profileObis: String,
     val columns: List<ProfileColumn>,
-    val rows: List<List<String>>
+    val rows: List<List<String>>,
+    val totalRows: Int = rows.size
 )
 
 private data class ProfileScaler(
@@ -61,14 +68,16 @@ data class IdentitySection(
 }
 
 data class TamperEventRow(
-    val compartment: String,
-    val dateTime: String,
-    val eventCode: String,
-    val eventDescription: String,
-    val voltage: String,
-    val current: String,
-    val powerFactor: String,
-    val energy: String
+    val compartment: String = "N/A",
+    val dateTime: String = "N/A",
+    val eventCode: String = "N/A",
+    val eventDescription: String = "N/A",
+    val voltage: String = "N/A",
+    val current: String = "N/A",
+    val powerFactor: String = "N/A",
+    val energy: String = "N/A",
+    val kvah: String = "N/A",
+    val neutralCurrent: String = "N/A"
 )
 
 data class MeterDataReport(
@@ -79,12 +88,13 @@ data class MeterDataReport(
     val blockLoad: ProfileSection? = null,
     val dailyLoad: ProfileSection? = null,
     val tamperEvents: List<TamperEventRow> = emptyList(),
+    val eventLogStatus: List<Pair<String, String>> = emptyList(),
     val errors: List<String> = emptyList()
 ) {
     val hasData: Boolean
         get() = identity != null || cumulativeEnergies.isNotEmpty() ||
             instantaneous != null || billing != null || blockLoad != null ||
-            dailyLoad != null || tamperEvents.isNotEmpty() || errors.isNotEmpty()
+            dailyLoad != null || tamperEvents.isNotEmpty() || eventLogStatus.isNotEmpty() || errors.isNotEmpty()
 
     fun merge(other: MeterDataReport): MeterDataReport = MeterDataReport(
         identity = when {
@@ -98,6 +108,7 @@ data class MeterDataReport(
         blockLoad = other.blockLoad ?: blockLoad,
         dailyLoad = other.dailyLoad ?: dailyLoad,
         tamperEvents = if (other.tamperEvents.isNotEmpty()) other.tamperEvents else tamperEvents,
+        eventLogStatus = eventLogStatus + other.eventLogStatus,
         errors = errors + other.errors
     )
 }
@@ -110,7 +121,14 @@ class Is15959DataReader(
     private val runtimeMetadata: Map<String, ObisMetadata> = emptyMap(),
     private val meterMake: String? = null
 ) {
-    private var meterRtc: Date? = null
+    private var meterRtc: GXDateTime? = null
+    private var meterTimeConventionChecked = false
+    private var meterTimeConventionFlipped = false
+    private var rangeTierDenied = false
+    private var rangeVariantTierDenied = false
+    private var entryTierDenied = false
+    private var lastEventLogStatus: List<Pair<String, String>> = emptyList()
+    val eventLogStatus: List<Pair<String, String>> get() = lastEventLogStatus
     private val executor = GuruxPacketExecutor(
         transport,
         client,
@@ -128,7 +146,7 @@ class Is15959DataReader(
         runCatching {
             val clock = GXDLMSClock("0.0.1.0.0.255")
             val value = executor.readObject(clock, 2)
-            meterRtc = (value as? GXDateTime)?.getLocalCalendar()?.time
+            acceptMeterRtc(value)
             addRow(rows, "0.0.1.0.0.255", value)
         }
         val nameplate = runCatching {
@@ -177,13 +195,13 @@ class Is15959DataReader(
         return loadProfile(profile.dataObis, "Billing History Profile", profile.scalerObis)
     }
 
-    suspend fun readBlockLoadSurvey(maxEntries: Int = 48): ProfileSection {
+    suspend fun readBlockLoadSurvey(maxEntries: Int = BLOCK_LOAD_MAX_ENTRIES): ProfileSection {
         progress("Reading block load survey...")
         val profile = Is15959Catalog.profileByName("Block Load Profile")
         return loadRecentProfile(profile.dataObis, "Block Load Survey", maxEntries, profile.scalerObis)
     }
 
-    suspend fun readDailyLoadSurvey(maxEntries: Int = 35): ProfileSection {
+    suspend fun readDailyLoadSurvey(maxEntries: Int = DAILY_LOAD_MAX_ENTRIES): ProfileSection {
         progress("Reading daily load survey...")
         val profile = Is15959Catalog.profileByName("Daily Load Profile")
         return loadRecentProfile(profile.dataObis, "Daily Load Survey", maxEntries, profile.scalerObis)
@@ -191,11 +209,38 @@ class Is15959DataReader(
 
     suspend fun readTamperEventLogs(): List<TamperEventRow> {
         progress("Reading tamper and event logs...")
-        return Is15959Catalog.PROFILES
+        val statuses = mutableListOf<Pair<String, String>>()
+        val rows = Is15959Catalog.PROFILES
             .filter { it.dataObis.startsWith("0.0.99.98.") }
             .flatMap { profile ->
-                runCatching { readTamperProfile(profile.name, profile.dataObis) }.getOrDefault(emptyList())
+                runCatching { readTamperProfile(profile.name, profile.dataObis) }
+                    .onSuccess { values -> statuses += profile.name to "${values.size} entries" }
+                    .onFailure { error ->
+                        if (isObjectUndefined(error)) {
+                            statuses += profile.name to "not supported by this meter"
+                            transport.log(
+                                com.utility.dlmsreader.transport.TraceDirection.INFO,
+                                "${profile.name}: object undefined; treating as not supported"
+                            )
+                        } else {
+                            statuses += profile.name to "read failed: ${error.message ?: "unknown error"}"
+                        }
+                    }
+                    .getOrDefault(emptyList())
+            }
+        lastEventLogStatus = statuses
+        return rows
+    }
+
+    private fun isObjectUndefined(error: Throwable): Boolean {
+        var current: Throwable? = error
+        while (current != null) {
+            if (current is gurux.dlms.GXDLMSException && current.errorCode == 4) return true
+            val message = current.message?.lowercase().orEmpty()
+            if ("object undefined" in message || "objectundefined" in message) return true
+            current = current.cause
         }
+        return false
     }
 
     suspend fun readAllMeterData(): MeterDataReport {
@@ -235,7 +280,10 @@ class Is15959DataReader(
             MeterDataReport(dailyLoad = readDailyLoadSurvey())
         }
         section("Tamper logs") {
-            MeterDataReport(tamperEvents = readTamperEventLogs())
+            MeterDataReport(
+                tamperEvents = readTamperEventLogs(),
+                eventLogStatus = eventLogStatus
+            )
         }
         progress("Full meter extraction complete.")
         return report.copy(errors = report.errors + errors)
@@ -274,7 +322,7 @@ class Is15959DataReader(
             meterMake = meterMake
         )
         val capture = if (register is GXDLMSExtendedRegister) {
-            Is15959Formatter.formatValue(register.captureTime)
+            if (isZeroValue(raw)) "—" else Is15959Formatter.formatValue(register.captureTime)
         } else ""
         return RegisterReading(
             parameterName = descriptor.label,
@@ -309,24 +357,77 @@ class Is15959DataReader(
         val scalers = loadCompanionScalers(scalerObis)
         if (scalers.isEmpty()) loadCaptureScalers(profile)
 
-        try {
-            val endDate = readMeterRtc() ?: Date()
-            val rangeDays = if (obis == "1.0.99.1.0.255") 2 else 15
-            val startCalendar = Calendar.getInstance().apply {
-                time = endDate
-                add(Calendar.DAY_OF_YEAR, -rangeDays)
-            }
-            progress("Reading $title range ${startCalendar.time} to $endDate using meter RTC")
-            executor.readRowsByRange(profile, startCalendar.time, endDate)
-            trimProfileBuffer(profile, maxEntries)
-        } catch (_: Exception) {
-            // Some L&T firmware rejects selective access for load surveys. The
-            // complete buffer is reliable, and is trimmed locally for the PDF.
-            progress("Selective access rejected by meter, retrying full buffer download (Selector 0)...")
-            executor.readObject(profile, 2)
-            trimProfileBuffer(profile, maxEntries)
+        var totalRows = profile.buffer.size
+        var loaded = false
+        val endDate = readMeterRtc() ?: error("Meter RTC unavailable for selective range access.")
+        val rangeDays = if (obis == "1.0.99.1.0.255") 2 else 15
+        val startCalendar = MeterTime.wallClock(endDate).apply {
+            add(Calendar.DAY_OF_YEAR, -rangeDays)
         }
-        return formatProfile(profile, title, scalers)
+        val startDate = GXDateTime(startCalendar)
+
+        if (!rangeTierDenied) {
+            try {
+                progress("Tier1 range: requesting ${MeterTime.format(startDate)} to ${MeterTime.format(endDate)}")
+                executor.readRowsByRange(profile, startDate, endDate)
+                progress("Tier1 range: success(${profile.buffer.size})")
+                totalRows = profile.buffer.size
+                loaded = true
+            } catch (error: GXDLMSException) {
+                rangeTierDenied = true
+                progress("Tier1 range: denied(${error.errorCode})")
+                if (error.errorCode == 3 && !meterTimeConventionFlipped && !rangeVariantTierDenied) {
+                    val variantStart = GXDateTime(startDate).apply {
+                        deviation = 0x8000
+                        skip.add(DateTimeSkips.DEVIATION)
+                    }
+                    val variantEnd = GXDateTime(endDate).apply {
+                        deviation = 0x8000
+                        skip.add(DateTimeSkips.DEVIATION)
+                    }
+                    try {
+                        progress("Tier1 range variant: requesting deviation 0x8000")
+                        executor.readRowsByRange(profile, variantStart, variantEnd)
+                        progress("Tier1 range variant: success(${profile.buffer.size})")
+                        totalRows = profile.buffer.size
+                        loaded = true
+                    } catch (variantError: GXDLMSException) {
+                        rangeVariantTierDenied = true
+                        progress("Tier1 range variant: denied(${variantError.errorCode})")
+                    }
+                }
+            }
+        } else {
+            progress("Tier1 range: skipped(denied earlier in session)")
+        }
+
+        if (!loaded && !entryTierDenied) {
+            try {
+                val entriesRaw = executor.readObject(profile, 7)
+                val entriesInUse = (entriesRaw as? Number)?.toInt()?.takeIf { it > 0 }
+                    ?: profile.entriesInUse
+                val index = maxOf(1, entriesInUse - maxEntries + 1)
+                progress("Tier2 entry: requesting index=$index count=$maxEntries of $entriesInUse")
+                executor.readRowsByEntry(profile, index, maxEntries)
+                progress("Tier2 entry: success(${profile.buffer.size})")
+                totalRows = entriesInUse
+                loaded = true
+            } catch (error: GXDLMSException) {
+                entryTierDenied = true
+                progress("Tier2 entry: denied(${error.errorCode})")
+            }
+        } else if (!loaded) {
+            progress("Tier2 entry: skipped(denied earlier in session)")
+        }
+
+        if (!loaded) {
+            progress("Tier3 full: requesting complete buffer")
+            executor.readObject(profile, 2)
+            progress("Tier3 full: success(${profile.buffer.size})")
+            totalRows = profile.buffer.size
+        }
+        trimProfileBuffer(profile, maxEntries)
+        return formatProfile(profile, title, scalers, totalRows)
     }
 
     private fun trimProfileBuffer(profile: GXDLMSProfileGeneric, maxEntries: Int) {
@@ -345,13 +446,28 @@ class Is15959DataReader(
         }
     }
 
-    private suspend fun readMeterRtc(): Date? {
+    private suspend fun readMeterRtc(): GXDateTime? {
         meterRtc?.let { return it }
         val clock = GXDLMSClock("0.0.1.0.0.255")
         val value = executor.readObject(clock, 2)
-        val date = (value as? GXDateTime)?.getLocalCalendar()?.time
-        meterRtc = date
-        return date
+        return acceptMeterRtc(value)
+    }
+
+    private fun acceptMeterRtc(value: Any?): GXDateTime? {
+        val dateTime = value as? GXDateTime ?: return null
+        meterRtc = dateTime
+        if (!meterTimeConventionChecked) {
+            meterTimeConventionChecked = true
+            if (dateTime.deviation == 330 && !dateTime.skip.contains(DateTimeSkips.DEVIATION)) {
+                client.setUseUtc2NormalTime(true)
+                meterTimeConventionFlipped = true
+                transport.log(
+                    com.utility.dlmsreader.transport.TraceDirection.INFO,
+                    "Meter RTC uses positive IST deviation (+330); enabled Gurux UTC-to-normal time conversion."
+                )
+            }
+        }
+        return dateTime
     }
 
     private suspend fun loadCaptureScalers(profile: GXDLMSProfileGeneric) {
@@ -385,35 +501,55 @@ class Is15959DataReader(
     private fun formatProfile(
         profile: GXDLMSProfileGeneric,
         title: String,
-        scalers: Map<String, ProfileScaler> = emptyMap()
+        scalers: Map<String, ProfileScaler> = emptyMap(),
+        totalRows: Int = profile.buffer.size
     ): ProfileSection {
-        val objects = profile.captureObjects.map { it.key }
-        val columns = objects.map { obj ->
+        val captures = profile.captureObjects
+        val objects = captures.map { it.key }
+        val hasCaptureTime = captures.any { it.value.attributeIndex == 5 }
+        val columns = captures.map { capture ->
+            val obj = capture.key
             val obis = obj.logicalName
             val descriptor = descriptor(obis)
             val profileScaler = scalers[obis]
+            val attributeIndex = capture.value.attributeIndex
+            val label = when {
+                attributeIndex == 5 -> "${descriptor.label} — Capture Time"
+                attributeIndex == 2 && hasCaptureTime && captures.any {
+                    it.key.logicalName == obis && it.value.attributeIndex == 5
+                } -> "${descriptor.label} — Value"
+                else -> descriptor.label
+            }
             ProfileColumn(
-                parameterName = descriptor.label,
+                parameterName = label,
                 obisCode = obis,
-                unit = descriptor.unit.ifEmpty {
+                unit = if (attributeIndex == 5) "" else descriptor.unit.ifEmpty {
                     profileScaler?.unit?.let { Is15959Formatter.unitSymbol(it) }
                         ?: (obj as? GXDLMSRegister)?.let { Is15959Formatter.unitSymbol(it.unit) }
                         ?: (obj as? GXDLMSDemandRegister)?.let { Is15959Formatter.unitSymbol(it.unit) }
                         ?: ""
-                }
+                },
+                attributeIndex = attributeIndex
             )
         }
         val rows = profile.buffer.map { row ->
             val values = rowValues(row)
             objects.indices.map { index ->
+                val capture = captures[index].value
+                val pairedValueIndex = objects.indices.firstOrNull { candidate ->
+                    captures[candidate].value.attributeIndex == 2 &&
+                        captures[candidate].key.logicalName == objects[index].logicalName
+                }
                 formatProfileValue(
                     objects[index],
                     values.getOrNull(index),
-                    scalers[objects[index].logicalName]
+                    scalers[objects[index].logicalName],
+                    zeroSentinel = capture.attributeIndex == 5 &&
+                        pairedValueIndex != null && isZeroValue(values.getOrNull(pairedValueIndex))
                 )
             }
         }
-        return ProfileSection(title, profile.logicalName, columns, rows)
+        return ProfileSection(title, profile.logicalName, columns, rows, totalRows)
     }
 
     private suspend fun readTamperProfile(compartment: String, obis: String): List<TamperEventRow> {
@@ -431,8 +567,16 @@ class Is15959DataReader(
         }
         val voltageIndex = objects.indexOfFirst { descriptor(it.logicalName).unit == "V" }
         val currentIndex = objects.indexOfFirst { descriptor(it.logicalName).unit == "A" }
-        val pfIndex = objects.indexOfFirst { descriptor(it.logicalName).label.contains("PF", true) }
-        val energyIndex = objects.indexOfFirst { descriptor(it.logicalName).unit.contains("Wh") }
+        val pfIndex = objects.indexOfFirst {
+            it.logicalName == "1.0.13.7.0.255" || descriptor(it.logicalName).unit == "PF"
+        }
+        val energyIndex = objects.indexOfFirst { it.logicalName == "1.0.1.8.0.255" }
+        val kvahIndex = objects.indexOfFirst {
+            descriptor(it.logicalName).unit.contains("VAh", true)
+        }
+        val neutralCurrentIndex = objects.indexOfFirst {
+            it.logicalName == "1.0.91.7.0.255"
+        }
 
         return profile.buffer.mapIndexed { rowIndex, rawRow ->
             val raw = rowValues(rawRow)
@@ -446,7 +590,9 @@ class Is15959DataReader(
                 voltage = values.valueAt(voltageIndex),
                 current = values.valueAt(currentIndex),
                 powerFactor = values.valueAt(pfIndex),
-                energy = values.valueAt(energyIndex)
+                energy = values.valueAt(energyIndex),
+                kvah = values.valueAt(kvahIndex),
+                neutralCurrent = values.valueAt(neutralCurrentIndex)
             )
         }
     }
@@ -454,8 +600,10 @@ class Is15959DataReader(
     private fun formatProfileValue(
         obj: GXDLMSObject,
         raw: Any?,
-        profileScaler: ProfileScaler?
+        profileScaler: ProfileScaler?,
+        zeroSentinel: Boolean = false
     ): String {
+        if (zeroSentinel) return "—"
         if (raw is GXDateTime || raw is Date || (raw is ByteArray && raw.size == 12)) {
             return Is15959Formatter.formatCompactDateTime(raw)
         }
@@ -472,6 +620,12 @@ class Is15959DataReader(
             meterMake = meterMake
         )
         return value
+    }
+
+    private fun isZeroValue(raw: Any?): Boolean = when (raw) {
+        is Number -> raw.toDouble() == 0.0
+        is ByteArray -> raw.all { it.toInt() == 0 }
+        else -> raw?.toString()?.trim()?.toDoubleOrNull() == 0.0
     }
 
     private fun addRow(rows: MutableList<ParameterRow>, obis: String, raw: Any?) {

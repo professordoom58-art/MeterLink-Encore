@@ -87,6 +87,7 @@ object Is15959Catalog {
         "1.0.51.7.0.255" to ObisMetadata("Y-Phase Current (A)", "A", ObisCategory.INSTANTANEOUS),
         "1.0.71.7.0.255" to ObisMetadata("B-Phase Current (A)", "A", ObisCategory.INSTANTANEOUS),
         "1.0.91.7.0.255" to ObisMetadata("Neutral Current (A)", "A", ObisCategory.INSTANTANEOUS),
+        "1.0.94.91.14.255" to ObisMetadata("Current (A)", "A", ObisCategory.INSTANTANEOUS),
         "1.0.13.7.0.255" to ObisMetadata("Signed Power Factor", "PF", ObisCategory.INSTANTANEOUS),
         "1.0.33.7.0.255" to ObisMetadata("R / Y / B Phase PF", "PF", ObisCategory.INSTANTANEOUS),
         "1.0.53.7.0.255" to ObisMetadata("R / Y / B Phase PF", "PF", ObisCategory.INSTANTANEOUS),
@@ -175,8 +176,15 @@ object Is15959Catalog {
         "1.0.31.27.0.255" to ObisMetadata("Current R", "A", ObisCategory.LOAD_SURVEY),
         "1.0.52.27.0.255" to ObisMetadata("Current B", "A", ObisCategory.LOAD_SURVEY),
         "1.0.71.27.0.255" to ObisMetadata("Current Y", "A", ObisCategory.LOAD_SURVEY),
-        "1.0.12.27.0.255" to ObisMetadata("Load Survey Object", category = ObisCategory.LOAD_SURVEY),
+        "1.0.12.27.0.255" to ObisMetadata("Average Voltage (V)", "V", ObisCategory.LOAD_SURVEY),
         "1.0.11.27.0.255" to ObisMetadata("Load Survey Object", category = ObisCategory.LOAD_SURVEY),
+        "1.0.1.29.0.255" to ObisMetadata("Block Energy - Active Import (kWh)", "kWh", ObisCategory.LOAD_SURVEY),
+        "1.0.9.29.0.255" to ObisMetadata("Block Energy - Apparent Import (kVAh)", "kVAh", ObisCategory.LOAD_SURVEY),
+        // TODO: confirm with L&T documentation.
+        "1.0.128.8.98.255" to ObisMetadata(
+            "Vendor Value (L&T) [unverified: looks like meter temperature, °C]",
+            category = ObisCategory.VENDOR_SPECIFIC
+        ),
         "1.0.84.0.0.255" to ObisMetadata("Billing XML Object", category = ObisCategory.BILLING),
         "1.0.29.0.0.255" to ObisMetadata("Block-Load Active Energy", category = ObisCategory.LOAD_SURVEY),
 

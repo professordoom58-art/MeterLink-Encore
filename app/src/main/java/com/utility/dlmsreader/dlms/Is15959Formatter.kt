@@ -11,6 +11,23 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
+object MeterTime {
+    fun wallClock(dt: GXDateTime): Calendar =
+        (dt.getMeterCalendar().clone() as Calendar)
+
+    fun format(dt: GXDateTime, compact: Boolean = false): String {
+        val calendar = wallClock(dt)
+        val year = calendar.get(Calendar.YEAR)
+        if (year < 2000 || year > 2200) return "N/A"
+        val formatter = SimpleDateFormat(
+            if (compact) "dd-MM-yy HH:mm" else "dd-MMM-yyyy HH:mm:ss",
+            Locale.ENGLISH
+        )
+        formatter.timeZone = calendar.timeZone
+        return formatter.format(calendar.time)
+    }
+}
+
 data class ObisDescriptor(
     val label: String,
     val unit: String = "",
@@ -74,19 +91,17 @@ object Is15959Formatter {
     }
 
     fun formatDateTime(raw: GXDateTime): String = runCatching {
-        val calendar = raw.getLocalCalendar()
-        val year = calendar.get(Calendar.YEAR)
-        if (year < 2000 || year > 2200) "N/A" else dateFormat.format(calendar.time)
+        MeterTime.format(raw)
     }.getOrDefault("N/A")
 
     fun formatCompactDateTime(raw: Any?): String = runCatching {
         val date = when (raw) {
-            is GXDateTime -> raw.getLocalCalendar().time
+            is GXDateTime -> return@runCatching MeterTime.format(raw, compact = true)
             is Date -> raw
             is ByteArray -> {
                 if (raw.size != 12) return@runCatching formatValue(raw)
                 (GXDLMSClient.changeType(raw, DataType.DATETIME, false) as? GXDateTime)
-                    ?.getLocalCalendar()?.time
+                    ?.let { return@runCatching MeterTime.format(it, compact = true) }
             }
             else -> null
         } ?: return@runCatching formatValue(raw)

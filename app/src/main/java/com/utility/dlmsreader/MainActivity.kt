@@ -158,7 +158,12 @@ fun MeterReaderScreen(
                     meterReport = mergedReport
                     if (module == MeterDataModule.ALL) {
                         runCatching {
-                            val bundle = MeterLinkPdfExporter(context).exportBundle(mergedReport, traceLogs.toList())
+                            val bundle = MeterLinkPdfExporter(context).exportBundle(
+                                mergedReport,
+                                transport.traceSnapshot(),
+                                transport.traceCounters(),
+                                transport.droppedTraceLineCount()
+                            )
                             lastHexLogFile = bundle.hexLog
                             reportStatusText = "✓ Read All saved ${bundle.pdf.name} and ${bundle.hexLog.name}."
                         }.onFailure {
@@ -179,7 +184,12 @@ fun MeterReaderScreen(
     fun exportReport() {
         runCatching {
             val exporter = MeterLinkPdfExporter(context)
-            val bundle = exporter.exportBundle(meterReport, traceLogs.toList())
+            val bundle = exporter.exportBundle(
+                meterReport,
+                transport.traceSnapshot(),
+                transport.traceCounters(),
+                transport.droppedTraceLineCount()
+            )
             lastHexLogFile = bundle.hexLog
             exporter.share(bundle.pdf)
             reportStatusText = "✓ PDF saved as ${bundle.pdf.name}; Hex Log saved as ${bundle.hexLog.name}."
@@ -189,7 +199,12 @@ fun MeterReaderScreen(
     fun exportHexLog() {
         runCatching {
             val exporter = MeterLinkPdfExporter(context)
-            val file = exporter.exportHexLog(meterReport, traceLogs.toList())
+            val file = exporter.exportHexLog(
+                meterReport,
+                transport.traceSnapshot(),
+                transport.traceCounters(),
+                transport.droppedTraceLineCount()
+            )
             lastHexLogFile = file
             exporter.shareText(file)
             reportStatusText = "✓ Hex log saved as ${file.name} and ready to share."
@@ -696,14 +711,34 @@ private fun MeterDataReportView(report: MeterDataReport) {
     report.billing?.let { ReportCard(it.title) { ProfileTable(it) } }
     report.dailyLoad?.let { ReportCard(it.title) { ProfileTable(it) } }
     report.blockLoad?.let { ReportCard(it.title) { ProfileTable(it) } }
-    if (report.tamperEvents.isNotEmpty()) {
+    if (report.tamperEvents.isNotEmpty() || report.eventLogStatus.isNotEmpty()) {
         ReportCard("Tamper & Event Logs") {
-            ReportTable(
-                headers = listOf("Compartment", "Date/Time", "Code", "Description", "V", "I", "PF", "kWh"),
-                rows = report.tamperEvents.map {
-                    listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription, it.voltage, it.current, it.powerFactor, it.energy)
+            if (report.eventLogStatus.isNotEmpty()) {
+                ReportTable(
+                    headers = listOf("Compartment", "Status"),
+                    rows = report.eventLogStatus.map { listOf(it.first, it.second) }
+                )
+            }
+            report.tamperEvents.groupBy { it.compartment }.forEach { (compartment, events) ->
+                val compact = events.all { event ->
+                    listOf(event.voltage, event.current, event.powerFactor, event.energy, event.kvah, event.neutralCurrent)
+                        .all { it == "N/A" }
                 }
-            )
+                Text(compartment, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                if (compact) {
+                    ReportTable(
+                        headers = listOf("Compartment", "Date/Time", "Code", "Description"),
+                        rows = events.map { listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription) }
+                    )
+                } else {
+                    ReportTable(
+                        headers = listOf("Compartment", "Date/Time", "Code", "Description", "V", "I", "PF", "kWh", "kVAh", "Neutral I"),
+                        rows = events.map {
+                            listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription, it.voltage, it.current, it.powerFactor, it.energy, it.kvah, it.neutralCurrent)
+                        }
+                    )
+                }
+            }
         }
     }
     if (report.errors.isNotEmpty()) {
@@ -720,6 +755,20 @@ private fun ProfileTable(section: ProfileSection) {
         return
     }
     ReportTable(section.columns.map { it.parameterName }, section.rows)
+    if (section.rows.size < section.totalRows) {
+        Text(
+            "Showing ${section.rows.size} of ${section.totalRows} entries (oldest shown: ${section.rows.firstOrNull()?.firstOrNull() ?: "N/A"})",
+            color = Color.Gray,
+            fontSize = 10.sp
+        )
+    }
+    if (section.title.contains("Block Load", ignoreCase = true)) {
+        Text(
+            "Timestamps are interval-end. Zero rows before a power restoration are meter zero-fill.",
+            color = Color.Gray,
+            fontSize = 10.sp
+        )
+    }
 }
 
 @Composable

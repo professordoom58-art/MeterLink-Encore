@@ -10,6 +10,7 @@ import android.graphics.pdf.PdfDocument
 import android.os.Environment
 import androidx.core.content.FileProvider
 import com.utility.dlmsreader.transport.TraceDirection
+import com.utility.dlmsreader.transport.TraceCounters
 import com.utility.dlmsreader.transport.TraceLog
 import java.io.File
 import java.io.FileOutputStream
@@ -38,7 +39,12 @@ class MeterLinkPdfExporter(private val context: Context) {
         return exportBundle(report, emptyList()).pdf
     }
 
-    fun exportBundle(report: MeterDataReport, traceLogs: List<TraceLog>): MeterLinkExportBundle {
+    fun exportBundle(
+        report: MeterDataReport,
+        traceLogs: List<TraceLog>,
+        counters: TraceCounters? = null,
+        droppedLineCount: Long = 0
+    ): MeterLinkExportBundle {
         require(report.hasData) { "No meter data is available for export." }
         val generated = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.ENGLISH).format(Date())
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ENGLISH).format(Date())
@@ -56,18 +62,23 @@ class MeterLinkPdfExporter(private val context: Context) {
             logicalDevice = identityValue(report, "0.0.42.0.0.255"),
             manufacturer = identityValue(report, "0.0.96.1.1.255")
         )
-        buildReport(layout, report, traceLogs)
+        buildReport(layout, report, traceLogs, counters, droppedLineCount)
 
         val document = PdfDocument()
         layout.render(document)
         FileOutputStream(file).use { document.writeTo(it) }
         document.close()
         val hexLog = File(directory, "MeterLink_HexLog_${serial}_$stamp.txt")
-        writeHexLog(hexLog, traceLogs, generated, serial)
+        writeHexLog(hexLog, traceLogs, generated, serial, counters, droppedLineCount)
         return MeterLinkExportBundle(file, hexLog)
     }
 
-    fun exportHexLog(report: MeterDataReport, traceLogs: List<TraceLog>): File {
+    fun exportHexLog(
+        report: MeterDataReport,
+        traceLogs: List<TraceLog>,
+        counters: TraceCounters? = null,
+        droppedLineCount: Long = 0
+    ): File {
         val generated = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.ENGLISH).format(Date())
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ENGLISH).format(Date())
         val serial = identityValue(report, "0.0.96.1.0.255")
@@ -76,7 +87,7 @@ class MeterLinkPdfExporter(private val context: Context) {
         val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
         directory.mkdirs()
         return File(directory, "MeterLink_HexLog_${serial}_$stamp.txt").also {
-            writeHexLog(it, traceLogs, generated, serial)
+            writeHexLog(it, traceLogs, generated, serial, counters, droppedLineCount)
         }
     }
 
@@ -105,14 +116,22 @@ class MeterLinkPdfExporter(private val context: Context) {
         })
     }
 
-    private fun buildReport(layout: ReportLayout, report: MeterDataReport, traceLogs: List<TraceLog>) {
+    private fun buildReport(
+        layout: ReportLayout,
+        report: MeterDataReport,
+        traceLogs: List<TraceLog>,
+        counters: TraceCounters?,
+        droppedLineCount: Long
+    ) {
         report.identity?.let { identity ->
             layout.section("Section 1: Meter Identity & Nameplate Summary")
             layout.table(
                 listOf("Parameter", "OBIS Code", "Value", "Unit"),
                 identity.rows.map { listOf(it.parameterName, it.obisCode, it.formattedValue, it.unit) }
             )
-            identity.nameplate?.let { drawProfile(layout, it) }
+            identity.nameplate?.let {
+                drawProfile(layout, it, identity.rows.map { row -> row.obisCode }.toSet())
+            }
         }
 
         if (report.cumulativeEnergies.isNotEmpty()) {
@@ -140,30 +159,56 @@ class MeterLinkPdfExporter(private val context: Context) {
             layout.section("Section 6: Block Load Survey Profile")
             drawWideProfile(layout, it)
         }
-        if (report.tamperEvents.isNotEmpty()) {
+        if (report.tamperEvents.isNotEmpty() || report.eventLogStatus.isNotEmpty()) {
             layout.section("Section 7: Tamper & Event Logs")
-            layout.table(
-                listOf("Compartment", "Date/Time", "Event Code", "Event Description", "V", "I", "PF", "kWh"),
-                report.tamperEvents.map {
-                    listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription, it.voltage, it.current, it.powerFactor, it.energy)
+            if (report.eventLogStatus.isNotEmpty()) {
+                layout.table(
+                    listOf("Compartment", "Status"),
+                    report.eventLogStatus.map { listOf(it.first, it.second) }
+                )
+            }
+            report.tamperEvents.groupBy { it.compartment }.forEach { (compartment, rows) ->
+                val compact = rows.all { row ->
+                    listOf(row.voltage, row.current, row.powerFactor, row.energy, row.kvah, row.neutralCurrent)
+                        .all { it == "N/A" }
                 }
-            )
+                val headers = if (compact) {
+                    listOf("Compartment", "Date/Time", "Event Code", "Event Description")
+                } else {
+                    listOf("Compartment", "Date/Time", "Event Code", "Event Description", "V", "I", "PF", "kWh", "kVAh", "Neutral I")
+                }
+                val values = rows.map { row ->
+                    if (compact) {
+                        listOf(row.compartment, row.dateTime, row.eventCode, row.eventDescription)
+                    } else {
+                        listOf(row.compartment, row.dateTime, row.eventCode, row.eventDescription, row.voltage, row.current, row.powerFactor, row.energy, row.kvah, row.neutralCurrent)
+                    }
+                }
+                layout.subsection(compartment)
+                layout.table(headers, values)
+            }
         }
         if (report.errors.isNotEmpty()) {
             layout.section("Read Notes")
             layout.table(listOf("Section", "Status"), report.errors.map { listOf("MeterLink", it) })
         }
         layout.section("Section 8: Diagnostic Protocol & Execution Log (Summary)")
-        layout.table(listOf("Category", "Details"), diagnosticRows(traceLogs))
+        layout.table(listOf("Category", "Details"), diagnosticRows(traceLogs, counters, droppedLineCount))
     }
 
     private fun drawProfile(layout: ReportLayout, section: ProfileSection) {
+        drawProfile(layout, section, emptySet())
+    }
+
+    private fun drawProfile(layout: ReportLayout, section: ProfileSection, excludedObis: Set<String>) {
+        val included = section.columns.withIndex().filter { it.value.obisCode !in excludedObis }
         val rows = section.rows.flatMap { row ->
-            section.columns.mapIndexed { index, column ->
-                listOf(column.parameterName, column.obisCode, row.getOrNull(index) ?: "N/A", column.unit)
+            included.map { indexed ->
+                val column = indexed.value
+                listOf(column.parameterName, column.obisCode, row.getOrNull(indexed.index) ?: "N/A", column.unit)
             }
         }
-        layout.table(listOf("Parameter", "OBIS Code", "Value", "Unit"), rows)
+        if (rows.isNotEmpty()) layout.table(listOf("Parameter", "OBIS Code", "Value", "Unit"), rows)
     }
 
     private fun drawWideProfile(layout: ReportLayout, section: ProfileSection) {
@@ -172,6 +217,13 @@ class MeterLinkPdfExporter(private val context: Context) {
             layout.table(listOf("Profile", "Status"), listOf(listOf(section.profileObis, "No rows returned")))
         } else {
             drawProfileChunks(layout, section, section.columns.indices.toList(), section.title)
+            if (section.rows.size < section.totalRows) {
+                val oldestShown = section.rows.firstOrNull()?.firstOrNull() ?: "N/A"
+                layout.note("Showing ${section.rows.size} of ${section.totalRows} entries (oldest shown: $oldestShown)")
+            }
+            if (section.title.contains("Block Load", ignoreCase = true)) {
+                layout.note("Timestamps are interval-end. Zero rows before a power restoration are meter zero-fill.")
+            }
         }
     }
 
@@ -179,7 +231,7 @@ class MeterLinkPdfExporter(private val context: Context) {
         if (section.columns.isEmpty()) {
             layout.table(listOf("Profile", "Status"), listOf(listOf(section.profileObis, "No rows returned")))
         } else {
-            drawProfileChunks(layout, section, section.columns.indices.toList(), "Billing History Profile")
+            drawProfileChunks(layout, section, section.columns.indices.toList(), "Billing History Profile", billing = true)
         }
     }
 
@@ -197,36 +249,84 @@ class MeterLinkPdfExporter(private val context: Context) {
         layout: ReportLayout,
         section: ProfileSection,
         indexes: List<Int>,
-        title: String
+        title: String,
+        billing: Boolean = false
     ) {
-        if (indexes.size <= 7) {
-            layout.subsection(title)
-            drawSelectedProfile(layout, section, indexes.map { it to section.columns[it].parameterName })
-            return
+        val units = mutableListOf<List<Int>>()
+        var position = 0
+        while (position < indexes.size) {
+            val index = indexes[position]
+            val column = section.columns[index]
+            val next = indexes.getOrNull(position + 1)?.let { section.columns[it] }
+            if (column.attributeIndex == 2 && next != null && next.attributeIndex == 5 && next.obisCode == column.obisCode) {
+                units += listOf(index, indexes[position + 1])
+                position += 2
+            } else {
+                units += listOf(index)
+                position++
+            }
         }
 
-        val firstIndex = indexes.first()
-        val chunks = indexes.drop(1).chunked(6)
+        val chunks = mutableListOf<MutableList<Int>>()
+        var current = mutableListOf<Int>()
+        units.forEach { unit ->
+            if (current.isNotEmpty() && current.size + unit.size > 7) {
+                chunks += current
+                current = mutableListOf()
+            }
+            current.addAll(unit)
+        }
+        if (current.isNotEmpty()) chunks += current
+        if (chunks.size > 1 && chunks.last().size == 1) {
+            val previous = chunks[chunks.lastIndex - 1].toMutableList()
+            val moveCount = if (previous.size >= 2) {
+                val valueColumn = section.columns[previous[previous.lastIndex - 1]]
+                val timeColumn = section.columns[previous.last()]
+                if (valueColumn.attributeIndex == 2 && timeColumn.attributeIndex == 5 &&
+                    valueColumn.obisCode == timeColumn.obisCode
+                ) 2 else 1
+            } else 1
+            if (previous.size > moveCount) {
+                val moved = previous.takeLast(moveCount)
+                repeat(moveCount) { previous.removeAt(previous.lastIndex) }
+                chunks[chunks.lastIndex - 1] = previous
+                chunks[chunks.lastIndex].addAll(0, moved)
+            }
+        }
         chunks.forEachIndexed { chunkIndex, chunk ->
-            val chunkTitle = "$title (Part ${chunkIndex + 1} of ${chunks.size})"
+            val chunkTitle = if (chunks.size == 1) title else "$title (Part ${chunkIndex + 1} of ${chunks.size})"
             layout.subsection(chunkTitle)
-            val selected = listOf(firstIndex) + chunk
-            drawSelectedProfile(layout, section, selected.map { it to section.columns[it].parameterName })
+            val selected = chunk.map { index ->
+                val column = section.columns[index]
+                // TODO: confirm code 65 against L&T manual; reset values remain unchanged.
+                val label = if (billing && column.obisCode == "0.0.94.91.14.255" && column.attributeIndex == 2) {
+                    "Power-On Duration in Period (min)"
+                } else column.parameterName
+                index to label
+            }
+            drawSelectedProfile(layout, section, selected)
         }
     }
 
-    private fun diagnosticRows(traceLogs: List<TraceLog>): List<List<String>> {
-        if (traceLogs.isEmpty()) return listOf(listOf("Trace", "No protocol trace lines captured."))
+    private fun diagnosticRows(
+        traceLogs: List<TraceLog>,
+        counters: TraceCounters? = null,
+        droppedLineCount: Long = 0
+    ): List<List<String>> {
         val counts = TraceDirection.entries.associateWith { direction ->
             traceLogs.count { it.direction == direction }
         }
+        val tx = counters?.tx ?: (counts[TraceDirection.TX] ?: 0)
+        val rx = counters?.rx ?: (counts[TraceDirection.RX] ?: 0)
+        val info = counters?.info ?: (counts[TraceDirection.INFO] ?: 0)
+        val error = counters?.error ?: (counts[TraceDirection.ERROR] ?: 0)
         val rows = mutableListOf(
             listOf(
-                "Packet counts",
-                "TX=${counts[TraceDirection.TX] ?: 0}, RX=${counts[TraceDirection.RX] ?: 0}, " +
-                    "INFO=${counts[TraceDirection.INFO] ?: 0}, ERROR=${counts[TraceDirection.ERROR] ?: 0}"
+                "Counters (full session)",
+                "TX=$tx, RX=$rx, INFO=$info, ERROR=$error"
             )
         )
+        rows += listOf("Log lines retained", "${traceLogs.size} (${droppedLineCount} dropped)")
         traceLogs.asReversed()
             .filter { it.direction == TraceDirection.INFO && it.hexOrMessage.startsWith("Reading Section:") }
             .distinctBy { it.hexOrMessage }
@@ -238,15 +338,31 @@ class MeterLinkPdfExporter(private val context: Context) {
         return rows
     }
 
-    private fun writeHexLog(file: File, traceLogs: List<TraceLog>, generated: String, serial: String) {
+    private fun writeHexLog(
+        file: File,
+        traceLogs: List<TraceLog>,
+        generated: String,
+        serial: String,
+        counters: TraceCounters? = null,
+        droppedLineCount: Long = 0
+    ) {
         val timeFormat = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss.SSS", Locale.ENGLISH)
         file.bufferedWriter().use { writer ->
             writer.appendLine("MeterLink Hex Terminal Log")
-            writer.appendLine("Generated: $generated")
+            writer.appendLine("Generated (phone time): $generated")
             writer.appendLine("Serial: $serial")
+            val counts = counters ?: TraceCounters(
+                tx = traceLogs.count { it.direction == TraceDirection.TX }.toLong(),
+                rx = traceLogs.count { it.direction == TraceDirection.RX }.toLong(),
+                info = traceLogs.count { it.direction == TraceDirection.INFO }.toLong(),
+                error = traceLogs.count { it.direction == TraceDirection.ERROR }.toLong()
+            )
+            writer.appendLine("Counters (full session): TX=${counts.tx}, RX=${counts.rx}, INFO=${counts.info}, ERROR=${counts.error}")
+            writer.appendLine("Log lines retained: ${traceLogs.size} ($droppedLineCount dropped)")
+            writer.appendLine("Timestamps: phone time")
             writer.appendLine()
             traceLogs.asReversed().forEach { log ->
-                writer.appendLine("${timeFormat.format(Date(log.timestampMs))} [${log.direction}] ${log.hexOrMessage}")
+                writer.appendLine("${timeFormat.format(Date(log.timestampMs))} (phone time) [${log.direction}] ${log.hexOrMessage}")
             }
         }
     }
@@ -295,14 +411,28 @@ class MeterLinkPdfExporter(private val context: Context) {
             y += 22f
         }
 
+        fun note(text: String) {
+            ensure(22f)
+            add(Op.Text(text, LEFT, y + 12f, 8f, Color.DKGRAY, false))
+            y += 18f
+        }
+
         fun table(headers: List<String>, rows: List<List<String>>) {
             if (headers.isEmpty()) return
             currentTableHeaders = headers
             val widths = widths(headers.size)
             tableHeader(headers, widths)
             rows.forEachIndexed { rowIndex, row ->
+                val numeric = headers.indices.map { index ->
+                    (row.getOrNull(index) ?: "").matches(Regex("[-+]?([0-9][0-9,]*)(\\.[0-9]+)?(.*)"))
+                }
+                val fitted = headers.indices.map { index ->
+                    val value = row.getOrNull(index) ?: ""
+                    if (numeric[index]) fitNumeric(value, widths[index] - 8f) else null
+                }
                 val wrapped = headers.indices.map { index ->
-                    wrapText(row.getOrNull(index) ?: "", widths[index] - 8f, 8f)
+                    fitted[index]?.let { listOf(it.first) }
+                        ?: wrapText(row.getOrNull(index) ?: "", widths[index] - 8f, 8f)
                 }
                 val rowHeight = maxOf(20f, (wrapped.maxOfOrNull { it.size } ?: 1) * 10f + 8f)
                 if (y + rowHeight > BOTTOM) {
@@ -314,11 +444,11 @@ class MeterLinkPdfExporter(private val context: Context) {
                 var x = LEFT
                 headers.forEachIndexed { index, _ ->
                     val value = row.getOrNull(index) ?: ""
-                    val numeric = value.matches(Regex("[-+]?([0-9][0-9,]*)(\\.[0-9]+)?(.*)"))
-                    val align = if (numeric && index > 0) Paint.Align.RIGHT else Paint.Align.LEFT
+                    val align = if (numeric[index] && index > 0) Paint.Align.RIGHT else Paint.Align.LEFT
+                    val textSize = fitted[index]?.second ?: 8f
                     wrapped[index].forEachIndexed { lineIndex, line ->
                         val textX = if (align == Paint.Align.RIGHT) x + widths[index] - 4f else x + 4f
-                        add(Op.Text(line, textX, top + 14f + lineIndex * 10f, 8f, Color.rgb(30, 41, 59), false, align))
+                        add(Op.Text(line, textX, top + 14f + lineIndex * 10f, textSize, Color.rgb(30, 41, 59), false, align))
                     }
                     add(Op.Rect(x, top, x + widths[index], top + rowHeight, BORDER, false))
                     x += widths[index]
@@ -381,9 +511,11 @@ class MeterLinkPdfExporter(private val context: Context) {
             val weights = List(count) { index ->
                 val header = currentTableHeaders[index].lowercase(Locale.ENGLISH)
                 when {
-                    "date" in header || "time" in header || "description" in header -> 1.6f
+                    "date" in header || "time" in header -> 1.6f
                     "obis" in header || "code" in header || "unit" in header -> 0.6f
-                    header in setOf("v", "i", "pf", "kwh", "kvah", "kvarh") -> 0.6f
+                    header in setOf("v", "i", "pf") -> 0.6f
+                    header in setOf("kwh", "kvah", "kvarh", "neutral i") -> 0.85f
+                    "description" in header -> 1.3f
                     "parameter" in header -> 1.35f
                     else -> 1.0f
                 }
@@ -419,7 +551,7 @@ class MeterLinkPdfExporter(private val context: Context) {
             paint.color = Color.rgb(51, 65, 85)
             paint.textSize = 8f
             paint.typeface = Typeface.DEFAULT
-            canvas.drawText("Generated: $generated    Serial: $serial    LDN: $logicalDevice    Manufacturer: $manufacturer", LEFT, 65f, paint)
+            canvas.drawText("Generated (phone time): $generated    Serial: $serial    LDN: $logicalDevice    Manufacturer: $manufacturer", LEFT, 65f, paint)
             paint.color = BORDER
             canvas.drawLine(LEFT, 76f, RIGHT, 76f, paint)
         }
@@ -485,6 +617,20 @@ class MeterLinkPdfExporter(private val context: Context) {
                 typeface = if (bold) Typeface.create(Typeface.DEFAULT, Typeface.BOLD) else Typeface.DEFAULT
             }
             return paint.measureText(value)
+        }
+
+        private fun fitNumeric(value: String, width: Float): Pair<String, Float> {
+            listOf(8f, 7.5f, 7f, 6.5f, 6f).forEach { size ->
+                if (measureText(value, size, false) <= width) return value to size
+            }
+            var clipped = ""
+            for (character in value) {
+                val candidate = "$clipped$character…"
+                if (measureText(candidate, 6f, false) > width) break
+                clipped += character
+            }
+            clipped += '…'
+            return clipped to 6f
         }
     }
 }
