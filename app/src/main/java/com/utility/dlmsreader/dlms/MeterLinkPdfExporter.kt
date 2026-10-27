@@ -46,11 +46,10 @@ class MeterLinkPdfExporter(private val context: Context) {
         droppedLineCount: Long = 0
     ): MeterLinkExportBundle {
         require(report.hasData) { "No meter data is available for export." }
-        val generated = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.ENGLISH).format(Date())
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ENGLISH).format(Date())
-        val serial = identityValue(report, "0.0.96.1.0.255")
-            .ifBlank { "Meter" }
-            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val now = Date()
+        val generated = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.US).format(now)
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(now)
+        val serial = exportSerial(report)
         val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
             ?: context.filesDir
         directory.mkdirs()
@@ -79,11 +78,10 @@ class MeterLinkPdfExporter(private val context: Context) {
         counters: TraceCounters? = null,
         droppedLineCount: Long = 0
     ): File {
-        val generated = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.ENGLISH).format(Date())
-        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ENGLISH).format(Date())
-        val serial = identityValue(report, "0.0.96.1.0.255")
-            .ifBlank { "Meter" }
-            .replace(Regex("[^A-Za-z0-9._-]"), "_")
+        val now = Date()
+        val generated = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.US).format(now)
+        val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(now)
+        val serial = exportSerial(report)
         val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
         directory.mkdirs()
         return File(directory, "MeterLink_HexLog_${serial}_$stamp.txt").also {
@@ -127,7 +125,7 @@ class MeterLinkPdfExporter(private val context: Context) {
             layout.section("Section 1: Meter Identity & Nameplate Summary")
             layout.table(
                 listOf("Parameter", "OBIS Code", "Value", "Unit"),
-                identity.rows.map { listOf(it.parameterName, it.obisCode, it.formattedValue, it.unit) }
+                identity.rows.map { listOf(it.parameterName, it.obisCode, it.formattedValue, it.unit.ifBlank { "—" }) }
             )
             identity.nameplate?.let {
                 drawProfile(layout, it, identity.rows.map { row -> row.obisCode }.toSet())
@@ -139,7 +137,7 @@ class MeterLinkPdfExporter(private val context: Context) {
             layout.table(
                 listOf("Parameter", "OBIS Code", "Reading", "Unit", "Capture Timestamp"),
                 report.cumulativeEnergies.map {
-                    listOf(it.parameterName, it.obisCode, it.reading, it.unit, it.captureTimestamp)
+                    listOf(it.parameterName, it.obisCode, it.reading, it.unit.ifBlank { "—" }, it.captureTimestamp.ifBlank { "—" })
                 }
             )
         }
@@ -193,7 +191,7 @@ class MeterLinkPdfExporter(private val context: Context) {
             layout.table(listOf("Section", "Status"), report.errors.map { listOf("MeterLink", it) })
         }
         layout.section("Section 8: Diagnostic Protocol & Execution Log (Summary)")
-        layout.table(listOf("Category", "Details"), diagnosticRows(traceLogs, counters, droppedLineCount))
+        layout.table(listOf("Category", "Details"), diagnosticRows(report, traceLogs, counters, droppedLineCount))
     }
 
     private fun drawProfile(layout: ReportLayout, section: ProfileSection) {
@@ -205,7 +203,7 @@ class MeterLinkPdfExporter(private val context: Context) {
         val rows = section.rows.flatMap { row ->
             included.map { indexed ->
                 val column = indexed.value
-                listOf(column.parameterName, column.obisCode, row.getOrNull(indexed.index) ?: "N/A", column.unit)
+                listOf(column.parameterName, column.obisCode, row.getOrNull(indexed.index) ?: "—", column.unit.ifBlank { "—" })
             }
         }
         if (rows.isNotEmpty()) layout.table(listOf("Parameter", "OBIS Code", "Value", "Unit"), rows)
@@ -241,7 +239,7 @@ class MeterLinkPdfExporter(private val context: Context) {
         selected: List<Pair<Int, String>>
     ) {
         val headers = selected.map { it.second }
-        val rows = section.rows.map { row -> selected.map { row.getOrNull(it.first) ?: "N/A" } }
+        val rows = section.rows.map { row -> selected.map { row.getOrNull(it.first) ?: "—" } }
         layout.table(headers, rows)
     }
 
@@ -267,36 +265,32 @@ class MeterLinkPdfExporter(private val context: Context) {
             }
         }
 
-        val chunks = mutableListOf<MutableList<Int>>()
-        var current = mutableListOf<Int>()
-        units.forEach { unit ->
-            if (current.isNotEmpty() && current.size + unit.size > 7) {
-                chunks += current
+        val pinnedUnit = units.firstOrNull { it.contains(indexes.first()) } ?: listOf(indexes.first())
+        val remainingUnits = units.filterNot { it == pinnedUnit }
+        val capacity = (7 - pinnedUnit.size).coerceAtLeast(1)
+        val chunkUnits = mutableListOf<MutableList<List<Int>>>()
+        var current = mutableListOf<List<Int>>()
+        var currentSize = 0
+        remainingUnits.forEach { unit ->
+            if (current.isNotEmpty() && currentSize + unit.size > capacity) {
+                chunkUnits += current
                 current = mutableListOf()
+                currentSize = 0
             }
-            current.addAll(unit)
+            current += unit
+            currentSize += unit.size
         }
-        if (current.isNotEmpty()) chunks += current
-        if (chunks.size > 1 && chunks.last().size == 1) {
-            val previous = chunks[chunks.lastIndex - 1].toMutableList()
-            val moveCount = if (previous.size >= 2) {
-                val valueColumn = section.columns[previous[previous.lastIndex - 1]]
-                val timeColumn = section.columns[previous.last()]
-                if (valueColumn.attributeIndex == 2 && timeColumn.attributeIndex == 5 &&
-                    valueColumn.obisCode == timeColumn.obisCode
-                ) 2 else 1
-            } else 1
-            if (previous.size > moveCount) {
-                val moved = previous.takeLast(moveCount)
-                repeat(moveCount) { previous.removeAt(previous.lastIndex) }
-                chunks[chunks.lastIndex - 1] = previous
-                chunks[chunks.lastIndex].addAll(0, moved)
-            }
+        if (current.isNotEmpty()) chunkUnits += current
+        if (chunkUnits.isEmpty()) chunkUnits.add(mutableListOf())
+        if (chunkUnits.size > 1 && chunkUnits.last().size == 1 && chunkUnits[chunkUnits.lastIndex - 1].size > 1) {
+            val moved = chunkUnits[chunkUnits.lastIndex - 1].removeLast()
+            chunkUnits[chunkUnits.lastIndex].add(0, moved)
         }
+        val chunks = chunkUnits.map { it.flatten() }
         chunks.forEachIndexed { chunkIndex, chunk ->
             val chunkTitle = if (chunks.size == 1) title else "$title (Part ${chunkIndex + 1} of ${chunks.size})"
             layout.subsection(chunkTitle)
-            val selected = chunk.map { index ->
+            val selected = (pinnedUnit + chunk).map { index ->
                 val column = section.columns[index]
                 // TODO: confirm code 65 against L&T manual; reset values remain unchanged.
                 val label = if (billing && column.obisCode == "0.0.94.91.14.255" && column.attributeIndex == 2) {
@@ -309,6 +303,7 @@ class MeterLinkPdfExporter(private val context: Context) {
     }
 
     private fun diagnosticRows(
+        report: MeterDataReport,
         traceLogs: List<TraceLog>,
         counters: TraceCounters? = null,
         droppedLineCount: Long = 0
@@ -327,6 +322,7 @@ class MeterLinkPdfExporter(private val context: Context) {
             )
         )
         rows += listOf("Log lines retained", "${traceLogs.size} (${droppedLineCount} dropped)")
+        executionRows(report).forEach { rows += it }
         traceLogs.asReversed()
             .filter { it.direction == TraceDirection.INFO && it.hexOrMessage.startsWith("Reading Section:") }
             .distinctBy { it.hexOrMessage }
@@ -336,6 +332,32 @@ class MeterLinkPdfExporter(private val context: Context) {
             .take(80)
             .forEach { rows += listOf("Error / OBIS", it.hexOrMessage) }
         return rows
+    }
+
+    private fun executionRows(report: MeterDataReport): List<List<String>> = buildList {
+        report.identity?.let { identity ->
+            add(listOf("Execution: Identity", "${identity.rows.size} rows (direct identity reads)"))
+            identity.nameplate?.let { section -> add(sectionExecutionRow("Nameplate", section)) }
+        }
+        if (report.cumulativeEnergies.isNotEmpty()) {
+            add(listOf("Execution: Energy & MD", "${report.cumulativeEnergies.size} rows (direct register reads)"))
+        }
+        report.instantaneous?.let { add(sectionExecutionRow("Instantaneous", it)) }
+        report.billing?.let { add(sectionExecutionRow("Billing", it)) }
+        report.dailyLoad?.let { add(sectionExecutionRow("Daily Load", it)) }
+        report.blockLoad?.let { add(sectionExecutionRow("Block Load", it)) }
+        if (report.tamperEvents.isNotEmpty() || report.eventLogStatus.isNotEmpty()) {
+            add(listOf("Execution: Tamper & Events", "${report.tamperEvents.size} rows (Selector 0 full buffer)"))
+        }
+    }
+
+    private fun sectionExecutionRow(label: String, section: ProfileSection): List<String> {
+        val count = if (section.rows.size < section.totalRows) {
+            "${section.rows.size} of ${section.totalRows} rows"
+        } else {
+            "${section.rows.size} rows"
+        }
+        return listOf("Execution: $label", "$count (${section.readMethod})")
     }
 
     private fun writeHexLog(
@@ -361,7 +383,7 @@ class MeterLinkPdfExporter(private val context: Context) {
             writer.appendLine("Log lines retained: ${traceLogs.size} ($droppedLineCount dropped)")
             writer.appendLine("Timestamps: phone time")
             writer.appendLine()
-            traceLogs.asReversed().forEach { log ->
+            traceLogs.forEach { log ->
                 writer.appendLine("${timeFormat.format(Date(log.timestampMs))} (phone time) [${log.direction}] ${log.hexOrMessage}")
             }
         }
@@ -369,6 +391,13 @@ class MeterLinkPdfExporter(private val context: Context) {
 
     private fun identityValue(report: MeterDataReport, obis: String): String =
         report.identity?.rows?.firstOrNull { it.obisCode == obis }?.formattedValue ?: ""
+
+    private fun exportSerial(report: MeterDataReport): String {
+        val liveSerial = identityValue(report, "0.0.96.1.0.255").trim()
+        return liveSerial.takeIf {
+            it.isNotEmpty() && it != "UnknownSerial" && it != "N/A" && it != "Meter"
+        }?.replace(Regex("[^A-Za-z0-9._-]"), "_") ?: "UnknownSerial"
+    }
 
     private class ReportLayout(
         private val generated: String,
@@ -427,7 +456,7 @@ class MeterLinkPdfExporter(private val context: Context) {
                     (row.getOrNull(index) ?: "").matches(Regex("[-+]?([0-9][0-9,]*)(\\.[0-9]+)?(.*)"))
                 }
                 val fitted = headers.indices.map { index ->
-                    val value = row.getOrNull(index) ?: ""
+                    val value = row.getOrNull(index).orEmpty().ifBlank { "—" }
                     if (numeric[index]) fitNumeric(value, widths[index] - 8f) else null
                 }
                 val wrapped = headers.indices.map { index ->
@@ -443,7 +472,7 @@ class MeterLinkPdfExporter(private val context: Context) {
                 add(Op.Rect(LEFT, top, RIGHT, top + rowHeight, if (rowIndex % 2 == 0) LIGHT_ROW else Color.WHITE, true))
                 var x = LEFT
                 headers.forEachIndexed { index, _ ->
-                    val value = row.getOrNull(index) ?: ""
+                    val value = row.getOrNull(index).orEmpty().ifBlank { "—" }
                     val align = if (numeric[index] && index > 0) Paint.Align.RIGHT else Paint.Align.LEFT
                     val textSize = fitted[index]?.second ?: 8f
                     wrapped[index].forEachIndexed { lineIndex, line ->

@@ -71,7 +71,8 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
     suspend fun readMeterModule(
         params: ConnectionParams,
         module: MeterDataModule,
-        onProgress: suspend (String) -> Unit = {}
+        onProgress: suspend (String) -> Unit = {},
+        loadSurveySelection: LoadSurveySelection = LoadSurveySelection.RECENT
     ): Result<MeterDataReport> = withContext(Dispatchers.IO) {
         val candidates = buildList {
             add(params.password)
@@ -93,7 +94,8 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     autoTryAlternatePasswords = false
                 ),
                 module,
-                onProgress
+                onProgress,
+                loadSurveySelection
             )
             if (result.isSuccess) return@withContext result
             if (!params.autoTryAlternatePasswords || !isAuthenticationFailure(result.exceptionOrNull())) break
@@ -104,7 +106,8 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
     private suspend fun readMeterModuleOnce(
         params: ConnectionParams,
         module: MeterDataModule,
-        onProgress: suspend (String) -> Unit = {}
+        onProgress: suspend (String) -> Unit = {},
+        loadSurveySelection: LoadSurveySelection = LoadSurveySelection.RECENT
     ): Result<MeterDataReport> = withContext(Dispatchers.IO) {
         runCatching {
             suspend fun reportProgress(message: String) {
@@ -161,7 +164,8 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     client = client,
                     packetTimeoutMs = params.responseTimeoutMs,
                     onProgress = onProgress,
-                    meterMake = params.vendorName
+                    meterMake = params.vendorName,
+                    loadSurveySelection = loadSurveySelection
                 )
                 val identityHeader = if (module != MeterDataModule.IDENTITY && module != MeterDataModule.ALL) {
                     reader.readIdentityHeader()

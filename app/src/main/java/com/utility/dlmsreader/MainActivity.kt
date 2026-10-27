@@ -35,6 +35,7 @@ import com.utility.dlmsreader.dlms.MeterDataModule
 import com.utility.dlmsreader.dlms.MeterDataReport
 import com.utility.dlmsreader.dlms.MeterReadSnapshot
 import com.utility.dlmsreader.dlms.MeterLinkPdfExporter
+import com.utility.dlmsreader.dlms.LoadSurveySelection
 import com.utility.dlmsreader.dlms.ProfileSection
 import com.utility.dlmsreader.dlms.VendorPasswordCatalog
 import com.utility.dlmsreader.transport.OpticalUsbTransport
@@ -124,6 +125,7 @@ fun MeterReaderScreen(
     var reportReady by remember { mutableStateOf(false) }
     var reportStatusText by remember { mutableStateOf<String?>(null) }
     var autoTryAlternatePasswords by remember { mutableStateOf(false) }
+    var loadSurveySelection by remember { mutableStateOf(LoadSurveySelection.RECENT) }
     var lastHexLogFile by remember { mutableStateOf<File?>(null) }
     val traceLogs = remember { mutableStateListOf<TraceLog>() }
 
@@ -147,7 +149,12 @@ fun MeterReaderScreen(
                 vendorName = selectedVendor.displayName,
                 useModeE = useModeE
             )
-            engine.readMeterModule(params, module) { progressText = it }
+            engine.readMeterModule(
+                params = params,
+                module = module,
+                onProgress = { progressText = it },
+                loadSurveySelection = loadSurveySelection
+            )
                 .onSuccess {
                     val completedReport = if (it.hasData) {
                         it
@@ -464,6 +471,28 @@ fun MeterReaderScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text("IS 15959 Data Extraction", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FilterChip(
+                            selected = loadSurveySelection == LoadSurveySelection.RECENT,
+                            onClick = { loadSurveySelection = LoadSurveySelection.RECENT },
+                            label = { Text("Recent (2d Block / 35d Daily)", fontSize = 11.sp) }
+                        )
+                        FilterChip(
+                            selected = loadSurveySelection == LoadSurveySelection.LAST_30_DAYS,
+                            onClick = { loadSurveySelection = LoadSurveySelection.LAST_30_DAYS },
+                            label = { Text("Last 30 Days", fontSize = 11.sp) }
+                        )
+                        FilterChip(
+                            selected = loadSurveySelection == LoadSurveySelection.FULL_BUFFER,
+                            onClick = { loadSurveySelection = LoadSurveySelection.FULL_BUFFER },
+                            label = { Text("Full Buffer (All Rows)", fontSize = 11.sp) }
+                        )
+                    }
                     progressText?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
                     reportStatusText?.let {
                         Text(it, color = Color(0xFF15803D), fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
@@ -820,7 +849,7 @@ private fun ReportTable(headers: List<String>, rows: List<List<String>>) {
             ) {
                 headers.indices.forEach { index ->
                     Text(
-                        row.getOrNull(index) ?: "N/A",
+                        row.getOrNull(index).orEmpty().ifBlank { "—" },
                         fontSize = 10.sp,
                         color = Color(0xFF1E293B),
                         modifier = Modifier.width(125.dp).padding(horizontal = 4.dp),

@@ -66,6 +66,8 @@ object Is15959Formatter {
                 yearFormat.format(value)
             } else if (isMeterType(obis)) {
                 meterTypeLabel(scaledValue.toInt())
+            } else if (isBillingResetStatus(obis)) {
+                billingResetStatusLabel(scaledValue.toInt())
             } else {
                 formatNumber(value, unit, obis, runtimeMetadata, meterMake)
             }
@@ -320,6 +322,15 @@ object Is15959Formatter {
     private fun isYearOfManufacture(obis: String?): Boolean = obis == "0.0.96.1.4.255"
 
     private fun isMeterType(obis: String?): Boolean = obis == "0.0.94.91.9.255"
+
+    private fun isBillingResetStatus(obis: String?): Boolean = obis == "1.0.128.8.38.255" ||
+        obis == "0.128.171.128.128.255"
+
+    private fun billingResetStatusLabel(value: Int): String = when (value) {
+        65 -> "65 (Scheduled)"
+        255 -> "255 (Current)"
+        else -> value.toString()
+    }
 
     private fun meterTypeLabel(value: Int): String = when (value) {
         5 -> "5 (1P-2W)"
