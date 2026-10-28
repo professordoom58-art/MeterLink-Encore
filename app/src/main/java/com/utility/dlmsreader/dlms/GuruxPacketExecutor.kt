@@ -1,5 +1,8 @@
 package com.utility.dlmsreader.dlms
 
+import com.utility.dlmsreader.transport.OpticalUsbTransport
+import com.utility.dlmsreader.transport.TraceDirection
+import com.utility.dlmsreader.transport.toHexString
 import gurux.dlms.GXByteBuffer
 import gurux.dlms.GXDLMSException
 import gurux.dlms.GXDateTime
@@ -9,12 +12,9 @@ import gurux.dlms.enums.RequestTypes
 import gurux.dlms.objects.GXDLMSObject
 import gurux.dlms.objects.GXDLMSProfileGeneric
 import gurux.dlms.secure.GXDLMSSecureClient
-import com.utility.dlmsreader.transport.OpticalUsbTransport
-import com.utility.dlmsreader.transport.TraceDirection
-import com.utility.dlmsreader.transport.toHexString
 import kotlinx.coroutines.delay
-import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.nio.BufferUnderflowException
 import java.util.Date
 import java.util.concurrent.TimeoutException
 
@@ -23,16 +23,35 @@ data class GuruxReadResult(
     val value: Any?
 )
 
-class GuruxPacketExecutor(
-    private val transport: OpticalUsbTransport,
+class GuruxPacketExecutor internal constructor(
+    private val writeFn: suspend (ByteArray, Int) -> Unit,
+    private val readBytesRawFn: suspend (Int, Int) -> ByteArray,
+    private val logFn: (TraceDirection, String) -> Unit,
+    private val getDataFn: (GXByteBuffer, GXReplyData) -> Boolean,
     private val client: GXDLMSSecureClient,
     private val maxRetries: Int = 3,
     private val packetTimeoutMs: Long = 8000L
 ) {
+    constructor(
+        transport: OpticalUsbTransport,
+        client: GXDLMSSecureClient,
+        maxRetries: Int = 3,
+        packetTimeoutMs: Long = 8000L
+    ) : this(
+        writeFn = { data, timeout -> transport.write(data, timeout) },
+        readBytesRawFn = { maxBytes, timeout -> transport.readBytesRaw(maxBytes, timeout) },
+        logFn = { dir, msg -> transport.log(dir, msg) },
+        getDataFn = { buf, reply -> client.getData(buf, reply) },
+        client = client,
+        maxRetries = maxRetries,
+        packetTimeoutMs = packetTimeoutMs
+    )
+
     companion object {
-        const val RR_FRAME_DELAY_MS = 90L
-        const val RR_BLOCK_DELAY_MS = 90L
-        const val RR_TIMEOUT_RETRY_DELAY_MS = 200L
+        const val RR_FRAME_DELAY_MS = 100L
+        const val RR_BLOCK_DELAY_MS = 100L
+        const val INTER_CHUNK_GAP_TIMEOUT_MS = 400
+        const val MIN_FRAME_READ_TIMEOUT_MS = 5000L
     }
 
     suspend fun readDLMSPacket(
@@ -43,45 +62,96 @@ class GuruxPacketExecutor(
         if (data.isEmpty()) return
 
         var attempt = 0
-        val rd = GXByteBuffer()
         val retries = maxRetriesOverride ?: maxRetries
+        val effectiveTimeoutMs = packetTimeoutMs.coerceAtLeast(MIN_FRAME_READ_TIMEOUT_MS)
+
+        // Snapshot reply.data state BEFORE this packet so any retry or partial parse
+        // never duplicates or corrupts previously accumulated multi-block payload bytes.
+        val savedPayloadBytes = reply.data?.array()?.copyOf(reply.data.size()) ?: ByteArray(0)
+        val savedPayloadPos = reply.data?.position() ?: 0
+        val savedMoreData = reply.moreData.value
 
         while (attempt < retries) {
             attempt++
             reply.error = 0
-            rd.clear()
-            val rxFrame = ByteArrayOutputStream()
+
+            // Restore reply.data to clean pre-attempt snapshot on retry
+            if (attempt > 1 && reply.data != null) {
+                reply.data.clear()
+                if (savedPayloadBytes.isNotEmpty()) {
+                    reply.data.set(savedPayloadBytes, 0, savedPayloadBytes.size)
+                    reply.data.position(savedPayloadPos)
+                }
+                reply.moreData.value = savedMoreData
+            }
+
+            val assembler = HdlcFrameAssembler()
 
             try {
-                transport.write(data, 1000)
-                val deadline = System.currentTimeMillis() + packetTimeoutMs
+                writeFn(data, 1000)
+                val deadline = System.currentTimeMillis() + effectiveTimeoutMs
 
-                while (!client.getData(rd, reply)) {
-                    if (System.currentTimeMillis() >= deadline) {
-                        throw TimeoutException("Timeout waiting for DLMS packet (Attempt $attempt/$retries)")
-                    }
-
-                    val chunk = transport.readBytesRaw(128, 200)
+                while (System.currentTimeMillis() < deadline) {
+                    val chunk = readBytesRawFn(128, INTER_CHUNK_GAP_TIMEOUT_MS)
                     if (chunk.isNotEmpty()) {
-                        rxFrame.write(chunk)
-                        rd.set(chunk, 0, chunk.size)
+                        assembler.push(chunk)
+                        if (assembler.isComplete()) {
+                            break
+                        }
+                    }
+                }
+
+                if (!assembler.isComplete()) {
+                    if (assembler.size > 0) {
+                        logFn(TraceDirection.RX, assembler.bytes.toHexString())
+                    }
+                    throw TimeoutException(
+                        "Timeout waiting for DLMS packet (Attempt $attempt/$retries, received ${assembler.size} bytes, expected ${assembler.expectedTotalBytes() ?: "unknown"})"
+                    )
+                }
+
+                val frameBytes = assembler.getAssembledFrame()
+                    ?: throw IOException("Incomplete HDLC frame (${assembler.size} bytes)")
+                logFn(TraceDirection.RX, frameBytes.toHexString())
+
+                val rd = GXByteBuffer(frameBytes)
+                try {
+                    // Note: Gurux client.getData() returns false when reply.isMoreData is true
+                    // (e.g., segmented HDLC frames or multi-block transfers). That is normal!
+                    getDataFn(rd, reply)
+                } catch (e: Exception) {
+                    if (e is IndexOutOfBoundsException || e is BufferUnderflowException || e is IllegalArgumentException) {
+                        // Restore reply.data before failing so caller/retry starts clean
+                        if (reply.data != null) {
+                            reply.data.clear()
+                            if (savedPayloadBytes.isNotEmpty()) {
+                                reply.data.set(savedPayloadBytes, 0, savedPayloadBytes.size)
+                                reply.data.position(savedPayloadPos)
+                            }
+                            reply.moreData.value = savedMoreData
+                        }
+                        logFn(
+                            TraceDirection.ERROR,
+                            "[WARN] Malformed/truncated DLMS frame (${frameBytes.size} bytes): ${e.message}"
+                        )
+                        throw IOException("Truncated DLMS frame: ${e.message}", e)
+                    } else {
+                        throw e
                     }
                 }
 
                 if (reply.error != 0) {
                     throw GXDLMSException(reply.error.toInt())
                 }
-                if (rxFrame.size() > 0) transport.log(TraceDirection.RX, rxFrame.toByteArray().toHexString())
                 return
             } catch (e: GXDLMSException) {
-                if (rxFrame.size() > 0) transport.log(TraceDirection.RX, rxFrame.toByteArray().toHexString())
                 throw e
             } catch (e: Exception) {
-                if (rxFrame.size() > 0) transport.log(TraceDirection.RX, rxFrame.toByteArray().toHexString())
                 if (attempt >= retries) {
-                    throw IOException("Failed after $retries attempts: ${e.message}", e)
+                    throw if (e is IOException) e else IOException("Failed after $retries attempts: ${e.message}", e)
                 }
-                delay(250)
+                // Backoff 200ms before retrying
+                delay(200)
             }
         }
     }
@@ -105,27 +175,12 @@ class GuruxPacketExecutor(
             val nextFrame = client.receiverReady(reply)
             if (nextFrame.isEmpty()) break
             try {
-                readDLMSPacket(nextFrame, reply, maxRetriesOverride = 1)
-            } catch (error: IOException) {
-                if (isTimeout(error)) {
-                    delay(RR_TIMEOUT_RETRY_DELAY_MS)
-                    readDLMSPacket(nextFrame, reply, maxRetriesOverride = 1)
-                } else {
-                    throw error
-                }
+                // Allow 2 attempts (initial at 100ms + 1 retry after 200ms backoff)
+                readDLMSPacket(nextFrame, reply, maxRetriesOverride = 2)
+            } catch (error: Exception) {
+                throw IOException("Incomplete HDLC frame: ${error.message}", error)
             }
         }
-    }
-
-    private fun isTimeout(error: IOException): Boolean {
-        var current: Throwable? = error
-        while (current != null) {
-            if (current is TimeoutException || current.message?.contains("Timeout", ignoreCase = true) == true) {
-                return true
-            }
-            current = current.cause
-        }
-        return false
     }
 
     suspend fun readObject(item: GXDLMSObject, attributeIndex: Int): Any? {
@@ -136,7 +191,14 @@ class GuruxPacketExecutor(
         if (item.getDataType(attributeIndex) == DataType.NONE) {
             item.setDataType(attributeIndex, reply.valueType)
         }
-        return client.updateValue(item, attributeIndex, reply.value)
+        return try {
+            client.updateValue(item, attributeIndex, reply.value)
+        } catch (e: Exception) {
+            if (e is IndexOutOfBoundsException || e is BufferUnderflowException || e is IllegalArgumentException || e is IllegalStateException) {
+                throw IOException("Failed to parse object ${item.logicalName} attribute $attributeIndex: ${e.message}", e)
+            }
+            throw e
+        }
     }
 
     suspend fun readObjectWithRaw(item: GXDLMSObject, attributeIndex: Int): GuruxReadResult {
@@ -148,7 +210,15 @@ class GuruxPacketExecutor(
             item.setDataType(attributeIndex, reply.valueType)
         }
         val raw = reply.value
-        return GuruxReadResult(raw, client.updateValue(item, attributeIndex, raw))
+        val value = try {
+            client.updateValue(item, attributeIndex, raw)
+        } catch (e: Exception) {
+            if (e is IndexOutOfBoundsException || e is BufferUnderflowException || e is IllegalArgumentException || e is IllegalStateException) {
+                throw IOException("Failed to parse object ${item.logicalName} attribute $attributeIndex: ${e.message}", e)
+            }
+            throw e
+        }
+        return GuruxReadResult(raw, value)
     }
 
     suspend fun readRowsByEntry(
@@ -159,7 +229,14 @@ class GuruxPacketExecutor(
         val data = client.readRowsByEntry(profile, index, count)
         val reply = GXReplyData()
         readDataBlock(data, reply)
-        client.updateValue(profile, 2, reply.value)
+        try {
+            client.updateValue(profile, 2, reply.value)
+        } catch (e: Exception) {
+            if (e is IndexOutOfBoundsException || e is BufferUnderflowException || e is IllegalArgumentException || e is IllegalStateException) {
+                throw IOException("Failed to parse profile rows: ${e.message}", e)
+            }
+            throw e
+        }
         return profile.buffer.map { row ->
             when (row) {
                 is Array<*> -> row.map { it }.toTypedArray()
@@ -177,7 +254,14 @@ class GuruxPacketExecutor(
         val data = client.readRowsByRange(profile, start, end)
         val reply = GXReplyData()
         readDataBlock(data, reply)
-        client.updateValue(profile, 2, reply.value)
+        try {
+            client.updateValue(profile, 2, reply.value)
+        } catch (e: Exception) {
+            if (e is IndexOutOfBoundsException || e is BufferUnderflowException || e is IllegalArgumentException || e is IllegalStateException) {
+                throw IOException("Failed to parse profile rows: ${e.message}", e)
+            }
+            throw e
+        }
         return profile.buffer.map { row ->
             when (row) {
                 is Array<*> -> row.map { it }.toTypedArray()
@@ -195,7 +279,14 @@ class GuruxPacketExecutor(
         val data = client.readRowsByRange(profile, start, end)
         val reply = GXReplyData()
         readDataBlock(data, reply)
-        client.updateValue(profile, 2, reply.value)
+        try {
+            client.updateValue(profile, 2, reply.value)
+        } catch (e: Exception) {
+            if (e is IndexOutOfBoundsException || e is BufferUnderflowException || e is IllegalArgumentException || e is IllegalStateException) {
+                throw IOException("Failed to parse profile rows: ${e.message}", e)
+            }
+            throw e
+        }
         return profile.buffer.map { row ->
             when (row) {
                 is Array<*> -> row.map { it }.toTypedArray()

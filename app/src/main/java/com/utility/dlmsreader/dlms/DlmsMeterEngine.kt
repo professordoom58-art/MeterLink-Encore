@@ -173,17 +173,17 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                 reportProgress(sectionMilestone(module))
                 val moduleReport = try {
                     when (module) {
-                    MeterDataModule.IDENTITY -> MeterDataReport(identity = reader.readIdentityAndNameplate())
-                    MeterDataModule.ENERGY -> MeterDataReport(cumulativeEnergies = reader.readCumulativeEnergies())
-                    MeterDataModule.INSTANTANEOUS -> MeterDataReport(instantaneous = reader.readInstantaneousProfile())
-                    MeterDataModule.BILLING -> MeterDataReport(billing = reader.readBillingProfile())
-                    MeterDataModule.BLOCK_LOAD -> MeterDataReport(blockLoad = reader.readBlockLoadSurvey())
-                    MeterDataModule.DAILY_LOAD -> MeterDataReport(dailyLoad = reader.readDailyLoadSurvey())
-                    MeterDataModule.TAMPER -> MeterDataReport(
-                        tamperEvents = reader.readTamperEventLogs(),
-                        eventLogStatus = reader.eventLogStatus
-                    )
-                    MeterDataModule.ALL -> reader.readAllMeterData()
+                        MeterDataModule.IDENTITY -> MeterDataReport(identity = reader.readIdentityAndNameplate())
+                        MeterDataModule.ENERGY -> MeterDataReport(cumulativeEnergies = reader.readCumulativeEnergies())
+                        MeterDataModule.INSTANTANEOUS -> MeterDataReport(instantaneous = reader.readInstantaneousProfile())
+                        MeterDataModule.BILLING -> MeterDataReport(billing = reader.readBillingProfile())
+                        MeterDataModule.BLOCK_LOAD -> MeterDataReport(blockLoad = reader.readBlockLoadSurvey())
+                        MeterDataModule.DAILY_LOAD -> MeterDataReport(dailyLoad = reader.readDailyLoadSurvey())
+                        MeterDataModule.TAMPER -> MeterDataReport(
+                            tamperEvents = reader.readTamperEventLogs(),
+                            eventLogStatus = reader.eventLogStatus
+                        )
+                        MeterDataModule.ALL -> reader.readAllMeterData()
                     }
                 } catch (e: Exception) {
                     transport.log(
@@ -450,7 +450,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                         throw e
                     }
 
-// 3. Establish COSEM Application Association (AARQ -> AARE)
+                    // 3. Establish COSEM Application Association (AARQ -> AARE)
                     transport.log(TraceDirection.INFO, "Sending COSEM AARQ (${params.authentication})...")
                     for (aarqFrame in client.aarqRequest()) {
                         reply.clear()
@@ -466,6 +466,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                         }
                     }
                     transport.log(TraceDirection.INFO, "DLMS Association Established!")
+
                     // 5. Read Identity & Clock Registers (Accessible in Public 0x10 and MR 0x20)
                     val ldn = readDataString(client, "0.0.42.0.0.255", params.responseTimeoutMs)
                     val serial = readDataString(client, "0.0.96.1.0.255", params.responseTimeoutMs)
@@ -574,7 +575,8 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
 
     /**
      * Sends a single HDLC frame and reassembles USB serial byte chunks until
-     * Gurux's client.getData() confirms a complete HDLC frame (bounded by 0x7E and valid FCS).
+     * HdlcFrameAssembler confirms a complete HDLC frame (bounded by 0x7E and valid length FCS),
+     * and guards client.getData against BufferUnderflowException / getUInt8 crash.
      */
     private suspend fun readDlmsPacket(
         client: GXDLMSSecureClient,
@@ -585,14 +587,13 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
         rawResponse: ByteArrayOutputStream? = null
     ) {
         if (txFrame.isEmpty()) return
-        val rxBuffer = GXByteBuffer()
         val chunkBuf = ByteArray(256)
 
         var attempt = 0
         while (attempt < maxRetries) {
             attempt++
             reply.clear()
-            rxBuffer.clear()
+            val assembler = HdlcFrameAssembler()
 
             transport.write(txFrame)
             val deadline = SystemClock.elapsedRealtime() + timeoutMs
@@ -601,21 +602,47 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                 while (SystemClock.elapsedRealtime() < deadline) {
                     val bytesRead = transport.readChunk(chunkBuf, 150)
                     if (bytesRead > 0) {
-                        rawResponse?.write(chunkBuf, 0, bytesRead)
-                        transport.log(TraceDirection.RX, chunkBuf.toHexString(bytesRead))
-                        rxBuffer.set(chunkBuf, 0, bytesRead)
-
-                        // client.getData returns true ONLY when a complete HDLC frame has arrived
-                        if (client.getData(rxBuffer, reply)) {
-                            if (reply.error != 0) {
-                                throw GXDLMSException(reply.error.toInt())
-                            }
-                            delay(25) // Inter-frame pacing delay for optical port stability
-                            return
+                        assembler.push(chunkBuf.copyOf(bytesRead))
+                        if (assembler.isComplete()) {
+                            break
                         }
                     }
                 }
-                throw TimeoutException("Timeout waiting for HDLC response (Attempt $attempt/$maxRetries)")
+                if (!assembler.isComplete()) {
+                    throw TimeoutException("Timeout waiting for HDLC response (Attempt $attempt/$maxRetries)")
+                }
+                val frameBytes = assembler.getAssembledFrame() ?: assembler.bytes
+                rawResponse?.write(frameBytes)
+                transport.log(TraceDirection.RX, frameBytes.toHexString())
+
+                val rxBuffer = GXByteBuffer(frameBytes)
+                val success = try {
+                    client.getData(rxBuffer, reply)
+                } catch (e: Exception) {
+                    if (e is IndexOutOfBoundsException || e is BufferUnderflowException || e is IllegalArgumentException) {
+                        // Attempt quick extra read if trailing bytes are still in flight on USB serial wire
+                        val extraChunk = transport.readBytesRaw(128, 100)
+                        if (extraChunk.isNotEmpty()) {
+                            assembler.push(extraChunk)
+                            val updatedFrame = assembler.getAssembledFrame() ?: assembler.bytes
+                            rxBuffer.clear()
+                            rxBuffer.set(updatedFrame, 0, updatedFrame.size)
+                            client.getData(rxBuffer, reply)
+                        } else {
+                            throw IOException("Truncated DLMS frame: ${e.message}", e)
+                        }
+                    } else {
+                        throw e
+                    }
+                }
+
+                if (success) {
+                    if (reply.error != 0) {
+                        throw GXDLMSException(reply.error.toInt())
+                    }
+                    delay(25) // Inter-frame pacing delay for optical port stability
+                    return
+                }
             } catch (dlmsEx: GXDLMSException) {
                 // Meter explicitly rejected the request (e.g., ReadWriteDenied) - do not retry
                 transport.log(TraceDirection.ERROR, "DLMS Reject: ${dlmsEx.message}")

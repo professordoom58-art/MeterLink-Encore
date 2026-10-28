@@ -345,9 +345,11 @@ class Is15959DataReader(
         val profile = GXDLMSProfileGeneric(obis)
         executor.readObject(profile, 3)
         configureRangeRestrictingObject(profile)
+        ensureCaptureObjects(profile)
         progress("Profile $obis captureObjects count=${profile.captureObjects.size}, scaler=$scalerObis")
         val scalers = loadCompanionScalers(scalerObis ?: Is15959Catalog.profileByDataObis(obis).scalerObis)
         if (scalers.isEmpty()) loadCaptureScalers(profile)
+        ensureCaptureObjects(profile)
         executor.readObject(profile, 2)
         return formatProfile(profile, title, scalers, readMethod = "Selector 0 full buffer")
     }
@@ -361,6 +363,7 @@ class Is15959DataReader(
         val profile = GXDLMSProfileGeneric(obis)
         executor.readObject(profile, 3)
         configureRangeRestrictingObject(profile)
+        ensureCaptureObjects(profile)
         progress("Profile $obis captureObjects count=${profile.captureObjects.size}, scaler=$scalerObis")
         val scalers = loadCompanionScalers(scalerObis)
         if (scalers.isEmpty()) loadCaptureScalers(profile)
@@ -371,6 +374,7 @@ class Is15959DataReader(
 
         if (loadSurveySelection == LoadSurveySelection.FULL_BUFFER) {
             progress("Tier3 full: forced by Load Survey selector")
+            ensureCaptureObjects(profile)
             executor.readObject(profile, 2)
             totalRows = profile.buffer.size
             progress("Tier3 full: success(${profile.buffer.size})")
@@ -402,6 +406,7 @@ class Is15959DataReader(
 
         if (!rangeTierDenied) {
             try {
+                ensureCaptureObjects(profile)
                 progress("Tier1 range: requesting ${MeterTime.format(startDate)} to ${MeterTime.format(rangeEndDate)}")
                 val rows = executor.readRowsByRange(profile, startDate, rangeEndDate)
                 if (rows.isEmpty()) {
@@ -412,33 +417,42 @@ class Is15959DataReader(
                     readMethod = "Selector 1 range"
                     loaded = true
                 }
-            } catch (error: GXDLMSException) {
-                rangeTierDenied = true
-                progress("Tier1 range: denied(${error.errorCode})")
-                if (error.errorCode == 3 && !meterTimeConventionFlipped && !rangeVariantTierDenied) {
-                    val variantStart = GXDateTime(startDate).apply {
-                        deviation = 0x8000
-                        skip.add(DateTimeSkips.DEVIATION)
-                    }
-                    val variantEnd = GXDateTime(rangeEndDate).apply {
-                        deviation = 0x8000
-                        skip.add(DateTimeSkips.DEVIATION)
-                    }
-                    try {
-                        progress("Tier1 range variant: requesting deviation 0x8000")
-                        val rows = executor.readRowsByRange(profile, variantStart, variantEnd)
-                        if (rows.isEmpty()) {
-                            progress("Tier1 range variant returned 0 rows; falling back to Tier2/Tier3...")
-                        } else {
-                            progress("Tier1 range variant: success(${rows.size})")
-                            totalRows = rows.size
-                            readMethod = "Selector 1 range variant"
-                            loaded = true
+            } catch (error: Exception) {
+                if (error is GXDLMSException) {
+                    rangeTierDenied = true
+                    progress("Tier1 range: denied(${error.errorCode})")
+                    if (error.errorCode == 3 && !meterTimeConventionFlipped && !rangeVariantTierDenied) {
+                        val variantStart = GXDateTime(startDate).apply {
+                            deviation = 0x8000
+                            skip.add(DateTimeSkips.DEVIATION)
                         }
-                    } catch (variantError: GXDLMSException) {
-                        rangeVariantTierDenied = true
-                        progress("Tier1 range variant: denied(${variantError.errorCode})")
+                        val variantEnd = GXDateTime(rangeEndDate).apply {
+                            deviation = 0x8000
+                            skip.add(DateTimeSkips.DEVIATION)
+                        }
+                        try {
+                            ensureCaptureObjects(profile)
+                            progress("Tier1 range variant: requesting deviation 0x8000")
+                            val rows = executor.readRowsByRange(profile, variantStart, variantEnd)
+                            if (rows.isEmpty()) {
+                                progress("Tier1 range variant returned 0 rows; falling back to Tier2/Tier3...")
+                            } else {
+                                progress("Tier1 range variant: success(${rows.size})")
+                                totalRows = rows.size
+                                readMethod = "Selector 1 range variant"
+                                loaded = true
+                            }
+                        } catch (variantError: Exception) {
+                            if (variantError is GXDLMSException) {
+                                rangeVariantTierDenied = true
+                                progress("Tier1 range variant: denied(${variantError.errorCode})")
+                            } else {
+                                progress("Tier1 range variant error (${variantError::class.java.simpleName}): ${variantError.message ?: "unknown"}")
+                            }
+                        }
                     }
+                } else {
+                    progress("Tier1 range error (${error::class.java.simpleName}): ${error.message ?: "unknown"}; falling back to Tier2/Tier3...")
                 }
             }
         } else {
@@ -449,8 +463,9 @@ class Is15959DataReader(
             try {
                 val entriesRaw = try {
                     executor.readObject(profile, 7)
-                } catch (error: GXDLMSException) {
-                    progress("Tier2 entry: entriesInUse read denied(${error.errorCode}); using profile metadata")
+                } catch (error: Exception) {
+                    val detail = (error as? GXDLMSException)?.let { "denied(${it.errorCode})" } ?: (error.message ?: "error")
+                    progress("Tier2 entry: entriesInUse read failed ($detail); using profile metadata")
                     null
                 }
                 val entriesInUse = (entriesRaw as? Number)?.toInt() ?: profile.entriesInUse
@@ -463,6 +478,7 @@ class Is15959DataReader(
                 } else if (entriesInUse > 0) {
                     val index = maxOf(1, entriesInUse - maxEntries + 1)
                     progress("Tier2 entry: requesting index=$index count=$maxEntries of $entriesInUse")
+                    ensureCaptureObjects(profile)
                     val rows = executor.readRowsByEntry(profile, index, maxEntries)
                     if (rows.isEmpty()) {
                         progress("Tier2 entry returned 0 rows; falling back to Tier3...")
@@ -475,9 +491,13 @@ class Is15959DataReader(
                 } else {
                     progress("Tier2 entry: no confirmed entries; falling back to Tier3...")
                 }
-            } catch (error: GXDLMSException) {
-                entryTierDenied = true
-                progress("Tier2 entry: denied(${error.errorCode})")
+            } catch (error: Exception) {
+                if (error is GXDLMSException) {
+                    entryTierDenied = true
+                    progress("Tier2 entry: denied(${error.errorCode})")
+                } else {
+                    progress("Tier2 entry error (${error::class.java.simpleName}): ${error.message ?: "unknown"}; falling back to Tier3...")
+                }
             }
         } else if (!loaded) {
             progress("Tier2 entry: skipped(denied earlier in session)")
@@ -485,10 +505,16 @@ class Is15959DataReader(
 
         if (!loaded) {
             progress("Tier3 full: requesting complete buffer")
-            executor.readObject(profile, 2)
-            progress("Tier3 full: success(${profile.buffer.size})")
-            totalRows = profile.buffer.size
-            readMethod = "Selector 0 fallback"
+            ensureCaptureObjects(profile)
+            try {
+                executor.readObject(profile, 2)
+                progress("Tier3 full: success(${profile.buffer.size})")
+                totalRows = profile.buffer.size
+                readMethod = "Selector 0 fallback"
+            } catch (error: Exception) {
+                progress("Tier3 full error (${error::class.java.simpleName}): ${error.message ?: "unknown"}")
+                throw error
+            }
         }
         trimProfileBuffer(profile, maxEntries)
         return formatProfile(profile, title, scalers, totalRows, readMethod)
@@ -498,6 +524,21 @@ class Is15959DataReader(
         if (profile.buffer.size <= maxEntries) return
         val latestRows = profile.buffer.takeLast(maxEntries.coerceAtLeast(1))
         profile.setBuffer(latestRows.map { rowValues(it).toTypedArray() }.toTypedArray())
+    }
+
+    private suspend fun ensureCaptureObjects(profile: GXDLMSProfileGeneric) {
+        if (profile.captureObjects.isEmpty()) {
+            try {
+                executor.readObject(profile, 3)
+                configureRangeRestrictingObject(profile)
+                progress("Profile ${profile.logicalName} captureObjects re-read: count=${profile.captureObjects.size}")
+            } catch (e: Exception) {
+                transport.log(
+                    com.utility.dlmsreader.transport.TraceDirection.ERROR,
+                    "Failed to re-read capture objects for ${profile.logicalName}: ${e.message}"
+                )
+            }
+        }
     }
 
     private fun configureRangeRestrictingObject(profile: GXDLMSProfileGeneric) {
@@ -620,8 +661,10 @@ class Is15959DataReader(
     private suspend fun readTamperProfile(compartment: String, obis: String): List<TamperEventRow> {
         val profile = GXDLMSProfileGeneric(obis)
         executor.readObject(profile, 3)
+        ensureCaptureObjects(profile)
         val scalers = loadCompanionScalers(Is15959Catalog.profileByDataObis(obis).scalerObis)
         if (scalers.isEmpty()) loadCaptureScalers(profile)
+        ensureCaptureObjects(profile)
         executor.readObject(profile, 2)
         val formatted = formatProfile(profile, "$compartment Tamper Events", scalers)
         val objects = profile.captureObjects.map { it.key }

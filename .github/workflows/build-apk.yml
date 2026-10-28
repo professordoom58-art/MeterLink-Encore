@@ -1,4 +1,3 @@
-
 name: Ship MeterLink APK
 
 on:
@@ -29,8 +28,8 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Compile MeterLink APK
-        run: gradle assembleDebug
+      - name: Run Unit Tests & Compile MeterLink APK
+        run: gradle testDebugUnitTest assembleDebug
 
       - name: Stamp MeterLink APK
         run: cp app/build/outputs/apk/debug/app-debug.apk "MeterLink-v1.0.${{ github.run_number }}.apk"
@@ -54,11 +53,11 @@ jobs:
             Grab the APK under Assets below.
           files: "MeterLink-v1.0.${{ github.run_number }}.apk"
 
-      - name: Keep only the latest 3 releases
+      - name: Keep only the latest 10 releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release list --limit 100 --json tagName --jq '.[3:][].tagName' |
+          gh release list --limit 100 --json tagName --jq '.[10:][].tagName' |
           while read -r tag; do
             if [ -n "$tag" ]; then
               echo "Deleting old release and tag: $tag"

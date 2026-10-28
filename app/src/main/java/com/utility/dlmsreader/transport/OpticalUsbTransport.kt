@@ -9,6 +9,8 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import com.utility.dlmsreader.dlms.ConnectionDiagnostics
+import com.hoho.android.usbserial.driver.CdcAcmSerialDriver
+import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import kotlinx.coroutines.Dispatchers
@@ -18,8 +20,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.ArrayDeque
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 
@@ -95,6 +99,13 @@ class OpticalUsbTransport(private val context: Context) {
         }
     }
 
+    // <--- THIS IS WHERE selectPreferredOpticalDriver GOES (Right between refreshProbeStatus and openPort)
+    private fun selectPreferredOpticalDriver(drivers: List<UsbSerialDriver>): UsbSerialDriver {
+        // Prefer dedicated optical probe UART bridges (CP210x, FTDI, CH340, PL2303) over generic CDC/ACM devices
+        return drivers.firstOrNull { it !is CdcAcmSerialDriver && it.ports.isNotEmpty() }
+            ?: drivers.first { it.ports.isNotEmpty() }
+    }
+
     suspend fun openPort(baudRate: Int = 9600, useModeE: Boolean = false): Result<Unit> =
         withContext(Dispatchers.IO) {
             runCatching {
@@ -103,11 +114,12 @@ class OpticalUsbTransport(private val context: Context) {
                 val drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
                 if (drivers.isEmpty()) throw IOException("No USB-Serial optical probe found.")
 
-                val driver = drivers.first()
+                val driver = selectPreferredOpticalDriver(drivers)
                 val device = driver.device
 
                 if (!usbManager.hasPermission(device)) {
                     val granted = requestUsbPermission(device)
+                        ?: throw IOException("USB permission dialog timed out or was dismissed.")
                     if (!granted) throw SecurityException("USB permission denied by user.")
                 }
 
@@ -168,7 +180,7 @@ class OpticalUsbTransport(private val context: Context) {
 
             port?.let { p ->
                 // openPort() has already opened and stored this port.
-                p.setParameters(300, 7, 1, com.hoho.android.usbserial.driver.UsbSerialPort.PARITY_EVEN)
+                p.setParameters(300, 7, 1, UsbSerialPort.PARITY_EVEN)
                 p.dtr = true
                 p.rts = true
 
@@ -207,7 +219,7 @@ class OpticalUsbTransport(private val context: Context) {
                     log(TraceDirection.TX, "ACK Baud-Rate Switch sent")
 
                     Thread.sleep(400)
-                    p.setParameters(9600, 8, 1, com.hoho.android.usbserial.driver.UsbSerialPort.PARITY_NONE)
+                    p.setParameters(9600, 8, 1, UsbSerialPort.PARITY_NONE)
                     log(TraceDirection.INFO, "Switched port to 9600 8N1. Ready for HDLC.")
                     return true
                 } else {
@@ -226,7 +238,7 @@ class OpticalUsbTransport(private val context: Context) {
 
     fun testDirectHdlcConnection(): Boolean {
         val snrmFrame = byteArrayOf(
-            0x7E, 0xA0.toByte(), 0x07, 0x03, 0x41, 0x93.toByte(), 0x5A, 0x64, 0x7E
+            0x7E, 0xA0.toByte(), 0x07, 0x03, 0x21, 0x93.toByte(), 0x0F, 0x01, 0x7E
         )
 
         try {
@@ -307,7 +319,7 @@ class OpticalUsbTransport(private val context: Context) {
 
     fun write(data: ByteArray, timeoutMs: Int = 2000) {
         val activePort = port ?: throw IOException("Serial port is not open.")
-        log(TraceDirection.TX, data.toHexString())
+        log(TraceDirection.TX, data.toRedactedHexString())
         activePort.write(data, timeoutMs)
     }
 
@@ -365,42 +377,80 @@ class OpticalUsbTransport(private val context: Context) {
         }
     }
 
-    private suspend fun requestUsbPermission(device: UsbDevice): Boolean =
-        suspendCancellableCoroutine { cont ->
-            val receiver = object : BroadcastReceiver() {
-                override fun onReceive(ctx: Context, intent: Intent) {
-                    if (intent.action == ACTION_USB_PERMISSION) {
-                        context.unregisterReceiver(this)
-                        val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                        if (cont.isActive) cont.resume(granted)
+    private suspend fun requestUsbPermission(device: UsbDevice, timeoutMs: Long = 15_000L): Boolean? =
+        withTimeoutOrNull(timeoutMs) {
+            suspendCancellableCoroutine { cont ->
+                val unregistered = AtomicBoolean(false)
+                val receiver = object : BroadcastReceiver() {
+                    override fun onReceive(ctx: Context, intent: Intent) {
+                        if (intent.action == ACTION_USB_PERMISSION) {
+                            if (unregistered.compareAndSet(false, true)) {
+                                runCatching { context.unregisterReceiver(this) }
+                            }
+                            val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                            if (cont.isActive) cont.resume(granted)
+                        }
                     }
                 }
-            }
-            val filter = IntentFilter(ACTION_USB_PERMISSION)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                context.registerReceiver(receiver, filter)
-            }
+                val filter = IntentFilter(ACTION_USB_PERMISSION)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+                } else {
+                    context.registerReceiver(receiver, filter)
+                }
 
-            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            } else {
-                PendingIntent.FLAG_UPDATE_CURRENT
-            }
-            val permissionIntent = PendingIntent.getBroadcast(
-                context,
-                0,
-                Intent(ACTION_USB_PERMISSION).setPackage(context.packageName),
-                flags
-            )
-            usbManager.requestPermission(device, permissionIntent)
+                val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                } else {
+                    PendingIntent.FLAG_UPDATE_CURRENT
+                }
+                val permissionIntent = PendingIntent.getBroadcast(
+                    context,
+                    0,
+                    Intent(ACTION_USB_PERMISSION).setPackage(context.packageName),
+                    flags
+                )
+                usbManager.requestPermission(device, permissionIntent)
 
-            cont.invokeOnCancellation {
-                runCatching { context.unregisterReceiver(receiver) }
+                cont.invokeOnCancellation {
+                    if (unregistered.compareAndSet(false, true)) {
+                        runCatching { context.unregisterReceiver(receiver) }
+                    }
+                }
             }
         }
 }
 
 fun ByteArray.toHexString(length: Int = this.size): String =
     take(length).joinToString(" ") { "%02X".format(it) }
+
+/**
+ * Masks plaintext LLS authentication secrets inside outgoing AARQ frames (tag AC <len> 80 <pwLen> <pwBytes>)
+ * so exported Hex Logs do not leak vendor/utility passwords.
+ */
+fun ByteArray.toRedactedHexString(): String {
+    if (size < 20 || first() != 0x7E.toByte()) return toHexString()
+    val tokens = map { "%02X".format(it) }.toMutableList()
+    // Look for LLC header E6 E6 00 followed by AARQ tag 60
+    val aarqStart = (0 until size - 4).firstOrNull {
+        this[it] == 0xE6.toByte() &&
+            this[it + 1] == 0xE6.toByte() &&
+            this[it + 2] == 0x00.toByte() &&
+            this[it + 3] == 0x60.toByte()
+    } ?: return toHexString()
+
+    for (i in (aarqStart + 4) until (size - 4)) {
+        // Calling-authentication-value context tag: AC <totalLen> 80 <secretLen> <secretBytes...>
+        if (this[i] == 0xAC.toByte() && this[i + 2] == 0x80.toByte()) {
+            val totalLen = this[i + 1].toInt() and 0xFF
+            val secretLen = this[i + 3].toInt() and 0xFF
+            if (totalLen == secretLen + 2 && i + 4 + secretLen <= size - 3) {
+                for (k in 0 until secretLen) {
+                    tokens[i + 4 + k] = "**"
+                }
+                break
+            }
+        }
+    }
+    return tokens.joinToString(" ")
+}
