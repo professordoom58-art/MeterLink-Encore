@@ -18,7 +18,7 @@
 ## Get the app
 
 1. Open **[Releases](../../releases/latest)**.
-2. Tap the newest `MeterLink-v1.0.*.apk` under **Assets**.
+2. Tap the newest `MeterLink.apk` under **Assets**.
 3. Open the downloaded file. Android will warn about installing from an unknown source — allow it for your browser or file manager.
 4. Launch MeterLink, plug in the optical probe, and tap **Scan USB**.
 
@@ -131,6 +131,12 @@ Run the tests with:
 Every push to `main` builds and publishes a new APK automatically. Version numbers follow the CI run number (`v1.0.<run>`), so they always increase and always install over the previous one.
 
 See [Releases](../../releases) for what changed.
+
+---
+
+## Thanks
+
+MeterLink is built on [Gurux DLMS](https://github.com/Gurux/Gurux.DLMS.Java) — open source DLMS/COSEM client code. Thanks to the Gurux team for keeping this information available to everyone.
 
 ---
 
