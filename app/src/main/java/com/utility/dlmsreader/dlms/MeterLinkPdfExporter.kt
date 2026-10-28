@@ -302,7 +302,9 @@ class MeterLinkPdfExporter(private val context: Context) {
                 if (!chunk.contains(pinIndex)) {
                     chunk.add(0, pinIndex)
                 } else if (chunk.first() != pinIndex) {
-                    chunk.remove(pinIndex)
+                    // removeAt, not remove: on a MutableList<Int> remove(Int) deletes
+                    // the element equal to that value, which shifts every column.
+                    chunk.removeAt(chunk.indexOf(pinIndex))
                     chunk.add(0, pinIndex)
                 }
             }
