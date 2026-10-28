@@ -293,6 +293,21 @@ class MeterLinkPdfExporter(private val context: Context) {
                 chunks[chunks.lastIndex].addAll(0, moved)
             }
         }
+
+        // Pin column 0 (Billing Date / Real-Time Clock) as the first column of every split part
+        val pinIndex = 0
+        if (indexes.contains(pinIndex)) {
+            for (i in chunks.indices) {
+                val chunk = chunks[i]
+                if (!chunk.contains(pinIndex)) {
+                    chunk.add(0, pinIndex)
+                } else if (chunk.first() != pinIndex) {
+                    chunk.remove(pinIndex)
+                    chunk.add(0, pinIndex)
+                }
+            }
+        }
+
         chunks.forEachIndexed { chunkIndex, chunk ->
             val chunkTitle = if (chunks.size == 1) title else "$title (Part ${chunkIndex + 1} of ${chunks.size})"
             layout.subsection(chunkTitle)

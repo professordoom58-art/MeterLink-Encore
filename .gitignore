@@ -14,3 +14,10 @@ captures/
 .cxx/
 local.properties
 *.iml
+
+# Perch artifacts
+perch.md
+perch/
+
+# Freebuff
+.freebuff/
