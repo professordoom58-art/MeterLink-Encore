@@ -232,7 +232,7 @@ object Is15959Catalog {
         "0.0.96.11.4.255" to ObisMetadata("Other Event Code", category = ObisCategory.EVENT_CODE),
         "0.0.96.11.5.255" to ObisMetadata("Non-Rollover Event Code", category = ObisCategory.EVENT_CODE),
 
-        // These names are present in the SMRS load-JSON special cases. Their
+        // These names are present in vendor load-JSON special cases. Their
         // units are semantic and do not depend on a vendor's RES payload.
         "1.0.72.27.0.255" to ObisMetadata("Voltage Y-N", "V", ObisCategory.LOAD_SURVEY),
         "1.0.32.27.0.255" to ObisMetadata("Voltage R-N", "V", ObisCategory.LOAD_SURVEY),
@@ -297,7 +297,7 @@ object Is15959Catalog {
     )
 
     /**
-     * The SMRS fallback calls this object `avon-t1` only for AME meters.
+     * This object is labelled `avon-t1` only for AME meters.
      * Keep that label vendor-scoped instead of making it global for Genus,
      * Secure, HPL, and other meter families.
      */
