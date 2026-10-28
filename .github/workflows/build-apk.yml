@@ -54,14 +54,4 @@ jobs:
             Grab the APK under Assets below.
           files: "MeterLink-v1.0.${{ github.run_number }}.apk"
 
-      - name: Keep only the latest 3 releases
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release list --limit 100 --json tagName --jq '.[3:][].tagName' |
-          while read -r tag; do
-            if [ -n "$tag" ]; then
-              echo "Deleting old release and tag: $tag"
-              gh release delete "$tag" --cleanup-tag --yes
-            fi
-          done
+

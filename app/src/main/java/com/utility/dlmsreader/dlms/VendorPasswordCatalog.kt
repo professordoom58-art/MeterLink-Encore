@@ -15,23 +15,23 @@ object VendorPasswordCatalog {
         ),
         VendorProfile(
             displayName = "Genus Power",
-            defaultPasswords = listOf("00000000", "GENUS123", "11111111"),
-            defaultPrimaryPassword = "00000000"
+            defaultPasswords = listOf("1A2B3C4D", "GENUS123", "11111111"),
+            defaultPrimaryPassword = "1A2B3C4D"
         ),
         VendorProfile(
             displayName = "Secure Meters",
-            defaultPasswords = listOf("00000000", "ABCD0001", "SECURE12"),
-            defaultPrimaryPassword = "00000000"
+            defaultPasswords = listOf("ABCD0001", "00000000", "SECURE12"),
+            defaultPrimaryPassword = "ABCD0001"
         ),
         VendorProfile(
             displayName = "HPL Electric",
             defaultPasswords = listOf("00000000", "HPL12345"),
-            defaultPrimaryPassword = "00000000"
+            defaultPrimaryPassword = "HPL12345"
         ),
         VendorProfile(
-            displayName = "Generic / Default",
-            defaultPasswords = listOf("00000000", "12345678", "11111111"),
-            defaultPrimaryPassword = "00000000"
+            displayName = "AVON",
+            defaultPasswords = listOf("1111111111111111", "12345678", "11111111"),
+            defaultPrimaryPassword = "1111111111111111"
         ),
         VendorProfile(
             displayName = "Custom Password",
