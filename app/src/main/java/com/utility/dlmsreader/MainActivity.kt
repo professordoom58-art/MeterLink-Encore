@@ -35,6 +35,7 @@ import com.utility.dlmsreader.dlms.LoadSurveySelection
 import com.utility.dlmsreader.dlms.MeterDataModule
 import com.utility.dlmsreader.dlms.MeterDataReport
 import com.utility.dlmsreader.dlms.MeterReadSnapshot
+import com.utility.dlmsreader.dlms.MeterLinkExcelExporter
 import com.utility.dlmsreader.dlms.MeterLinkPdfExporter
 import com.utility.dlmsreader.dlms.ProfileSection
 import com.utility.dlmsreader.dlms.VendorPasswordCatalog
@@ -42,7 +43,9 @@ import com.utility.dlmsreader.transport.OpticalUsbTransport
 import com.utility.dlmsreader.transport.TraceDirection
 import com.utility.dlmsreader.transport.TraceLog
 import gurux.dlms.enums.Authentication
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -197,6 +200,26 @@ fun MeterReaderScreen(
             exporter.share(bundle.pdf)
             reportStatusText = "✓ PDF saved as ${bundle.pdf.name}; Hex Log saved as ${bundle.hexLog.name}."
         }.onFailure { errorMessage = it.message ?: "PDF export failed" }
+    }
+
+    fun exportExcel() {
+        isReading = true
+        errorMessage = null
+        scope.launch {
+            // Rendering and ZIP writing are file work: keep them off the UI thread.
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val exporter = MeterLinkExcelExporter(context)
+                    val file = exporter.export(meterReport)
+                    exporter.share(file)
+                    file
+                }
+            }
+            result
+                .onSuccess { reportStatusText = "✓ Excel workbook saved as ${it.name}." }
+                .onFailure { errorMessage = it.message ?: "Excel export failed" }
+            isReading = false
+        }
     }
 
     fun exportHexLog() {
@@ -550,6 +573,14 @@ fun MeterReaderScreen(
                                     ) {
                                         Text("Export Hex Log (.txt)", fontSize = 11.sp)
                                     }
+                                }
+                                Button(
+                                    onClick = ::exportExcel,
+                                    enabled = !isReading && meterReport.hasData,
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("Export Excel (.xlsx)", fontSize = 11.sp)
                                 }
                                 lastHexLogFile?.let {
                                     Text("Hex log ready: ${it.name}", fontSize = 10.sp, color = Color.Gray)
