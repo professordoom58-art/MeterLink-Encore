@@ -65,26 +65,9 @@ class GuruxPacketExecutor internal constructor(
         val retries = maxRetriesOverride ?: maxRetries
         val effectiveTimeoutMs = packetTimeoutMs.coerceAtLeast(MIN_FRAME_READ_TIMEOUT_MS)
 
-        // Snapshot reply.data state BEFORE this packet so any retry or partial parse
-        // never duplicates or corrupts previously accumulated multi-block payload bytes.
-        val savedPayloadBytes = reply.data?.array()?.copyOf(reply.data.size()) ?: ByteArray(0)
-        val savedPayloadPos = reply.data?.position() ?: 0
-        val savedMoreData = reply.moreData.value
-
         while (attempt < retries) {
             attempt++
             reply.error = 0
-
-            // Restore reply.data to clean pre-attempt snapshot on retry
-            if (attempt > 1 && reply.data != null) {
-                reply.data.clear()
-                if (savedPayloadBytes.isNotEmpty()) {
-                    reply.data.set(savedPayloadBytes, 0, savedPayloadBytes.size)
-                    reply.data.position(savedPayloadPos)
-                }
-                reply.moreData.value = savedMoreData
-            }
-
             val assembler = HdlcFrameAssembler()
 
             try {
@@ -110,33 +93,57 @@ class GuruxPacketExecutor internal constructor(
                     )
                 }
 
-                val frameBytes = assembler.getAssembledFrame()
-                    ?: throw IOException("Incomplete HDLC frame (${assembler.size} bytes)")
+                val frameBytes = assembler.getAssembledFrame() ?: assembler.bytes
                 logFn(TraceDirection.RX, frameBytes.toHexString())
 
                 val rd = GXByteBuffer(frameBytes)
+                var success = false
+
                 try {
-                    // Note: Gurux client.getData() returns false when reply.isMoreData is true
-                    // (e.g., segmented HDLC frames or multi-block transfers). That is normal!
-                    getDataFn(rd, reply)
+                    success = getDataFn(rd, reply)
                 } catch (e: Exception) {
                     if (e is IndexOutOfBoundsException || e is BufferUnderflowException || e is IllegalArgumentException) {
-                        // Restore reply.data before failing so caller/retry starts clean
-                        if (reply.data != null) {
-                            reply.data.clear()
-                            if (savedPayloadBytes.isNotEmpty()) {
-                                reply.data.set(savedPayloadBytes, 0, savedPayloadBytes.size)
-                                reply.data.position(savedPayloadPos)
+                        val recoveryDeadline = System.currentTimeMillis() + 500L
+                        while (System.currentTimeMillis() < recoveryDeadline && !success) {
+                            val extraChunk = readBytesRawFn(128, 100)
+                            if (extraChunk.isNotEmpty()) {
+                                assembler.push(extraChunk)
+                                val updatedFrame = assembler.getAssembledFrame() ?: assembler.bytes
+                                rd.clear()
+                                rd.set(updatedFrame, 0, updatedFrame.size)
+                                try {
+                                    success = getDataFn(rd, reply)
+                                } catch (_: Exception) {
+                                }
                             }
-                            reply.moreData.value = savedMoreData
                         }
-                        logFn(
-                            TraceDirection.ERROR,
-                            "[WARN] Malformed/truncated DLMS frame (${frameBytes.size} bytes): ${e.message}"
-                        )
-                        throw IOException("Truncated DLMS frame: ${e.message}", e)
+                        if (!success) {
+                            val rxBytes = assembler.bytes
+                            logFn(
+                                TraceDirection.ERROR,
+                                "[WARN] Malformed/truncated DLMS frame (${rxBytes.size} bytes): ${e.message}"
+                            )
+                            throw IOException("Truncated DLMS frame: ${e.message}", e)
+                        }
                     } else {
                         throw e
+                    }
+                }
+
+                if (!success) {
+                    val recoveryDeadline = System.currentTimeMillis() + 500L
+                    while (System.currentTimeMillis() < recoveryDeadline && !success) {
+                        val extraChunk = readBytesRawFn(128, 100)
+                        if (extraChunk.isNotEmpty()) {
+                            assembler.push(extraChunk)
+                            val updatedFrame = assembler.getAssembledFrame() ?: assembler.bytes
+                            rd.clear()
+                            rd.set(updatedFrame, 0, updatedFrame.size)
+                            try {
+                                success = getDataFn(rd, reply)
+                            } catch (_: Exception) {
+                            }
+                        }
                     }
                 }
 
@@ -150,8 +157,7 @@ class GuruxPacketExecutor internal constructor(
                 if (attempt >= retries) {
                     throw if (e is IOException) e else IOException("Failed after $retries attempts: ${e.message}", e)
                 }
-                // Backoff 200ms before retrying
-                delay(200)
+                delay(250)
             }
         }
     }
@@ -175,8 +181,7 @@ class GuruxPacketExecutor internal constructor(
             val nextFrame = client.receiverReady(reply)
             if (nextFrame.isEmpty()) break
             try {
-                // Allow 2 attempts (initial at 100ms + 1 retry after 200ms backoff)
-                readDLMSPacket(nextFrame, reply, maxRetriesOverride = 2)
+                readDLMSPacket(nextFrame, reply, maxRetriesOverride = 1)
             } catch (error: Exception) {
                 throw IOException("Incomplete HDLC frame: ${error.message}", error)
             }

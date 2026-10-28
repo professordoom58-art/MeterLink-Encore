@@ -99,13 +99,6 @@ class OpticalUsbTransport(private val context: Context) {
         }
     }
 
-    // <--- THIS IS WHERE selectPreferredOpticalDriver GOES (Right between refreshProbeStatus and openPort)
-    private fun selectPreferredOpticalDriver(drivers: List<UsbSerialDriver>): UsbSerialDriver {
-        // Prefer dedicated optical probe UART bridges (CP210x, FTDI, CH340, PL2303) over generic CDC/ACM devices
-        return drivers.firstOrNull { it !is CdcAcmSerialDriver && it.ports.isNotEmpty() }
-            ?: drivers.first { it.ports.isNotEmpty() }
-    }
-
     suspend fun openPort(baudRate: Int = 9600, useModeE: Boolean = false): Result<Unit> =
         withContext(Dispatchers.IO) {
             runCatching {
@@ -180,7 +173,7 @@ class OpticalUsbTransport(private val context: Context) {
 
             port?.let { p ->
                 // openPort() has already opened and stored this port.
-                p.setParameters(300, 7, 1, UsbSerialPort.PARITY_EVEN)
+                p.setParameters(300, 7, 1, com.hoho.android.usbserial.driver.UsbSerialPort.PARITY_EVEN)
                 p.dtr = true
                 p.rts = true
 
@@ -219,7 +212,7 @@ class OpticalUsbTransport(private val context: Context) {
                     log(TraceDirection.TX, "ACK Baud-Rate Switch sent")
 
                     Thread.sleep(400)
-                    p.setParameters(9600, 8, 1, UsbSerialPort.PARITY_NONE)
+                    p.setParameters(9600, 8, 1, com.hoho.android.usbserial.driver.UsbSerialPort.PARITY_NONE)
                     log(TraceDirection.INFO, "Switched port to 9600 8N1. Ready for HDLC.")
                     return true
                 } else {
@@ -236,7 +229,7 @@ class OpticalUsbTransport(private val context: Context) {
         return false
     }
 
-    fun testDirectHdlcConnection(): Boolean {
+        fun testDirectHdlcConnection(): Boolean {
         val snrmFrame = byteArrayOf(
             0x7E, 0xA0.toByte(), 0x07, 0x03, 0x21, 0x93.toByte(), 0x0F, 0x01, 0x7E
         )
