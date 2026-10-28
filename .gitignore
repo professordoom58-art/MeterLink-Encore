@@ -21,3 +21,6 @@ perch/
 
 # Freebuff
 .freebuff/
+
+# Perch artifacts
+.perch/
