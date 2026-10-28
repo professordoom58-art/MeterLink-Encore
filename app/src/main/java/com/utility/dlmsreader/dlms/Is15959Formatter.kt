@@ -162,7 +162,9 @@ object Is15959Formatter {
         obis == "1.0.71.7.0.255" -> ObisDescriptor("B-Phase Current (A)", "A")
         obis == "1.0.91.7.0.255" -> ObisDescriptor("Neutral Current (A)", "A")
         obis == "1.0.13.7.0.255" -> ObisDescriptor("Signed Power Factor", "PF")
-        obis == "1.0.33.7.0.255" || obis == "1.0.53.7.0.255" || obis == "1.0.73.7.0.255" -> ObisDescriptor("R / Y / B Phase PF", "PF")
+        obis == "1.0.33.7.0.255" -> ObisDescriptor("R-Phase Power Factor", "PF")
+        obis == "1.0.53.7.0.255" -> ObisDescriptor("Y-Phase Power Factor", "PF")
+        obis == "1.0.73.7.0.255" -> ObisDescriptor("B-Phase Power Factor", "PF")
         obis == "1.0.14.7.0.255" -> ObisDescriptor("Frequency (Hz)", "Hz")
         obis == "1.0.1.7.0.255" -> ObisDescriptor("Active Power (kW)", "kW")
         obis == "1.0.9.7.0.255" -> ObisDescriptor("Apparent Power (kVA)", "kVA")
@@ -233,6 +235,10 @@ object Is15959Formatter {
         205 -> "Very Low PF - Occurrence"
         206 -> "Very Low PF - Restoration"
         251 -> "Meter Cover Opening - Occurrence"
+        2107 -> "High Voltage / Over-Voltage - Occurrence"
+        2108 -> "High Voltage / Over-Voltage - Restoration"
+        2109 -> "Low Voltage / Under-Voltage - Occurrence"
+        2110 -> "Low Voltage / Under-Voltage - Restoration"
         else -> "Event Code $code"
     }
 
