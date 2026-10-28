@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.utility.dlmsreader.dlms.ConnectionParams
 import com.utility.dlmsreader.dlms.DlmsMeterEngine
+import com.utility.dlmsreader.dlms.LoadSurveySelection
 import com.utility.dlmsreader.dlms.MeterDataModule
 import com.utility.dlmsreader.dlms.MeterDataReport
 import com.utility.dlmsreader.dlms.MeterReadSnapshot
@@ -124,6 +125,7 @@ fun MeterReaderScreen(
     var reportReady by remember { mutableStateOf(false) }
     var reportStatusText by remember { mutableStateOf<String?>(null) }
     var autoTryAlternatePasswords by remember { mutableStateOf(false) }
+    var loadSurveySelection by remember { mutableStateOf(LoadSurveySelection.RECENT) }
     var lastHexLogFile by remember { mutableStateOf<File?>(null) }
     val traceLogs = remember { mutableStateListOf<TraceLog>() }
 
@@ -145,7 +147,8 @@ fun MeterReaderScreen(
                 passwordCandidates = selectedVendor.defaultPasswords,
                 autoTryAlternatePasswords = autoTryAlternatePasswords,
                 vendorName = selectedVendor.displayName,
-                useModeE = useModeE
+                useModeE = useModeE,
+                loadSurveySelection = loadSurveySelection
             )
             engine.readMeterModule(params, module) { progressText = it }
                 .onSuccess {
@@ -494,6 +497,11 @@ fun MeterReaderScreen(
                         enabled = !isReading,
                         onRead = ::runModule
                     )
+                    LoadSurveyRangeChips(
+                        selected = loadSurveySelection,
+                        enabled = !isReading,
+                        onSelect = { loadSurveySelection = it }
+                    )
                     OutlinedButton(
                         onClick = { runModule(MeterDataModule.TAMPER) },
                         enabled = !isReading,
@@ -649,6 +657,32 @@ private fun ResultRow(label: String, value: String) {
     ) {
         Text(label, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         Text(value, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun LoadSurveyRangeChips(
+    selected: LoadSurveySelection,
+    enabled: Boolean,
+    onSelect: (LoadSurveySelection) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text("Load Survey Range", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            LoadSurveySelection.entries.forEach { option ->
+                FilterChip(
+                    selected = selected == option,
+                    onClick = { onSelect(option) },
+                    enabled = enabled,
+                    label = { Text(option.label, fontSize = 11.sp, maxLines = 1) }
+                )
+            }
+        }
     }
 }
 

@@ -40,7 +40,8 @@ data class ConnectionParams(
     val securitySystemTitle: String = "",
     val authenticationKey: String = "",
     val blockCipherKey: String = "",
-    val dedicatedKey: String? = null
+    val dedicatedKey: String? = null,
+    val loadSurveySelection: LoadSurveySelection = LoadSurveySelection.RECENT
 )
 
 data class MeterReadSnapshot(
@@ -161,7 +162,8 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     client = client,
                     packetTimeoutMs = params.responseTimeoutMs,
                     onProgress = onProgress,
-                    meterMake = params.vendorName
+                    meterMake = params.vendorName,
+                    loadSurveySelection = params.loadSurveySelection
                 )
                 val identityHeader = if (module != MeterDataModule.IDENTITY && module != MeterDataModule.ALL) {
                     reader.readIdentityHeader()
@@ -173,8 +175,12 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     MeterDataModule.ENERGY -> MeterDataReport(cumulativeEnergies = reader.readCumulativeEnergies())
                     MeterDataModule.INSTANTANEOUS -> MeterDataReport(instantaneous = reader.readInstantaneousProfile())
                     MeterDataModule.BILLING -> MeterDataReport(billing = reader.readBillingProfile())
-                    MeterDataModule.BLOCK_LOAD -> MeterDataReport(blockLoad = reader.readBlockLoadSurvey())
-                    MeterDataModule.DAILY_LOAD -> MeterDataReport(dailyLoad = reader.readDailyLoadSurvey())
+                    MeterDataModule.BLOCK_LOAD -> MeterDataReport(
+                        blockLoad = reader.readBlockLoadSurvey(selection = params.loadSurveySelection)
+                    )
+                    MeterDataModule.DAILY_LOAD -> MeterDataReport(
+                        dailyLoad = reader.readDailyLoadSurvey(selection = params.loadSurveySelection)
+                    )
                     MeterDataModule.TAMPER -> MeterDataReport(
                         tamperEvents = reader.readTamperEventLogs(),
                         eventLogStatus = reader.eventLogStatus

@@ -1,8 +1,10 @@
 package com.utility.dlmsreader.dlms
 
 import com.utility.dlmsreader.transport.OpticalUsbTransport
+import gurux.dlms.GXDLMSClient
 import gurux.dlms.GXDateTime
 import gurux.dlms.GXDLMSException
+import gurux.dlms.enums.DataType
 import gurux.dlms.enums.DateTimeSkips
 import gurux.dlms.enums.Unit as DlmsUnit
 import gurux.dlms.objects.GXDLMSClock
@@ -18,6 +20,67 @@ import kotlin.math.pow
 
 const val DAILY_LOAD_MAX_ENTRIES = 400
 const val BLOCK_LOAD_MAX_ENTRIES = 48
+
+/**
+ * Load-survey range selection. RECENT preserves the previously verified
+ * behaviour (2 days block load, 15 days daily load). The day-window options
+ * use 96 intervals per day, which is the IS 15959 15-minute block cadence.
+ */
+enum class LoadSurveySelection(
+    val label: String,
+    val daysBack: Int?,
+    val maxEntries: Int
+) {
+    RECENT("Recent (2d)", null, 0),
+    DAYS_36("36 Days", 36, 36 * 96),
+    DAYS_45("45 Days", 45, 45 * 96),
+    DAYS_75("75 Days", 75, 75 * 96),
+    FULL_BUFFER("Full Buffer", null, Int.MAX_VALUE)
+}
+
+/** Resolved selective-access window for one load-survey read. */
+data class LoadSurveyWindow(
+    val start: Calendar,
+    val end: Calendar,
+    val maxEntries: Int,
+    val daysBack: Int?
+)
+
+/**
+ * Pure window calculation so the date maths is unit-testable without a meter.
+ * Start is floored to 00:00:00.000 and end is ceiled to 23:59:59.000 of the
+ * meter RTC day, so a partial final day is never truncated.
+ */
+fun loadSurveyWindow(
+    selection: LoadSurveySelection,
+    meterRtc: Calendar,
+    isBlockLoad: Boolean
+): LoadSurveyWindow {
+    val daysBack = when (selection) {
+        LoadSurveySelection.RECENT -> if (isBlockLoad) 2 else 15
+        LoadSurveySelection.FULL_BUFFER -> null
+        else -> selection.daysBack
+    }
+    val maxEntries = when (selection) {
+        LoadSurveySelection.RECENT -> if (isBlockLoad) BLOCK_LOAD_MAX_ENTRIES else DAILY_LOAD_MAX_ENTRIES
+        LoadSurveySelection.FULL_BUFFER -> Int.MAX_VALUE
+        else -> selection.maxEntries
+    }
+    val end = (meterRtc.clone() as Calendar).apply {
+        set(Calendar.HOUR_OF_DAY, 23)
+        set(Calendar.MINUTE, 59)
+        set(Calendar.SECOND, 59)
+        set(Calendar.MILLISECOND, 0)
+    }
+    val start = (meterRtc.clone() as Calendar).apply {
+        if (daysBack != null) add(Calendar.DAY_OF_YEAR, -daysBack)
+        set(Calendar.HOUR_OF_DAY, 0)
+        set(Calendar.MINUTE, 0)
+        set(Calendar.SECOND, 0)
+        set(Calendar.MILLISECOND, 0)
+    }
+    return LoadSurveyWindow(start, end, maxEntries, daysBack)
+}
 
 data class ParameterRow(
     val parameterName: String,
@@ -119,7 +182,8 @@ class Is15959DataReader(
     packetTimeoutMs: Long = 3000L,
     private val onProgress: suspend (String) -> Unit = {},
     private val runtimeMetadata: Map<String, ObisMetadata> = emptyMap(),
-    private val meterMake: String? = null
+    private val meterMake: String? = null,
+    private val loadSurveySelection: LoadSurveySelection = LoadSurveySelection.RECENT
 ) {
     private var meterRtc: GXDateTime? = null
     private var meterTimeConventionChecked = false
@@ -195,16 +259,34 @@ class Is15959DataReader(
         return loadProfile(profile.dataObis, "Billing History Profile", profile.scalerObis)
     }
 
-    suspend fun readBlockLoadSurvey(maxEntries: Int = BLOCK_LOAD_MAX_ENTRIES): ProfileSection {
-        progress("Reading block load survey...")
+    suspend fun readBlockLoadSurvey(
+        maxEntries: Int = BLOCK_LOAD_MAX_ENTRIES,
+        selection: LoadSurveySelection = loadSurveySelection
+    ): ProfileSection {
+        progress("Reading block load survey (${selection.label})...")
         val profile = Is15959Catalog.profileByName("Block Load Profile")
-        return loadRecentProfile(profile.dataObis, "Block Load Survey", maxEntries, profile.scalerObis)
+        return loadRecentProfile(
+            profile.dataObis,
+            "Block Load Survey",
+            maxEntries,
+            profile.scalerObis,
+            selection
+        )
     }
 
-    suspend fun readDailyLoadSurvey(maxEntries: Int = DAILY_LOAD_MAX_ENTRIES): ProfileSection {
-        progress("Reading daily load survey...")
+    suspend fun readDailyLoadSurvey(
+        maxEntries: Int = DAILY_LOAD_MAX_ENTRIES,
+        selection: LoadSurveySelection = loadSurveySelection
+    ): ProfileSection {
+        progress("Reading daily load survey (${selection.label})...")
         val profile = Is15959Catalog.profileByName("Daily Load Profile")
-        return loadRecentProfile(profile.dataObis, "Daily Load Survey", maxEntries, profile.scalerObis)
+        return loadRecentProfile(
+            profile.dataObis,
+            "Daily Load Survey",
+            maxEntries,
+            profile.scalerObis,
+            selection
+        )
     }
 
     suspend fun readTamperEventLogs(): List<TamperEventRow> {
@@ -348,7 +430,8 @@ class Is15959DataReader(
         obis: String,
         title: String,
         maxEntries: Int,
-        scalerObis: String?
+        scalerObis: String?,
+        selection: LoadSurveySelection = LoadSurveySelection.RECENT
     ): ProfileSection {
         val profile = GXDLMSProfileGeneric(obis)
         executor.readObject(profile, 3)
@@ -360,19 +443,19 @@ class Is15959DataReader(
         var totalRows = profile.buffer.size
         var loaded = false
         val endDate = readMeterRtc() ?: error("Meter RTC unavailable for selective range access.")
-        val rangeDays = if (obis == "1.0.99.1.0.255") 2 else 15
-        val startCalendar = MeterTime.wallClock(endDate).apply {
-            add(Calendar.DAY_OF_YEAR, -rangeDays)
-        }
-        val startDate = GXDateTime(startCalendar)
+        val isBlockLoad = obis == "1.0.99.1.0.255"
+        val window = loadSurveyWindow(selection, MeterTime.wallClock(endDate), isBlockLoad)
+        val effectiveMax = if (selection == LoadSurveySelection.RECENT) maxEntries else window.maxEntries
+        val startDate = GXDateTime(window.start)
+        val endRangeDate = GXDateTime(window.end)
 
         if (!rangeTierDenied) {
             try {
-                progress("Tier1 range: requesting ${MeterTime.format(startDate)} to ${MeterTime.format(endDate)}")
-                executor.readRowsByRange(profile, startDate, endDate)
+                progress("Tier1 range: requesting ${MeterTime.format(startDate)} to ${MeterTime.format(endRangeDate)}")
+                executor.readRowsByRange(profile, startDate, endRangeDate)
                 progress("Tier1 range: success(${profile.buffer.size})")
                 totalRows = profile.buffer.size
-                loaded = true
+                loaded = profile.buffer.isNotEmpty()
             } catch (error: GXDLMSException) {
                 rangeTierDenied = true
                 progress("Tier1 range: denied(${error.errorCode})")
@@ -381,7 +464,7 @@ class Is15959DataReader(
                         deviation = 0x8000
                         skip.add(DateTimeSkips.DEVIATION)
                     }
-                    val variantEnd = GXDateTime(endDate).apply {
+                    val variantEnd = GXDateTime(endRangeDate).apply {
                         deviation = 0x8000
                         skip.add(DateTimeSkips.DEVIATION)
                     }
@@ -390,7 +473,7 @@ class Is15959DataReader(
                         executor.readRowsByRange(profile, variantStart, variantEnd)
                         progress("Tier1 range variant: success(${profile.buffer.size})")
                         totalRows = profile.buffer.size
-                        loaded = true
+                        loaded = profile.buffer.isNotEmpty()
                     } catch (variantError: GXDLMSException) {
                         rangeVariantTierDenied = true
                         progress("Tier1 range variant: denied(${variantError.errorCode})")
@@ -406,12 +489,12 @@ class Is15959DataReader(
                 val entriesRaw = executor.readObject(profile, 7)
                 val entriesInUse = (entriesRaw as? Number)?.toInt()?.takeIf { it > 0 }
                     ?: profile.entriesInUse
-                val index = maxOf(1, entriesInUse - maxEntries + 1)
-                progress("Tier2 entry: requesting index=$index count=$maxEntries of $entriesInUse")
-                executor.readRowsByEntry(profile, index, maxEntries)
+                val index = maxOf(1, entriesInUse - effectiveMax + 1)
+                progress("Tier2 entry: requesting index=$index count=$effectiveMax of $entriesInUse")
+                executor.readRowsByEntry(profile, index, effectiveMax)
                 progress("Tier2 entry: success(${profile.buffer.size})")
                 totalRows = entriesInUse
-                loaded = true
+                loaded = profile.buffer.isNotEmpty()
             } catch (error: GXDLMSException) {
                 entryTierDenied = true
                 progress("Tier2 entry: denied(${error.errorCode})")
@@ -426,8 +509,58 @@ class Is15959DataReader(
             progress("Tier3 full: success(${profile.buffer.size})")
             totalRows = profile.buffer.size
         }
-        trimProfileBuffer(profile, maxEntries)
+        // A day-window selection must still honour its window when the meter
+        // answered via Selector 2 or the full buffer instead of Selector 1.
+        if (selection != LoadSurveySelection.RECENT && selection != LoadSurveySelection.FULL_BUFFER) {
+            val before = profile.buffer.size
+            filterBufferToWindow(profile, window)
+            if (profile.buffer.size != before) {
+                progress("Window filter: kept ${profile.buffer.size} of $before rows within ${window.daysBack} days")
+                totalRows = profile.buffer.size
+            }
+        }
+
+        trimProfileBuffer(profile, effectiveMax)
         return formatProfile(profile, title, scalers, totalRows)
+    }
+
+    /** Index of the capture object that carries the row timestamp, or -1. */
+    private fun timeColumnIndex(profile: GXDLMSProfileGeneric): Int {
+        val captures = profile.captureObjects
+        val clock = captures.indexOfFirst { it.key is GXDLMSClock }
+        if (clock >= 0) return clock
+        val captureTime = captures.indexOfFirst { it.value.attributeIndex == 5 }
+        if (captureTime >= 0) return captureTime
+        return captures.indexOfFirst { it.key.logicalName == "0.0.1.0.0.255" }
+    }
+
+    private fun rowTimestamp(raw: Any?): Long? = when (raw) {
+        is GXDateTime -> runCatching { MeterTime.wallClock(raw).timeInMillis }.getOrNull()
+        is Date -> raw.time
+        is ByteArray -> if (raw.size == 12) {
+            runCatching {
+                (GXDLMSClient.changeType(raw, DataType.DATETIME, false) as? GXDateTime)
+                    ?.let { MeterTime.wallClock(it).timeInMillis }
+            }.getOrNull()
+        } else null
+        else -> null
+    }
+
+    /**
+     * Keeps only rows inside the requested window. Rows whose timestamp cannot
+     * be parsed are retained rather than dropped, so a formatting quirk never
+     * silently hides field data.
+     */
+    private fun filterBufferToWindow(profile: GXDLMSProfileGeneric, window: LoadSurveyWindow) {
+        val index = timeColumnIndex(profile)
+        if (index < 0) return
+        val startMs = window.start.timeInMillis
+        val endMs = window.end.timeInMillis
+        val kept = profile.buffer.filter { row ->
+            val ts = rowTimestamp(rowValues(row).getOrNull(index)) ?: return@filter true
+            ts in startMs..endMs
+        }
+        profile.setBuffer(kept.map { rowValues(it).toTypedArray() }.toTypedArray())
     }
 
     private fun trimProfileBuffer(profile: GXDLMSProfileGeneric, maxEntries: Int) {
