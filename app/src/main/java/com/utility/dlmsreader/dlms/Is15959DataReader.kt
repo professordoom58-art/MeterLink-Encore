@@ -157,7 +157,7 @@ data class MeterDataReport(
     val hasData: Boolean
         get() = identity != null || cumulativeEnergies.isNotEmpty() ||
             instantaneous != null || billing != null || blockLoad != null ||
-            dailyLoad != null || tamperEvents.isNotEmpty() || eventLogStatus.isNotEmpty() || errors.isNotEmpty()
+            dailyLoad != null || tamperEvents.isNotEmpty() || eventLogStatus.isNotEmpty()
 
     fun merge(other: MeterDataReport): MeterDataReport = MeterDataReport(
         identity = when {
@@ -235,9 +235,9 @@ class Is15959DataReader(
         val definitions = listOf(
             "1.0.1.8.0.255",
             "1.0.9.8.0.255",
-            "1.0.3.8.0.255",
             "1.0.5.8.0.255",
-            "1.0.4.8.0.255",
+            "1.0.6.8.0.255",
+            "1.0.7.8.0.255",
             "1.0.8.8.0.255",
             "1.0.1.6.0.255",
             "1.0.9.6.0.255"

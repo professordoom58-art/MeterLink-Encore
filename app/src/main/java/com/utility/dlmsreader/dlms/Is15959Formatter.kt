@@ -151,8 +151,10 @@ object Is15959Formatter {
         obis == "0.128.176.128.128.255" -> ObisDescriptor("Meter Constant (imp/kWh)")
         obis == "0.0.0.1.2.255" -> ObisDescriptor("Billing Date")
         obis == "1.0.13.0.0.255" -> ObisDescriptor("Average Billing Power Factor", "PF")
-        isTodEnergyObis(obis, 1) -> ObisDescriptor("kWh ToD Zone ${todZone(obis)}", "kWh")
-        isTodEnergyObis(obis, 9) -> ObisDescriptor("kVAh ToD Zone ${todZone(obis)}", "kVAh")
+        isTodEnergyObis(obis, 1) -> ObisDescriptor("kWh ToD Zone ${todZone(obis)} - Import", "kWh")
+        isTodEnergyObis(obis, 2) -> ObisDescriptor("kWh ToD Zone ${todZone(obis)} - Export", "kWh")
+        isTodEnergyObis(obis, 9) -> ObisDescriptor("kVAh ToD Zone ${todZone(obis)} - Import", "kVAh")
+        isTodEnergyObis(obis, 10) -> ObisDescriptor("kVAh ToD Zone ${todZone(obis)} - Export", "kVAh")
         obis == "0.0.1.0.0.255" -> ObisDescriptor("Real-Time Clock")
         obis == "1.0.12.7.0.255" || obis == "1.0.32.7.0.255" -> ObisDescriptor("R-Phase / Phase Voltage (V)", "V")
         obis == "1.0.52.7.0.255" -> ObisDescriptor("Y-Phase Voltage (V)", "V")
@@ -173,8 +175,12 @@ object Is15959Formatter {
         obis == "1.0.2.8.0.255" -> ObisDescriptor("Cumulative Active Energy - Export (kWh)", "kWh")
         obis == "1.0.9.8.0.255" -> ObisDescriptor("Cumulative Apparent Energy - Import (kVAh)", "kVAh")
         obis == "1.0.10.8.0.255" -> ObisDescriptor("Cumulative Apparent Energy - Export (kVAh)", "kVAh")
-        obis == "1.0.5.8.0.255" || obis == "1.0.3.8.0.255" -> ObisDescriptor("Reactive Energy - Lag (kVArh)", "kVArh")
-        obis == "1.0.8.8.0.255" || obis == "1.0.4.8.0.255" -> ObisDescriptor("Reactive Energy - Lead (kVArh)", "kVArh")
+        obis == "1.0.5.8.0.255" -> ObisDescriptor("Reactive Energy Q1 - Inductive Import (kVArh)", "kVArh")
+        obis == "1.0.6.8.0.255" -> ObisDescriptor("Reactive Energy Q2 - Capacitive Import (kVArh)", "kVArh")
+        obis == "1.0.7.8.0.255" -> ObisDescriptor("Reactive Energy Q3 - Inductive Export (kVArh)", "kVArh")
+        obis == "1.0.8.8.0.255" -> ObisDescriptor("Reactive Energy Q4 - Capacitive Export (kVArh)", "kVArh")
+        obis == "1.0.3.8.0.255" -> ObisDescriptor("Reactive Energy - Lag (kVArh) [fallback]", "kVArh")
+        obis == "1.0.4.8.0.255" -> ObisDescriptor("Reactive Energy - Lead (kVArh) [fallback]", "kVArh")
         obis == "1.0.1.6.0.255" -> ObisDescriptor("Maximum Demand - Active (kW)", "kW")
         obis == "1.0.9.6.0.255" -> ObisDescriptor("Maximum Demand - Apparent (kVA)", "kVA")
         obis == "1.0.1.2.0.255" -> ObisDescriptor("Cum. MD Active (kW)", "kW")
@@ -213,12 +219,12 @@ object Is15959Formatter {
         60 -> "Y-Phase CT Open - Restoration"
         61 -> "B-Phase CT Open - Occurrence"
         62 -> "B-Phase CT Open - Restoration"
-        63 -> "Current Unbalance - Occurrence"
-        64 -> "Current Unbalance - Restoration"
-        65 -> "CT Bypass - Occurrence"
-        66 -> "CT Bypass - Restoration"
-        67 -> "Over Current in Any Phase - Occurrence"
-        68 -> "Over Current in Any Phase - Restoration"
+        63 -> "Load Imbalance - Occurrence"
+        64 -> "Load Imbalance - Restoration"
+        65 -> "CT Short - Occurrence"
+        66 -> "CT Short - Restoration"
+        67 -> "Overload (Current) - Occurrence"
+        68 -> "Overload (Current) - Restoration"
         69 -> "Earth Loading - Occurrence"
         70 -> "Earth Loading - Restoration"
         101 -> "Power Failure - Occurrence"
@@ -234,6 +240,8 @@ object Is15959Formatter {
         204 -> "Neutral Disturbance (HF & DC) - Restoration"
         205 -> "Very Low PF - Occurrence"
         206 -> "Very Low PF - Restoration"
+        207 -> "Single Wire Operation (Neutral Missing) - Occurrence"
+        208 -> "Single Wire Operation (Neutral Missing) - Restoration"
         251 -> "Meter Cover Opening - Occurrence"
         2107 -> "High Voltage / Over-Voltage - Occurrence"
         2108 -> "High Voltage / Over-Voltage - Restoration"
