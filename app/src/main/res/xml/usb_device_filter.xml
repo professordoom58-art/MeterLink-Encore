@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Silicon Labs CP210x (Used inSANDS, Landis+Gyr, and Genus optical probes) -->
+    <!-- Silicon Labs CP210x (Used in Landis+Gyr and Genus optical probes) -->
     <usb-device vendor-id="4292" product-id="60000" />
     <usb-device vendor-id="4292" product-id="60016" />
     <!-- FTDI FT232R / FT231X (Used in industrial IEC 62056-21 optical probes) -->

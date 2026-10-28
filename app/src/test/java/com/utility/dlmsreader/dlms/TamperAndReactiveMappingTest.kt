@@ -25,7 +25,7 @@ class TamperAndReactiveMappingTest {
     }
 
     @Test
-    fun `current compartment codes follow the SMRS current table`() {
+    fun `current compartment codes follow the reference current table`() {
         assertEquals("Load Imbalance - Occurrence", Is15959Formatter.decodeTamperEvent(63))
         assertEquals("Load Imbalance - Restoration", Is15959Formatter.decodeTamperEvent(64))
         assertEquals("CT Short - Occurrence", Is15959Formatter.decodeTamperEvent(65))

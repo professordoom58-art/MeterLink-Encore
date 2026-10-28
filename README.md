@@ -109,7 +109,7 @@ Worth knowing before you take it to a site:
 ## Building from source
 
 ```bash
-git clone <this repo>
+git clone https://github.com/professordoom58-art/MeterLink-Encore.git
 cd MeterLink
 ./gradlew assembleDebug
 ```
@@ -130,7 +130,7 @@ Run the tests with:
 
 Every push to `main` builds and publishes a new APK automatically. Version numbers follow the CI run number (`v1.0.<run>`), so they always increase and always install over the previous one.
 
-See [CHANGELOG.md](CHANGELOG.md) for what changed.
+See [Releases](../../releases) for what changed.
 
 ---
 
