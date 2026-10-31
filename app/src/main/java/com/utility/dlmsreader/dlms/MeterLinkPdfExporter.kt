@@ -67,9 +67,14 @@ class MeterLinkPdfExporter(private val context: Context) {
         buildReport(layout, report, traceLogs, counters, droppedLineCount)
 
         val document = PdfDocument()
-        layout.render(document)
-        FileOutputStream(file).use { document.writeTo(it) }
-        document.close()
+        try {
+            layout.render(document)
+            FileOutputStream(file).use { document.writeTo(it) }
+        } finally {
+            // Always release the native document handle, even if rendering or
+            // writing throws part-way through a large report.
+            document.close()
+        }
         val hexLog = File(directory, "MeterLink_HexLog_${serial}_$stamp.txt")
         writeHexLog(hexLog, traceLogs, generated, serial, counters, droppedLineCount)
         return MeterLinkExportBundle(file, hexLog)

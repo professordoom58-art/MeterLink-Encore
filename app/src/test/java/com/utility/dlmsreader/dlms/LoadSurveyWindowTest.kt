@@ -138,6 +138,26 @@ class LoadSurveyWindowTest {
     }
 
     @Test
+    fun `FULL_BUFFER bypasses windowing and post-read date slicing`() {
+        // No window means the reader skips the RTC/Selector-1 range path and
+        // never calls filterLoadSurveyRows() on the complete buffer.
+        assertFalse(loadSurveyNeedsWindow(LoadSurveySelection.FULL_BUFFER))
+        assertNull(LoadSurveySelection.FULL_BUFFER.days)
+        assertEquals(Int.MAX_VALUE, LoadSurveySelection.FULL_BUFFER.maxEntries)
+
+        listOf(
+            LoadSurveySelection.RECENT,
+            LoadSurveySelection.DAYS_30,
+            LoadSurveySelection.DAYS_45,
+            LoadSurveySelection.DAYS_75
+        ).forEach { selection ->
+            assertTrue("${selection.label} must use a day window", loadSurveyNeedsWindow(selection))
+            val window = loadSurveyWindow(selection, meterRtc(), isBlockLoad = true)
+            assertTrue("${selection.label} must have daysBack", window.daysBack != null)
+        }
+    }
+
+    @Test
     fun `enum exposes the exact labels the UI renders`() {
         assertEquals("2 Days", LoadSurveySelection.RECENT.label)
         assertEquals("30 Days", LoadSurveySelection.DAYS_30.label)

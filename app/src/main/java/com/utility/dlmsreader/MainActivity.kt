@@ -163,18 +163,28 @@ fun MeterReaderScreen(
                     val mergedReport = meterReport.merge(completedReport)
                     meterReport = mergedReport
                     if (module == MeterDataModule.ALL) {
-                        runCatching {
-                            val bundle = MeterLinkPdfExporter(context).exportBundle(
-                                mergedReport,
-                                transport.traceSnapshot(),
-                                transport.traceCounters(),
-                                transport.droppedTraceLineCount()
-                            )
-                            lastHexLogFile = bundle.hexLog
-                            reportStatusText = "✓ Read All saved ${bundle.pdf.name} and ${bundle.hexLog.name}."
-                        }.onFailure {
-                            errorMessage = it.message ?: "Automatic report save failed"
+                        // PDF rendering and hex-log writing are file work: keep
+                        // them off the UI thread even on the automatic save path.
+                        val exportResult = withContext(Dispatchers.IO) {
+                            runCatching {
+                                val bundle = MeterLinkPdfExporter(context).exportBundle(
+                                    mergedReport,
+                                    transport.traceSnapshot(),
+                                    transport.traceCounters(),
+                                    transport.droppedTraceLineCount()
+                                )
+                                bundle
+                            }
                         }
+                        exportResult
+                            .onSuccess { bundle ->
+                                lastHexLogFile = bundle.hexLog
+                                reportStatusText =
+                                    "✓ Read All saved ${bundle.pdf.name} and ${bundle.hexLog.name}."
+                            }
+                            .onFailure {
+                                errorMessage = it.message ?: "Automatic report save failed"
+                            }
                     }
                     reportReady = true
                     if (module != MeterDataModule.ALL) {
@@ -190,16 +200,19 @@ fun MeterReaderScreen(
     fun exportReport() {
         isReading = true
         errorMessage = null
-        // Snapshot trace state on the UI thread, then render/write on IO.
+        // Capture only the Compose state on the UI thread; trace snapshot and
+        // all PDF/hex file work stay on IO.
         val report = meterReport
-        val logs = transport.traceSnapshot()
-        val counters = transport.traceCounters()
-        val dropped = transport.droppedTraceLineCount()
         scope.launch {
             val exporter = MeterLinkPdfExporter(context)
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    exporter.exportBundle(report, logs, counters, dropped)
+                    exporter.exportBundle(
+                        report,
+                        transport.traceSnapshot(),
+                        transport.traceCounters(),
+                        transport.droppedTraceLineCount()
+                    )
                 }
             }
             result
@@ -218,18 +231,19 @@ fun MeterReaderScreen(
     fun exportExcel() {
         isReading = true
         errorMessage = null
+        val report = meterReport
         scope.launch {
+            val exporter = MeterLinkExcelExporter(context)
             // Rendering and ZIP writing are file work: keep them off the UI thread.
             val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    val exporter = MeterLinkExcelExporter(context)
-                    val file = exporter.export(meterReport)
-                    exporter.share(file)
-                    file
-                }
+                runCatching { exporter.export(report) }
             }
             result
-                .onSuccess { reportStatusText = "✓ Excel workbook saved as ${it.name}." }
+                .onSuccess { file ->
+                    reportStatusText = "✓ Excel workbook saved as ${file.name}."
+                    runCatching { exporter.share(file) }
+                        .onFailure { errorMessage = it.message ?: "Excel share failed" }
+                }
                 .onFailure { errorMessage = it.message ?: "Excel export failed" }
             isReading = false
         }
@@ -239,14 +253,16 @@ fun MeterReaderScreen(
         isReading = true
         errorMessage = null
         val report = meterReport
-        val logs = transport.traceSnapshot()
-        val counters = transport.traceCounters()
-        val dropped = transport.droppedTraceLineCount()
         scope.launch {
             val exporter = MeterLinkPdfExporter(context)
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    exporter.exportHexLog(report, logs, counters, dropped)
+                    exporter.exportHexLog(
+                        report,
+                        transport.traceSnapshot(),
+                        transport.traceCounters(),
+                        transport.droppedTraceLineCount()
+                    )
                 }
             }
             result
@@ -467,35 +483,6 @@ fun MeterReaderScreen(
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Text("Test Direct 9600 HDLC")
-                    }
-
-                    Button(
-                        onClick = {
-                            isReading = true
-                            errorMessage = null
-                            snapshot = null
-                            traceLogs.clear()
-                            scope.launch {
-                                val params = ConnectionParams(
-                                    clientAddress = if (useMeterReaderAuth) 0x20 else 0x10,
-                                    authentication = if (useMeterReaderAuth) Authentication.LOW else Authentication.NONE,
-                                    password = llsPassword,
-                                    passwordCandidates = selectedVendor.defaultPasswords,
-                                    autoTryAlternatePasswords = autoTryAlternatePasswords,
-                                    vendorName = selectedVendor.displayName,
-                                    useModeE = useModeE
-                                )
-                                engine.readMeter(params)
-                                    .onSuccess { snapshot = it }
-                                    .onFailure { errorMessage = it.message ?: "Read failed" }
-                                isReading = false
-                            }
-                        },
-                        enabled = !isReading,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text(if (isReading) "Communicating with Meter..." else "Connect & Read Meter")
                     }
 
                     errorMessage?.let {
