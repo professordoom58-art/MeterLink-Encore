@@ -10,6 +10,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
 
 object MeterTime {
     fun wallClock(dt: GXDateTime): Calendar =
@@ -35,15 +36,18 @@ data class ObisDescriptor(
 )
 
 object Is15959Formatter {
-    private val numberFormat = DecimalFormat(
-        "#,##0.###",
-        DecimalFormatSymbols(Locale.ENGLISH)
-    )
-    private val dateFormat = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.ENGLISH)
-    private val compactDateFormat = SimpleDateFormat("dd-MM-yy HH:mm", Locale.ENGLISH)
-    private val yearFormat = DecimalFormat("0", DecimalFormatSymbols(Locale.ENGLISH))
-    private val twoDecimalFormat = DecimalFormat("#,##0.00", DecimalFormatSymbols(Locale.ENGLISH))
-    private val threeDecimalFormat = DecimalFormat("#,##0.000", DecimalFormatSymbols(Locale.ENGLISH))
+    private val METER_TIME_ZONE: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")
+
+    // SimpleDateFormat and DecimalFormat are not thread-safe. Create a fresh
+    // instance per call instead of sharing mutable formatters across readers,
+    // exporters, and the UI. Dates are always rendered in meter time.
+    private fun decimalFormat(pattern: String): DecimalFormat =
+        DecimalFormat(pattern, DecimalFormatSymbols(Locale.ENGLISH))
+
+    private fun dateFormat(pattern: String): SimpleDateFormat =
+        SimpleDateFormat(pattern, Locale.ENGLISH).apply {
+            timeZone = METER_TIME_ZONE
+        }
 
     fun formatValue(
         raw: Any?,
@@ -63,7 +67,7 @@ object Is15959Formatter {
             val scaledValue = raw.toDouble() * scaler
             val value = scaledValue * if (isEnergyOrPower(unit, obis)) 0.001 else 1.0
             val formatted = if (isYearOfManufacture(obis)) {
-                yearFormat.format(value)
+                decimalFormat("0").format(value)
             } else if (isMeterType(obis)) {
                 meterTypeLabel(scaledValue.toInt())
             } else {
@@ -105,11 +109,11 @@ object Is15959Formatter {
             }
             else -> null
         } ?: return@runCatching formatValue(raw)
-        val year = Calendar.getInstance().apply { time = date }.get(Calendar.YEAR)
-        if (year < 2000 || year > 2200) "N/A" else compactDateFormat.format(date)
+        val year = Calendar.getInstance(METER_TIME_ZONE).apply { time = date }.get(Calendar.YEAR)
+        if (year < 2000 || year > 2200) "N/A" else dateFormat("dd-MM-yy HH:mm").format(date)
     }.getOrDefault("N/A")
 
-    fun formatDate(raw: Date?): String = raw?.let { dateFormat.format(it) } ?: "N/A"
+    fun formatDate(raw: Date?): String = raw?.let { dateFormat("dd-MMM-yyyy HH:mm:ss").format(it) } ?: "N/A"
 
     fun unitSymbol(unit: DlmsUnit?): String = when (unit) {
         DlmsUnit.ACTIVE_ENERGY -> "kWh"
@@ -282,12 +286,12 @@ object Is15959Formatter {
             Is15959Catalog.metadataFor(it, runtimeMetadata, meterMake)?.unit
         }.orEmpty()
         return when {
-        isEnergyOrPower(unit, obis) -> threeDecimalFormat.format(value)
+        isEnergyOrPower(unit, obis) -> decimalFormat("#,##0.000").format(value)
         unit == DlmsUnit.VOLTAGE || unit == DlmsUnit.CURRENT ||
             unit == DlmsUnit.FREQUENCY || unit == DlmsUnit.PERCENTAGE ||
             unit == DlmsUnit.PHASE_ANGLE_DEGREE ||
-            metadataUnit in setOf("V", "A", "Hz", "%", "PF", "deg") -> twoDecimalFormat.format(value)
-        else -> numberFormat.format(value)
+            metadataUnit in setOf("V", "A", "Hz", "%", "PF", "deg") -> decimalFormat("#,##0.00").format(value)
+        else -> decimalFormat("#,##0.###").format(value)
     }
     }
 
