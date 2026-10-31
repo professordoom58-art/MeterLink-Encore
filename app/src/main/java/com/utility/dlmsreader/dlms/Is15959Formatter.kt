@@ -181,6 +181,14 @@ object Is15959Formatter {
         obis == "1.0.8.8.0.255" -> ObisDescriptor("Reactive Energy Q4 - Capacitive Export (kVArh)", "kVArh")
         obis == "1.0.3.8.0.255" -> ObisDescriptor("Reactive Energy - Lag (kVArh) [fallback]", "kVArh")
         obis == "1.0.4.8.0.255" -> ObisDescriptor("Reactive Energy - Lead (kVArh) [fallback]", "kVArh")
+        // Block Load reactive quadrants: keep Section 6 wording aligned with
+        // Sections 2 and 4 even when runtime metadata is unavailable.
+        obis == "1.0.5.29.0.255" -> ObisDescriptor("Block Reactive Energy Q1 (kVArh)", "kVArh")
+        obis == "1.0.6.29.0.255" -> ObisDescriptor("Block Reactive Energy Q2 (kVArh)", "kVArh")
+        obis == "1.0.7.29.0.255" -> ObisDescriptor("Block Reactive Energy Q3 (kVArh)", "kVArh")
+        obis == "1.0.8.29.0.255" -> ObisDescriptor("Block Reactive Energy Q4 (kVArh)", "kVArh")
+        obis == "1.0.149.4.0.255" -> ObisDescriptor("Block Status / Supply Word")
+        obis == "1.0.128.8.98.255" -> ObisDescriptor("Meter Temp / L&T Status")
         obis == "1.0.1.6.0.255" -> ObisDescriptor("Maximum Demand - Active (kW)", "kW")
         obis == "1.0.9.6.0.255" -> ObisDescriptor("Maximum Demand - Apparent (kVA)", "kVA")
         obis == "1.0.1.2.0.255" -> ObisDescriptor("Cum. MD Active (kW)", "kW")

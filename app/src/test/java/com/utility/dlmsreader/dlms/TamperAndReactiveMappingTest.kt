@@ -73,6 +73,34 @@ class TamperAndReactiveMappingTest {
     }
 
     @Test
+    fun `block load reactive energy quadrants match billing wording`() {
+        val q1 = Is15959Formatter.getObisLabelAndUnit("1.0.5.29.0.255")
+        val q2 = Is15959Formatter.getObisLabelAndUnit("1.0.6.29.0.255")
+        val q3 = Is15959Formatter.getObisLabelAndUnit("1.0.7.29.0.255")
+        val q4 = Is15959Formatter.getObisLabelAndUnit("1.0.8.29.0.255")
+
+        assertEquals("Block Reactive Energy Q1 (kVArh)", q1.label)
+        assertEquals("Block Reactive Energy Q2 (kVArh)", q2.label)
+        assertEquals("Block Reactive Energy Q3 (kVArh)", q3.label)
+        assertEquals("Block Reactive Energy Q4 (kVArh)", q4.label)
+        listOf(q1, q2, q3, q4).forEach { assertEquals("kVArh", it.unit) }
+
+        val labels = listOf(q1, q2, q3, q4).map { it.label }
+        assertEquals(labels.size, labels.toSet().size)
+    }
+
+    @Test
+    fun `vendor block load header stays concise`() {
+        val vendor = Is15959Formatter.getObisLabelAndUnit("1.0.128.8.98.255")
+        assertEquals("Meter Temp / L&T Status", vendor.label)
+        assertFalse(vendor.label.contains("unverified"))
+        // Secure-meter supply word keeps a neutral header, not a raw OBIS dump.
+        val supply = Is15959Formatter.getObisLabelAndUnit("1.0.149.4.0.255")
+        assertEquals("Block Status / Supply Word", supply.label)
+        assertFalse(supply.label.startsWith("OBIS "))
+    }
+
+    @Test
     fun `legacy lag and lead codes survive as fallback labels only`() {
         assertTrue(
             Is15959Formatter.getObisLabelAndUnit("1.0.3.8.0.255").label.contains("fallback")
