@@ -24,13 +24,11 @@ jobs:
           java-version: "17"
           distribution: temurin
 
-      - name: Prime Gradle 8.9
+      - name: Prime Gradle (wrapper version)
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
 
-      - name: Compile MeterLink APK
-        run: gradle assembleDebug
+      - name: Test and Compile MeterLink APK
+        run: ./gradlew testDebugUnitTest assembleDebug
 
       - name: Stamp MeterLink APK
         run: cp app/build/outputs/apk/debug/app-debug.apk "MeterLink-v1.0.${{ github.run_number }}.apk"

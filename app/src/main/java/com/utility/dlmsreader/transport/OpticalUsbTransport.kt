@@ -247,15 +247,22 @@ class OpticalUsbTransport(private val context: Context) {
             log(TraceDirection.TX, "Sent Direct HDLC SNRM (9600 8N1, Public Client 0x10)")
 
             val response = readBytesRaw(64, 2000)
-            if (response.isNotEmpty()) {
-                log(TraceDirection.RX, "Meter Responded Directly: ${response.toHexString()}")
+            if (containsHdlcUaFrame(response)) {
+                log(TraceDirection.RX, "Meter Responded Directly with HDLC UA: ${response.toHexString()}")
                 markMeterLinkEstablished()
                 return true
             }
 
-            val error = "Direct HDLC timeout - no UA received."
-            markNoMeterResponse("No physical meter response detected (Direct HDLC timeout).")
-            logConnectionDiagnosticReport(false, snrmFrame, null, error)
+            val error = if (response.isEmpty()) {
+                "Direct HDLC timeout - no UA received."
+            } else {
+                "Direct HDLC response was not a valid UA frame: ${response.toHexString()}"
+            }
+            if (response.isNotEmpty()) {
+                log(TraceDirection.RX, "Ignored non-UA response: ${response.toHexString()}")
+            }
+            markNoMeterResponse("No physical meter response detected (Direct HDLC UA missing).")
+            logConnectionDiagnosticReport(false, snrmFrame, response.takeIf { it.isNotEmpty() }, error)
         } catch (e: Exception) {
             val error = "Direct communication error: ${e.message ?: "unknown error"}"
             log(TraceDirection.ERROR, error)
@@ -401,6 +408,76 @@ class OpticalUsbTransport(private val context: Context) {
             }
         }
 }
+
+/**
+ * Returns true when [response] contains a structurally valid HDLC frame whose
+ * control field is Unnumbered Acknowledgment (UA, 0x73 with the poll/final bit,
+ * or 0x63 without it). IR noise or a partial byte can no longer be mistaken
+ * for an established meter link.
+ */
+internal fun containsHdlcUaFrame(response: ByteArray): Boolean {
+    if (response.size < 9) return false
+    var openingFlag = -1
+    response.forEachIndexed { index, byte ->
+        if (byte == HDLC_FLAG) {
+            if (openingFlag >= 0 && index - openingFlag > 1) {
+                if (isHdlcUaFrame(response, openingFlag + 1, index)) return true
+            }
+            openingFlag = index
+        }
+    }
+    return false
+}
+
+private fun isHdlcUaFrame(bytes: ByteArray, from: Int, closingFlag: Int): Boolean {
+    val size = closingFlag - from
+    // format + length + dest address + src address + control + 2-byte FCS
+    if (size < 7) return false
+
+    val format = bytes[from].toInt() and 0xFF
+    if ((format and 0xF0) != 0xA0) return false
+    if ((bytes[from + 1].toInt() and 0xFF) != size) return false
+
+    val afterDestination = skipHdlcAddress(bytes, from + 2, closingFlag - 2) ?: return false
+    val afterSource = skipHdlcAddress(bytes, afterDestination, closingFlag - 2) ?: return false
+    if (afterSource >= closingFlag - 2) return false
+
+    val control = bytes[afterSource].toInt() and 0xFF
+    if (control != 0x73 && control != 0x63) return false
+
+    val expectedFcs = hdlcFcs(bytes, from, afterSource + 1)
+    val actualFcs = (bytes[closingFlag - 2].toInt() and 0xFF) or
+        ((bytes[closingFlag - 1].toInt() and 0xFF) shl 8)
+    return expectedFcs == actualFcs
+}
+
+/** Skips one HDLC address field; each address ends on a byte with bit 0 set. */
+private fun skipHdlcAddress(bytes: ByteArray, start: Int, endExclusive: Int): Int? {
+    var index = start
+    var count = 0
+    while (index < endExclusive) {
+        val value = bytes[index].toInt() and 0xFF
+        index++
+        count++
+        if ((value and 0x01) == 1) return index
+        if (count >= 4) return null
+    }
+    return null
+}
+
+/** CRC-16/X-25 FCS used by IEC 62056-46 HDLC. */
+private fun hdlcFcs(bytes: ByteArray, from: Int, toExclusive: Int): Int {
+    var crc = 0xFFFF
+    for (index in from until toExclusive) {
+        crc = crc xor (bytes[index].toInt() and 0xFF)
+        repeat(8) {
+            crc = if ((crc and 0x01) != 0) (crc ushr 1) xor 0x8408 else crc ushr 1
+        }
+    }
+    return crc xor 0xFFFF
+}
+
+private const val HDLC_FLAG: Byte = 0x7E
 
 fun ByteArray.toHexString(length: Int = this.size): String =
     take(length).joinToString(" ") { "%02X".format(it) }
