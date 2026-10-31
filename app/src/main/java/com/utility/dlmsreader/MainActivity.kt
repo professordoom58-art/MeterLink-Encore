@@ -188,18 +188,31 @@ fun MeterReaderScreen(
     }
 
     fun exportReport() {
-        runCatching {
+        isReading = true
+        errorMessage = null
+        // Snapshot trace state on the UI thread, then render/write on IO.
+        val report = meterReport
+        val logs = transport.traceSnapshot()
+        val counters = transport.traceCounters()
+        val dropped = transport.droppedTraceLineCount()
+        scope.launch {
             val exporter = MeterLinkPdfExporter(context)
-            val bundle = exporter.exportBundle(
-                meterReport,
-                transport.traceSnapshot(),
-                transport.traceCounters(),
-                transport.droppedTraceLineCount()
-            )
-            lastHexLogFile = bundle.hexLog
-            exporter.share(bundle.pdf)
-            reportStatusText = "✓ PDF saved as ${bundle.pdf.name}; Hex Log saved as ${bundle.hexLog.name}."
-        }.onFailure { errorMessage = it.message ?: "PDF export failed" }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    exporter.exportBundle(report, logs, counters, dropped)
+                }
+            }
+            result
+                .onSuccess { bundle ->
+                    lastHexLogFile = bundle.hexLog
+                    reportStatusText =
+                        "✓ PDF saved as ${bundle.pdf.name}; Hex Log saved as ${bundle.hexLog.name}."
+                    runCatching { exporter.share(bundle.pdf) }
+                        .onFailure { errorMessage = it.message ?: "PDF share failed" }
+                }
+                .onFailure { errorMessage = it.message ?: "PDF export failed" }
+            isReading = false
+        }
     }
 
     fun exportExcel() {
@@ -223,18 +236,29 @@ fun MeterReaderScreen(
     }
 
     fun exportHexLog() {
-        runCatching {
+        isReading = true
+        errorMessage = null
+        val report = meterReport
+        val logs = transport.traceSnapshot()
+        val counters = transport.traceCounters()
+        val dropped = transport.droppedTraceLineCount()
+        scope.launch {
             val exporter = MeterLinkPdfExporter(context)
-            val file = exporter.exportHexLog(
-                meterReport,
-                transport.traceSnapshot(),
-                transport.traceCounters(),
-                transport.droppedTraceLineCount()
-            )
-            lastHexLogFile = file
-            exporter.shareText(file)
-            reportStatusText = "✓ Hex log saved as ${file.name} and ready to share."
-        }.onFailure { errorMessage = it.message ?: "Hex log export failed" }
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    exporter.exportHexLog(report, logs, counters, dropped)
+                }
+            }
+            result
+                .onSuccess { file ->
+                    lastHexLogFile = file
+                    reportStatusText = "✓ Hex log saved as ${file.name} and ready to share."
+                    runCatching { exporter.shareText(file) }
+                        .onFailure { errorMessage = it.message ?: "Hex log share failed" }
+                }
+                .onFailure { errorMessage = it.message ?: "Hex log export failed" }
+            isReading = false
+        }
     }
 
     LaunchedEffect(Unit) {

@@ -33,6 +33,8 @@ class MeterLinkPdfExporter(private val context: Context) {
         private val NAVY = Color.rgb(30, 58, 138)
         private val LIGHT_ROW = Color.rgb(248, 250, 252)
         private val BORDER = Color.rgb(203, 213, 225)
+        private val TIMESTAMP_PATTERN =
+            Regex("""\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}\s+\d{1,2}:\d{2}(:\d{2})?""")
     }
 
     fun export(report: MeterDataReport): File {
@@ -162,10 +164,13 @@ class MeterLinkPdfExporter(private val context: Context) {
         if (report.tamperEvents.isNotEmpty() || report.eventLogStatus.isNotEmpty()) {
             layout.section("Section 7: Tamper & Event Logs")
             if (report.eventLogStatus.isNotEmpty()) {
-                layout.table(
-                    listOf("Compartment", "Status"),
-                    report.eventLogStatus.map { listOf(it.first, it.second) }
-                )
+                // MeterDataReport.merge() concatenates status lists, so re-running
+                // the tamper module (or merging it into a prior report) can carry
+                // the same seven compartments twice. Render each compartment once.
+                val statusRows = report.eventLogStatus
+                    .distinctBy { it.first.trim().lowercase(Locale.ENGLISH) }
+                    .map { listOf(it.first, it.second) }
+                layout.table(listOf("Compartment", "Status"), statusRows)
             }
             report.tamperEvents.groupBy { it.compartment }.forEach { (compartment, rows) ->
                 val compact = rows.all { row ->
@@ -445,7 +450,14 @@ class MeterLinkPdfExporter(private val context: Context) {
                 }
                 val fitted = headers.indices.map { index ->
                     val value = row.getOrNull(index) ?: ""
-                    if (numeric[index]) fitNumeric(value, widths[index] - 8f) else null
+                    when {
+                        // Check timestamps before numeric: the numeric regex also
+                        // accepts "12-12-23 00:00" because of its trailing (.*).
+                        TIMESTAMP_PATTERN.matches(value.trim()) ->
+                            fitTimestamp(value, widths[index] - 8f)
+                        numeric[index] -> fitNumeric(value, widths[index] - 8f)
+                        else -> null
+                    }
                 }
                 val wrapped = headers.indices.map { index ->
                     fitted[index]?.let { listOf(it.first) }
@@ -528,6 +540,9 @@ class MeterLinkPdfExporter(private val context: Context) {
             val weights = List(count) { index ->
                 val header = currentTableHeaders[index].lowercase(Locale.ENGLISH)
                 when {
+                    // Column 0 holds the profile timestamp; give it extra room so
+                    // "dd-MM-yy HH:mm" never breaks across lines.
+                    index == 0 && ("date" in header || "time" in header) -> 2.2f
                     "date" in header || "time" in header -> 1.6f
                     "obis" in header || "code" in header || "unit" in header -> 0.6f
                     header in setOf("v", "i", "pf") -> 0.6f
@@ -634,6 +649,13 @@ class MeterLinkPdfExporter(private val context: Context) {
                 typeface = if (bold) Typeface.create(Typeface.DEFAULT, Typeface.BOLD) else Typeface.DEFAULT
             }
             return paint.measureText(value)
+        }
+
+        private fun fitTimestamp(value: String, width: Float): Pair<String, Float> {
+            listOf(8f, 7.5f, 7f, 6.5f, 6f, 5.5f).forEach { size ->
+                if (measureText(value, size, false) <= width) return value to size
+            }
+            return value to 5.5f
         }
 
         private fun fitNumeric(value: String, width: Float): Pair<String, Float> {
