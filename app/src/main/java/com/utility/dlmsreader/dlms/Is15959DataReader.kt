@@ -81,6 +81,14 @@ fun loadSurveyWindow(
     return LoadSurveyWindow(start, end, maxEntries, daysBack)
 }
 
+/**
+ * True when [selection] is anchored to a day window and therefore needs the
+ * meter RTC, Selector 1 range access, and post-read window filtering.
+ * FULL_BUFFER has no window: it reads the complete Selector 0 buffer as-is.
+ */
+internal fun loadSurveyNeedsWindow(selection: LoadSurveySelection): Boolean =
+    selection.days != null
+
 private val ISO_DAY_PREFIX = Regex("""^(\d{4})-(\d{2})-(\d{2})""")
 private val DMY_DAY_PREFIX = Regex("""^(\d{2})-(\d{2})-(\d{2})(?![0-9])""")
 
@@ -570,7 +578,7 @@ class Is15959DataReader(
         val requiredDays = selection.days
         // FULL_BUFFER needs no clock/range window; only day-window selections
         // read the meter RTC to anchor Selector 1.
-        val window = if (requiredDays != null) {
+        val window = if (loadSurveyNeedsWindow(selection)) {
             val endDate = readMeterRtc()
                 ?: error("Meter RTC unavailable for selective range access.")
             loadSurveyWindow(selection, MeterTime.wallClock(endDate), isBlockLoad)

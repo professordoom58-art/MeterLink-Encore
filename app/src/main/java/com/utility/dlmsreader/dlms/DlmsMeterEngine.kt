@@ -115,93 +115,97 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
 
             reportProgress("Connecting as Client ${params.clientAddress} (Vendor: ${params.vendorName})...")
             transport.openPort(params.baudRate, params.useModeE).getOrThrow()
-            reportProgress("Starting Public Client (0x10) discovery...")
-            val publicClient = GXDLMSSecureClient().apply {
-                clientAddress = 16
-                serverAddress = 1
-                useLogicalNameReferencing = true
-                interfaceType = InterfaceType.HDLC
-            }
-            val publicIdentity = PublicClientDiscovery.discover(transport, publicClient)
-
-            if (module == MeterDataModule.IDENTITY && params.clientAddress == 0x10) {
-                transport.markMeterLinkEstablished()
-                transport.closePort(preserveStatus = true)
-                return@runCatching MeterDataReport(identity = publicIdentity.toIdentitySection())
-            }
-            if (params.clientAddress == 0x10) {
-                throw IOException("Client 32 authentication is required for ${module.name.lowercase(Locale.US)} data.")
-            }
-
-            delay(400)
-            transport.purgeBuffers()
-            reportProgress("Preparing authenticated Meter Reader (Client=32) session...")
-
-            val client = createMeterReaderClient(params, publicIdentity.invocationCounter)
-            val executor = GuruxPacketExecutor(transport, client, packetTimeoutMs = params.responseTimeoutMs)
-            val reply = GXReplyData()
-            var linked = false
+            // The port is open from here on. This outer finally guarantees it is
+            // released even when discovery or pre-session setup throws, so a
+            // failed password attempt cannot leak a UsbDeviceConnection.
             try {
+                reportProgress("Starting Public Client (0x10) discovery...")
+                val publicClient = GXDLMSSecureClient().apply {
+                    clientAddress = 16
+                    serverAddress = 1
+                    useLogicalNameReferencing = true
+                    interfaceType = InterfaceType.HDLC
+                }
+                val publicIdentity = PublicClientDiscovery.discover(transport, publicClient)
+
+                if (module == MeterDataModule.IDENTITY && params.clientAddress == 0x10) {
+                    transport.markMeterLinkEstablished()
+                    return@runCatching MeterDataReport(identity = publicIdentity.toIdentitySection())
+                }
+                if (params.clientAddress == 0x10) {
+                    throw IOException("Client 32 authentication is required for ${module.name.lowercase(Locale.US)} data.")
+                }
+
+                delay(400)
+                transport.purgeBuffers()
+                reportProgress("Preparing authenticated Meter Reader (Client=32) session...")
+
+                val client = createMeterReaderClient(params, publicIdentity.invocationCounter)
+                val executor = GuruxPacketExecutor(transport, client, packetTimeoutMs = params.responseTimeoutMs)
+                val reply = GXReplyData()
+                var linked = false
                 try {
-                    establishSession(client, executor, reply)
-                } catch (e: Exception) {
-                    if (isAuthenticationFailure(e)) {
-                        val message = authenticationRejectedMessage()
-                        transport.log(TraceDirection.ERROR, message)
+                    try {
+                        establishSession(client, executor, reply)
+                    } catch (e: Exception) {
+                        if (isAuthenticationFailure(e)) {
+                            val message = authenticationRejectedMessage()
+                            transport.log(TraceDirection.ERROR, message)
+                            runCatching {
+                                executor.readDLMSPacket(client.disconnectRequest(), GXReplyData())
+                            }
+                            throw IOException(message, e)
+                        }
+                        throw e
+                    }
+                    linked = true
+                    val reader = Is15959DataReader(
+                        transport = transport,
+                        client = client,
+                        packetTimeoutMs = params.responseTimeoutMs,
+                        onProgress = onProgress,
+                        meterMake = params.vendorName,
+                        loadSurveySelection = params.loadSurveySelection
+                    )
+                    val identityHeader = if (module != MeterDataModule.IDENTITY && module != MeterDataModule.ALL) {
+                        reader.readIdentityHeader()
+                    } else null
+                    reportProgress(sectionMilestone(module))
+                    val moduleReport = try {
+                        when (module) {
+                        MeterDataModule.IDENTITY -> MeterDataReport(identity = reader.readIdentityAndNameplate())
+                        MeterDataModule.ENERGY -> MeterDataReport(cumulativeEnergies = reader.readCumulativeEnergies())
+                        MeterDataModule.INSTANTANEOUS -> MeterDataReport(instantaneous = reader.readInstantaneousProfile())
+                        MeterDataModule.BILLING -> MeterDataReport(billing = reader.readBillingProfile())
+                        MeterDataModule.BLOCK_LOAD -> MeterDataReport(
+                            blockLoad = reader.readBlockLoadSurvey(selection = params.loadSurveySelection)
+                        )
+                        MeterDataModule.DAILY_LOAD -> MeterDataReport(
+                            dailyLoad = reader.readDailyLoadSurvey(selection = params.loadSurveySelection)
+                        )
+                        MeterDataModule.TAMPER -> MeterDataReport(
+                            tamperEvents = reader.readTamperEventLogs(),
+                            eventLogStatus = reader.eventLogStatus
+                        )
+                        MeterDataModule.ALL -> reader.readAllMeterData()
+                        }
+                    } catch (e: Exception) {
+                        transport.log(
+                            TraceDirection.ERROR,
+                            "Section ${module.name.replace('_', ' ')} failed: ${e.message ?: "unknown error"}"
+                        )
+                        throw e
+                    }
+                    moduleReport.copy(identity = identityHeader ?: moduleReport.identity)
+                } finally {
+                    if (linked) {
                         runCatching {
+                            reportProgress("Closing Meter Reader session...")
                             executor.readDLMSPacket(client.disconnectRequest(), GXReplyData())
                         }
-                        transport.closePort(preserveStatus = true)
-                        throw IOException(message, e)
                     }
-                    throw e
                 }
-                linked = true
-                val reader = Is15959DataReader(
-                    transport = transport,
-                    client = client,
-                    packetTimeoutMs = params.responseTimeoutMs,
-                    onProgress = onProgress,
-                    meterMake = params.vendorName,
-                    loadSurveySelection = params.loadSurveySelection
-                )
-                val identityHeader = if (module != MeterDataModule.IDENTITY && module != MeterDataModule.ALL) {
-                    reader.readIdentityHeader()
-                } else null
-                reportProgress(sectionMilestone(module))
-                val moduleReport = try {
-                    when (module) {
-                    MeterDataModule.IDENTITY -> MeterDataReport(identity = reader.readIdentityAndNameplate())
-                    MeterDataModule.ENERGY -> MeterDataReport(cumulativeEnergies = reader.readCumulativeEnergies())
-                    MeterDataModule.INSTANTANEOUS -> MeterDataReport(instantaneous = reader.readInstantaneousProfile())
-                    MeterDataModule.BILLING -> MeterDataReport(billing = reader.readBillingProfile())
-                    MeterDataModule.BLOCK_LOAD -> MeterDataReport(
-                        blockLoad = reader.readBlockLoadSurvey(selection = params.loadSurveySelection)
-                    )
-                    MeterDataModule.DAILY_LOAD -> MeterDataReport(
-                        dailyLoad = reader.readDailyLoadSurvey(selection = params.loadSurveySelection)
-                    )
-                    MeterDataModule.TAMPER -> MeterDataReport(
-                        tamperEvents = reader.readTamperEventLogs(),
-                        eventLogStatus = reader.eventLogStatus
-                    )
-                    MeterDataModule.ALL -> reader.readAllMeterData()
-                    }
-                } catch (e: Exception) {
-                    transport.log(
-                        TraceDirection.ERROR,
-                        "Section ${module.name.replace('_', ' ')} failed: ${e.message ?: "unknown error"}"
-                    )
-                    throw e
-                }
-                moduleReport.copy(identity = identityHeader ?: moduleReport.identity)
             } finally {
-                if (linked) {
-                    runCatching {
-                        reportProgress("Closing Meter Reader session...")
-                        executor.readDLMSPacket(client.disconnectRequest(), GXReplyData())
-                    }
-                }
                 transport.closePort(preserveStatus = true)
             }
         }
@@ -290,6 +294,10 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
         return client
     }
 
+    @Deprecated(
+        message = "Legacy snapshot path; use readMeterModule() with MeterDataModule instead.",
+        replaceWith = ReplaceWith("readMeterModule(params, MeterDataModule.ALL)")
+    )
     suspend fun readMeter(params: ConnectionParams): Result<MeterReadSnapshot> = withContext(Dispatchers.IO) {
         val candidates = buildList {
             add(params.password)

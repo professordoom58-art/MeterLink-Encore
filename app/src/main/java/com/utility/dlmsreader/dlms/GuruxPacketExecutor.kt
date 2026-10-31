@@ -46,6 +46,10 @@ class GuruxPacketExecutor(
 
         while (attempt < retries) {
             attempt++
+            // Clear both the receive buffer and the reply object so partial
+            // payload bytes from a timed-out frame cannot be spliced onto the
+            // next retry's response.
+            reply.clear()
             reply.error = 0
             rd.clear()
 
