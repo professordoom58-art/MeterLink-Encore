@@ -445,7 +445,10 @@ private fun isHdlcUaFrame(bytes: ByteArray, from: Int, closingFlag: Int): Boolea
     val control = bytes[afterSource].toInt() and 0xFF
     if (control != 0x73 && control != 0x63) return false
 
-    val expectedFcs = hdlcFcs(bytes, from, afterSource + 1)
+    // The FCS covers every octet between the flags except the FCS itself, so it
+    // must include the information field: a UA carrying an I-frame payload has
+    // its checksum computed over that payload too.
+    val expectedFcs = hdlcFcs(bytes, from, closingFlag - 2)
     val actualFcs = (bytes[closingFlag - 2].toInt() and 0xFF) or
         ((bytes[closingFlag - 1].toInt() and 0xFF) shl 8)
     return expectedFcs == actualFcs
