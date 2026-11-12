@@ -6,7 +6,6 @@ import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -15,6 +14,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.runtime.*
@@ -22,12 +26,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import com.utility.dlmsreader.dlms.ConnectionParams
@@ -419,12 +425,12 @@ fun MeterReaderScreen(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "MeterLink DLMS Reader",
+                                text = "MeterLink",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 18.sp
                             )
                             Text(
-                                text = "IS 15959 / IEC 62056 Field Tool",
+                                text = "DLMS Meter Reader",
                                 fontSize = 11.sp,
                                 color = Color.Gray
                             )
@@ -882,7 +888,7 @@ private fun savedReadingSubtitle(reading: SavedReadingSummary): String =
         .filter { it.isNotEmpty() && !it.equals("N/A", ignoreCase = true) }
         .joinToString(" • ")
 
-/** Rounded 3-dot overflow button pinned to the right of the app header. */
+/** Plain 3-dot overflow button pinned to the right of the app header. */
 @Composable
 private fun HeaderOverflowMenu(
     historyCount: Int,
@@ -891,24 +897,12 @@ private fun HeaderOverflowMenu(
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
-        Surface(
-            onClick = { expanded = true },
-            shape = RoundedCornerShape(10.dp),
-            color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-            modifier = Modifier.size(36.dp)
-        ) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = "⋮",
-                    fontSize = 20.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
+        IconButton(onClick = { expanded = true }) {
+            Icon(
+                imageVector = Icons.Default.MoreVert,
+                contentDescription = "More options",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
             DropdownMenuItem(
@@ -934,6 +928,88 @@ private fun HeaderOverflowMenu(
     }
 }
 
+/**
+ * Shared Material 3 card dialog shell: rounded elevated surface, icon + bold
+ * title header with a dismiss button, padded scrollable body and tonal actions.
+ */
+@Composable
+private fun MeterLinkDialog(
+    title: String,
+    icon: ImageVector,
+    onDismiss: () -> Unit,
+    dismissEnabled: Boolean = true,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Dialog(onDismissRequest = { if (dismissEnabled) onDismiss() }) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 8.dp, top = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = title,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = onDismiss, enabled = dismissEnabled) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 440.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    content = content
+                )
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
+                ) {
+                    FilledTonalButton(
+                        onClick = onDismiss,
+                        enabled = dismissEnabled,
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Close", fontSize = 13.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+
 /** Scrollable list of every saved reading, with the detail dialog one tap away. */
 @Composable
 private fun SavedReadingsHistoryDialog(
@@ -941,89 +1017,94 @@ private fun SavedReadingsHistoryDialog(
     onOpen: (SavedReadingSummary) -> Unit,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Saved Meter Readings", fontSize = 16.sp) },
-        text = {
-            Column(
-                modifier = Modifier
-                    .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (readings.isEmpty()) {
-                    Text(
-                        "No saved readings yet. Every completed read is stored on this device automatically.",
-                        color = Color.Gray,
-                        fontSize = 12.sp
-                    )
-                } else {
-                    readings.forEach { reading ->
-                        Surface(
-                            color = Color(0xFFF8FAFC),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { onOpen(reading) }
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(10.dp),
-                                verticalArrangement = Arrangement.spacedBy(3.dp)
-                            ) {
-                                Text(
-                                    "Meter #${reading.serialNumber} — ${reading.scannedAtFormatted}",
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontSize = 13.sp
-                                )
-                                savedReadingSubtitle(reading).takeIf { it.isNotBlank() }?.let {
-                                    Text(
-                                        it,
-                                        color = Color.Gray,
-                                        fontSize = 11.sp,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
+    MeterLinkDialog(
+        title = "Saved Meter Readings",
+        icon = Icons.AutoMirrored.Filled.List,
+        onDismiss = onDismiss
+    ) {
+        if (readings.isEmpty()) {
+            Text(
+                "No saved readings yet. Every completed read is stored on this device automatically.",
+                color = Color.Gray,
+                fontSize = 12.sp
+            )
+        } else {
+            readings.forEach { reading ->
+                Surface(
+                    color = Color(0xFFF8FAFC),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onOpen(reading) }
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                    ) {
+                        Text(
+                            "Meter #${reading.serialNumber} — ${reading.scannedAtFormatted}",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
+                        )
+                        savedReadingSubtitle(reading).takeIf { it.isNotBlank() }?.let {
+                            Text(
+                                it,
+                                color = Color.Gray,
+                                fontSize = 11.sp,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close", fontSize = 13.sp) }
         }
-    )
+    }
 }
 
 @Composable
 private fun AboutAppDialog(onDismiss: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("About MeterLink", fontSize = 16.sp) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                AboutBlock("App Name & Version", "MeterLink DLMS Reader — v1.0.0-poc")
-                AboutBlock(
-                    "Standard Support",
-                    "IS 15959 (Part 1 & Part 2) / IEC 62056-21 / IEC 62056-46 HDLC"
-                )
-                AboutBlock(
-                    "Supported Capabilities",
-                    "Optical USB Probe (9600 8N1 & Mode E), Multi-Vendor LLS Auth, " +
-                        "Selective & Full Buffer Load Survey, Offline SQLite Storage, " +
-                        "A4 PDF & Multi-Sheet XLSX Export"
-                )
-                AboutBlock(
-                    "Privacy",
-                    "100% Offline Field Tool — Zero internet permissions or telemetry."
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close", fontSize = 13.sp) }
-        }
-    )
+    MeterLinkDialog(
+        title = "About MeterLink",
+        icon = Icons.Default.Info,
+        onDismiss = onDismiss
+    ) {
+        Text(
+            "MeterLink DLMS meter reader (beta)",
+            fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold
+        )
+        Text(
+            "Supported capabilities",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        CapabilityBullet(
+            "Supported meter manufacturers: L&T / Schneider, Genus, Secure, HPL, " +
+                "Avon, and compatible IS 15959 utility meters"
+        )
+        CapabilityBullet("Saved meter readings & offline local SQLite history playback")
+        CapabilityBullet(
+            "Complete data extractions: Identity & Nameplate, Cumulative Energy & " +
+                "Maximum Demand, Instantaneous Profile, Billing History Profiles, " +
+                "Block & Daily Load Surveys, and Tamper Event Logs"
+        )
+        CapabilityBullet(
+            "Optical USB probe communication & A4 PDF / Multi-sheet Excel (.xlsx) " +
+                "report exports"
+        )
+        AboutBlock("Builder", "Made by Mihir")
+    }
+}
+
+@Composable
+private fun CapabilityBullet(text: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("•", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+        Text(text, fontSize = 12.sp, modifier = Modifier.weight(1f))
+    }
 }
 
 @Composable
@@ -1315,84 +1396,66 @@ private fun SavedReadingDialog(
 ) {
     var selection by remember(reading.id) { mutableStateOf(LoadSurveySelection.FULL_BUFFER) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                "Meter #${reading.serialNumber} — ${reading.scannedAtFormatted}",
-                fontSize = 16.sp
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .heightIn(max = 480.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                savedReadingSubtitle(reading).takeIf { it.isNotBlank() }?.let {
-                    Text(
-                        it,
-                        fontSize = 12.sp,
-                        color = Color.Gray
-                    )
-                }
-                Text(reading.summaryStats, fontSize = 11.sp, color = Color.Gray)
-                reading.meterRtc
-                    .takeIf { it.isNotBlank() && it != "N/A" }
-                    ?.let { ResultRow("Meter RTC", it) }
-                LoadSurveyRangeChips(
-                    selected = selection,
-                    enabled = !busy,
-                    onSelect = { selection = it }
-                )
-                Button(
-                    onClick = { onExportPdf(selection) },
-                    enabled = !busy,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("Export PDF Report", fontSize = 12.sp)
-                }
-                Button(
-                    onClick = { onExportExcel(selection) },
-                    enabled = !busy,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("Export Excel (.xlsx)", fontSize = 12.sp)
-                }
-                OutlinedButton(
-                    onClick = onDelete,
-                    enabled = !busy,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
-                    )
-                ) {
-                    Text("Delete Saved Reading", fontSize = 12.sp)
-                }
-                if (busy) {
-                    Text(
-                        "Working — loading and exporting the saved reading...",
-                        color = MaterialTheme.colorScheme.primary,
-                        fontSize = 11.sp
-                    )
-                }
-                error?.let {
-                    Text(
-                        it,
-                        color = MaterialTheme.colorScheme.error,
-                        fontSize = 11.sp
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss, enabled = !busy) {
-                Text("Close")
-            }
+    MeterLinkDialog(
+        title = "Meter #${reading.serialNumber}",
+        icon = Icons.AutoMirrored.Filled.List,
+        onDismiss = onDismiss,
+        dismissEnabled = !busy
+    ) {
+        Text(
+            reading.scannedAtFormatted,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        savedReadingSubtitle(reading).takeIf { it.isNotBlank() }?.let {
+            Text(it, fontSize = 12.sp, color = Color.Gray)
         }
-    )
+        Text(reading.summaryStats, fontSize = 11.sp, color = Color.Gray)
+        reading.meterRtc
+            .takeIf { it.isNotBlank() && it != "N/A" }
+            ?.let { ResultRow("Meter RTC", it) }
+        LoadSurveyRangeChips(
+            selected = selection,
+            enabled = !busy,
+            onSelect = { selection = it }
+        )
+        Button(
+            onClick = { onExportPdf(selection) },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Text("Export PDF Report", fontSize = 12.sp)
+        }
+        Button(
+            onClick = { onExportExcel(selection) },
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp)
+        ) {
+            Text("Export Excel (.xlsx)", fontSize = 12.sp)
+        }
+        OutlinedButton(
+            onClick = onDelete,
+            enabled = !busy,
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = MaterialTheme.colorScheme.error
+            )
+        ) {
+            Text("Delete Saved Reading", fontSize = 12.sp)
+        }
+        if (busy) {
+            Text(
+                "Working — loading and exporting the saved reading...",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 11.sp
+            )
+        }
+        error?.let {
+            Text(it, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+        }
+    }
 }
