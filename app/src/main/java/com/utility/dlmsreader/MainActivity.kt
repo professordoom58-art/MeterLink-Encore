@@ -9,7 +9,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -183,7 +182,13 @@ fun MeterReaderScreen(
                     } else {
                         it.copy(errors = it.errors + "${module.name.replace('_', ' ')} completed successfully but returned no rows.")
                     }
-                    val mergedReport = meterReport.merge(completedReport)
+                    val mergedReport = if (sameMeterSerial(meterReport, completedReport)) {
+                        meterReport.merge(completedReport)
+                    } else {
+                        // A different meter was connected mid-session: keep the
+                        // new read only, never blend two meters' data.
+                        completedReport
+                    }
                     meterReport = mergedReport
                     if (module == MeterDataModule.ALL) {
                         // PDF rendering and hex-log writing are file work: keep
@@ -621,8 +626,8 @@ fun MeterReaderScreen(
                         onRead = ::runModule
                     )
                     ExtractionButtonRow(
-                        first = "Read Instantaneous" to MeterDataModule.INSTANTANEOUS,
-                        second = "Read Billing History" to MeterDataModule.BILLING,
+                        first = "Instantaneous" to MeterDataModule.INSTANTANEOUS,
+                        second = "Billing History" to MeterDataModule.BILLING,
                         enabled = !isReading,
                         onRead = ::runModule
                     )
@@ -742,22 +747,30 @@ fun MeterReaderScreen(
             ) {
                 Text(
                     "Live Protocol Trace (latest ${minOf(traceLogs.size, 150)} of ${traceLogs.size})",
+                    modifier = Modifier.weight(1f).padding(end = 8.dp),
                     fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
+                    fontSize = 14.sp,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    TextButton(onClick = {
+                TextButton(
+                    onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         val text = traceLogs.reversed().joinToString("\n") { "[${it.direction}] ${it.hexOrMessage}" }
                         clipboard.setPrimaryClip(ClipData.newPlainText("DLMS Trace", text))
-                    }) {
-                        Text("Copy", fontSize = 12.sp)
-                    }
-                    TextButton(onClick = ::exportHexLog) {
-                        Text("Export Hex Log", fontSize = 12.sp)
-                    }
+                    },
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                ) {
+                    Text("Copy", fontSize = 12.sp)
+                }
+                TextButton(
+                    onClick = ::exportHexLog,
+                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                ) {
+                    Text("Export Hex Log", fontSize = 12.sp)
                 }
             }
+            Spacer(Modifier.height(8.dp))
 
             Box(
                 modifier = Modifier
@@ -808,6 +821,23 @@ private fun ResultRow(label: String, value: String) {
     }
 }
 
+/** True unless both reports positively identify different meters. */
+private fun sameMeterSerial(existing: MeterDataReport, incoming: MeterDataReport): Boolean {
+    val existingSerial = existing.identityValue("0.0.96.1.0.255")
+    val incomingSerial = incoming.identityValue("0.0.96.1.0.255")
+    return existingSerial.isBlank() ||
+        incomingSerial.isBlank() ||
+        existingSerial == incomingSerial
+}
+
+/** Subtitle without empty/"N/A" segments, e.g. for a module-only saved read. */
+private fun savedReadingSubtitle(reading: SavedReadingSummary): String =
+    listOf(reading.readType, reading.kwhReading, reading.summaryStats)
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.equals("N/A", ignoreCase = true) }
+        .joinToString(" • ")
+
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LoadSurveyRangeChips(
     selected: LoadSurveySelection,
@@ -816,11 +846,10 @@ private fun LoadSurveyRangeChips(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("Load Survey Range", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             LoadSurveySelection.entries.forEach { option ->
                 FilterChip(
@@ -849,17 +878,19 @@ private fun ExtractionButtonRow(
             onClick = { onRead(first.second) },
             enabled = enabled,
             modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(8.dp)
+            shape = RoundedCornerShape(8.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
         ) {
-            Text(first.first, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(first.first, fontSize = 13.sp, maxLines = 1)
         }
         OutlinedButton(
             onClick = { onRead(second.second) },
             enabled = enabled,
             modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(8.dp)
+            shape = RoundedCornerShape(8.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
         ) {
-            Text(second.first, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(second.first, fontSize = 13.sp, maxLines = 1)
         }
     }
 }
@@ -907,29 +938,28 @@ private fun MeterReadingSummaryCard(
                 fontSize = 14.sp
             )
             HorizontalDivider()
-            ResultRow(
-                "Serial Number",
-                report.identityValue("0.0.96.1.0.255").ifBlank { "N/A" }
-            )
-            ResultRow(
-                "Logical Device Name",
-                report.identityValue("0.0.42.0.0.255").ifBlank { "N/A" }
-            )
-            ResultRow(
-                "Manufacturer",
-                report.identityValue("0.0.96.1.1.255").ifBlank { "N/A" }
-            )
-            ResultRow(
-                "Firmware Version",
-                report.identityValue("0.0.96.1.4.255").ifBlank { "N/A" }
-            )
-            ResultRow(
-                "Meter RTC",
-                report.identityValue("0.0.1.0.0.255").ifBlank { "N/A" }
-            )
+            report.identityValue("0.0.96.1.0.255")
+                .takeIf { it.isNotBlank() }
+                ?.let { ResultRow("Serial Number", it) }
+            report.identityValue("0.0.42.0.0.255")
+                .takeIf { it.isNotBlank() }
+                ?.let { ResultRow("Logical Device Name", it) }
+            report.identityValue("0.0.96.1.1.255")
+                .takeIf { it.isNotBlank() }
+                ?.let { ResultRow("Manufacturer", it) }
+            report.identityValue("0.0.96.1.4.255")
+                .takeIf { it.isNotBlank() }
+                ?.let { ResultRow("Firmware Version", it) }
+            report.identityValue("0.0.1.0.0.255")
+                .takeIf { it.isNotBlank() }
+                ?.let { ResultRow("Meter RTC", it) }
             HorizontalDivider(Modifier.padding(vertical = 2.dp))
-            ResultRow("Cumulative kWh", report.cumulativeKwhReading())
-            ResultRow("Cumulative kVAh", report.cumulativeKvahReading())
+            report.cumulativeKwhReading()
+                .takeIf { it != "N/A" && it.isNotBlank() }
+                ?.let { ResultRow("Cumulative kWh", it) }
+            report.cumulativeKvahReading()
+                .takeIf { it != "N/A" && it.isNotBlank() }
+                ?.let { ResultRow("Cumulative kVAh", it) }
 
             HorizontalDivider(Modifier.padding(vertical = 2.dp))
             Text("Section Row Counts", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
@@ -1032,13 +1062,11 @@ private fun SavedReadingsCard(
                     color = Color.Gray,
                     fontSize = 11.sp
                 )
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(320.dp),
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(readings, key = { it.id }) { reading ->
+                    readings.forEach { reading ->
                         Surface(
                             color = Color(0xFFF8FAFC),
                             shape = RoundedCornerShape(10.dp),
@@ -1055,13 +1083,15 @@ private fun SavedReadingsCard(
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 13.sp
                                 )
-                                Text(
-                                    "${reading.readType} • ${reading.kwhReading} • ${reading.summaryStats}",
-                                    color = Color.Gray,
-                                    fontSize = 11.sp,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                                savedReadingSubtitle(reading).takeIf { it.isNotBlank() }?.let {
+                                    Text(
+                                        it,
+                                        color = Color.Gray,
+                                        fontSize = 11.sp,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         }
                     }
@@ -1098,11 +1128,13 @@ private fun SavedReadingDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    "${reading.readType} • ${reading.kwhReading}",
-                    fontSize = 12.sp,
-                    color = Color.Gray
-                )
+                savedReadingSubtitle(reading).takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        it,
+                        fontSize = 12.sp,
+                        color = Color.Gray
+                    )
+                }
                 Text(reading.summaryStats, fontSize = 11.sp, color = Color.Gray)
                 reading.meterRtc
                     .takeIf { it.isNotBlank() && it != "N/A" }

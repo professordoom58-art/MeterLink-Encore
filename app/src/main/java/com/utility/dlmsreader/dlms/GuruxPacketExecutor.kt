@@ -34,6 +34,7 @@ class GuruxPacketExecutor(
         const val RR_FRAME_DELAY_MS = 250L
         const val RR_BLOCK_DELAY_MS = 90L
         private const val ROWS_PER_BLOCK_ESTIMATE = 16
+        private const val DEFAULT_BYTES_PER_ENTRY = 29.0
     }
 
     suspend fun readDLMSPacket(
@@ -57,11 +58,12 @@ class GuruxPacketExecutor(
         data: Array<ByteArray>,
         reply: GXReplyData,
         progressLabel: String? = null,
-        expectedEntries: Int? = null
+        expectedEntries: Int? = null,
+        bytesPerEntry: Double = DEFAULT_BYTES_PER_ENTRY
     ) {
         for (frame in data) {
             reply.clear()
-            readDataBlock(frame, reply, progressLabel, expectedEntries)
+            readDataBlock(frame, reply, progressLabel, expectedEntries, bytesPerEntry)
         }
     }
 
@@ -69,36 +71,58 @@ class GuruxPacketExecutor(
         data: ByteArray,
         reply: GXReplyData,
         progressLabel: String? = null,
-        expectedEntries: Int? = null
+        expectedEntries: Int? = null,
+        bytesPerEntry: Double = DEFAULT_BYTES_PER_ENTRY
     ) {
         if (data.isEmpty()) return
 
-        var blocksReceived = 0
+        var frameCount = 0
         var lastReportAt = 0L
-        val totalBlocks = expectedEntries
-            ?.takeIf { it > 0 }
+        val expected = expectedEntries?.takeIf { it > 0 }
+        val totalBlocks = expected
             ?.let { (it + ROWS_PER_BLOCK_ESTIMATE - 1) / ROWS_PER_BLOCK_ESTIMATE }
             ?.takeIf { it > 0 }
 
         suspend fun reportBlockProgress() {
-            blocksReceived++
+            frameCount++
             if (progressLabel == null) return
             val now = System.currentTimeMillis()
-            val dueByCount = blocksReceived == 1 || blocksReceived % 5 == 0
+            val dueByCount = frameCount == 1 || frameCount % 5 == 0
             val dueByTime = now - lastReportAt >= 1000L
             if (!dueByCount && !dueByTime) return
             lastReportAt = now
-            val kb = reply.data.size() / 1024.0
-            val estimatedEntries = (blocksReceived * ROWS_PER_BLOCK_ESTIMATE)
-            val expected = expectedEntries ?: 0
-            val detail = if (totalBlocks != null) {
-                val percent = (blocksReceived * 100 / totalBlocks).coerceIn(0, 100)
-                "Block $blocksReceived / ~$totalBlocks ($expected entries, ~$percent%, " +
-                    "~${estimatedEntries.coerceAtMost(expected)} received, " +
-                    String.format(java.util.Locale.US, "%.1f", kb) + " KB)"
-            } else {
-                "Block $blocksReceived (" +
-                    String.format(java.util.Locale.US, "%.1f", kb) + " KB received)"
+
+            val bytes = reply.data.size()
+            val kb = bytes / 1024.0
+            val detail = buildString {
+                // One COSEM data block arrives as several HDLC frames, so the
+                // old frame counter ran past a block estimate ("Block 550 /
+                // ~226"). Prefer the meter's own block number and only fall
+                // back to a frame counter when that is unavailable.
+                val blockNumber = reply.blockNumber
+                when {
+                    blockNumber > 0 && totalBlocks != null && blockNumber <= totalBlocks ->
+                        append("Block $blockNumber / ~$totalBlocks")
+                    blockNumber > 0 -> append("Block $blockNumber")
+                    totalBlocks != null && frameCount <= totalBlocks ->
+                        append("Frame $frameCount / ~$totalBlocks")
+                    else -> append("Frame $frameCount")
+                }
+                if (expected != null) {
+                    // Derive entries and percentage from received bytes. Keep
+                    // the display one entry and one percent short until the
+                    // final block lands so progress never reads 100% early.
+                    val estimatedEntries = (bytes / bytesPerEntry).toInt()
+                        .coerceIn(0, (expected - 1).coerceAtLeast(0))
+                    val expectedBytes = (expected * bytesPerEntry).coerceAtLeast(1.0)
+                    val percent = (bytes * 100.0 / expectedBytes).toInt().coerceIn(0, 99)
+                    append(" ($expected entries, ~$percent%, " +
+                        "~$estimatedEntries received, " +
+                        String.format(java.util.Locale.US, "%.1f", kb) + " KB)")
+                } else {
+                    append(" (" +
+                        String.format(java.util.Locale.US, "%.1f", kb) + " KB received)")
+                }
             }
             onProgress("$progressLabel: $detail")
         }
@@ -121,12 +145,13 @@ class GuruxPacketExecutor(
         item: GXDLMSObject,
         attributeIndex: Int,
         progressLabel: String? = null,
-        expectedEntries: Int? = null
+        expectedEntries: Int? = null,
+        bytesPerEntry: Double = DEFAULT_BYTES_PER_ENTRY
     ): Any? {
         delay(60)
         val data = client.read(item, attributeIndex)
         val reply = GXReplyData()
-        readDataBlock(data, reply, progressLabel, expectedEntries)
+        readDataBlock(data, reply, progressLabel, expectedEntries, bytesPerEntry)
         if (item.getDataType(attributeIndex) == DataType.NONE) {
             item.setDataType(attributeIndex, reply.valueType)
         }
@@ -150,11 +175,12 @@ class GuruxPacketExecutor(
         index: Int,
         count: Int,
         progressLabel: String? = null,
-        expectedEntries: Int? = null
+        expectedEntries: Int? = null,
+        bytesPerEntry: Double = DEFAULT_BYTES_PER_ENTRY
     ): Array<Array<Any?>> {
         val data = client.readRowsByEntry(profile, index, count)
         val reply = GXReplyData()
-        readDataBlock(data, reply, progressLabel, expectedEntries)
+        readDataBlock(data, reply, progressLabel, expectedEntries, bytesPerEntry)
         client.updateValue(profile, 2, reply.value)
         return profile.buffer.map { row ->
             when (row) {
@@ -173,11 +199,12 @@ class GuruxPacketExecutor(
         colIndex: Int,
         colCount: Int,
         progressLabel: String? = null,
-        expectedEntries: Int? = null
+        expectedEntries: Int? = null,
+        bytesPerEntry: Double = DEFAULT_BYTES_PER_ENTRY
     ): Array<Array<Any?>> {
         val data = client.readRowsByEntry(profile, index, count, colIndex, colCount)
         val reply = GXReplyData()
-        readDataBlock(data, reply, progressLabel, expectedEntries)
+        readDataBlock(data, reply, progressLabel, expectedEntries, bytesPerEntry)
         client.updateValue(profile, 2, reply.value)
         return profile.buffer.map { row ->
             when (row) {
@@ -213,7 +240,8 @@ class GuruxPacketExecutor(
         selector1Format: Selector1DateTimeFormat = Selector1DateTimeFormat.SMRS,
         nativeDeviationMinutes: Int? = null,
         progressLabel: String? = null,
-        expectedEntries: Int? = null
+        expectedEntries: Int? = null,
+        bytesPerEntry: Double = DEFAULT_BYTES_PER_ENTRY
     ): Array<Array<Any?>> {
         val generated = client.readRowsByRange(profile, start, end)
         // Some IS 15959 meters require the exact Selector 1 timestamp format
@@ -224,7 +252,7 @@ class GuruxPacketExecutor(
             nativeDeviationMinutes = nativeDeviationMinutes
         )
         val reply = GXReplyData()
-        readDataBlock(data, reply, progressLabel, expectedEntries)
+        readDataBlock(data, reply, progressLabel, expectedEntries, bytesPerEntry)
         client.updateValue(profile, 2, reply.value)
         return profile.buffer.map { row ->
             when (row) {
