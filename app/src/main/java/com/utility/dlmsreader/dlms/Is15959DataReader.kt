@@ -53,8 +53,9 @@ data class LoadSurveyWindow(
 
 /**
  * Pure window calculation so the date maths is unit-testable without a meter.
- * Start is floored to 00:00:00.000 and end is ceiled to 23:59:59.000 of the
- * meter RTC day, so a partial final day is never truncated.
+ * Start is floored to 00:00:00.000 of `latest - (N - 1)` and end is ceiled to
+ * 23:59:59.000 of the meter RTC day, so the window is exactly N calendar days
+ * inclusive and a partial final day is never truncated.
  */
 fun loadSurveyWindow(
     selection: LoadSurveySelection,
@@ -72,7 +73,9 @@ fun loadSurveyWindow(
         set(Calendar.MILLISECOND, 0)
     }
     val start = (meterRtc.clone() as Calendar).apply {
-        if (daysBack != null) add(Calendar.DAY_OF_YEAR, -daysBack)
+        // "N Days" is inclusive of the latest meter day, so the calendar
+        // window is [latest - (N - 1) .. latest].
+        if (daysBack != null) add(Calendar.DAY_OF_YEAR, -(daysBack - 1).coerceAtLeast(0))
         set(Calendar.HOUR_OF_DAY, 0)
         set(Calendar.MINUTE, 0)
         set(Calendar.SECOND, 0)
@@ -91,6 +94,13 @@ internal fun loadSurveyNeedsWindow(selection: LoadSurveySelection): Boolean =
 
 private val ISO_DAY_PREFIX = Regex("""^(\d{4})-(\d{2})-(\d{2})""")
 private val DMY_DAY_PREFIX = Regex("""^(\d{2})-(\d{2})-(\d{2})(?![0-9])""")
+private val DMY4_DAY_PREFIX = Regex("""^(\d{2})-(\d{2})-(\d{4})(?![0-9])""")
+private val DMY_NAME_DAY_PREFIX = Regex("""^(\d{2})-([A-Za-z]{3})-(\d{2,4})(?![0-9])""")
+private val MONTH_NAME_INDEX = mapOf(
+    "jan" to 1, "feb" to 2, "mar" to 3, "apr" to 4,
+    "may" to 5, "jun" to 6, "jul" to 7, "aug" to 8,
+    "sep" to 9, "oct" to 10, "nov" to 11, "dec" to 12
+)
 
 /** Epoch millis for a raw profile timestamp cell, or null when unparseable. */
 internal fun profileRowTimestamp(raw: Any?): Long? = when (raw) {
@@ -131,9 +141,21 @@ private fun dayKey(calendar: Calendar): String = String.format(
     calendar.get(Calendar.DAY_OF_MONTH)
 )
 
-private fun canonicalDay(value: String): String? {
+internal fun canonicalDay(value: String): String? {
     ISO_DAY_PREFIX.find(value)?.let { match ->
         return "${match.groupValues[1]}-${match.groupValues[2]}-${match.groupValues[3]}"
+    }
+    DMY4_DAY_PREFIX.find(value)?.let { match ->
+        return "${match.groupValues[3]}-${match.groupValues[2]}-${match.groupValues[1]}"
+    }
+    DMY_NAME_DAY_PREFIX.find(value)?.let { match ->
+        val month = MONTH_NAME_INDEX[match.groupValues[2].lowercase(Locale.US)] ?: return null
+        var year = match.groupValues[3].toInt()
+        if (year < 100) year += 2000
+        return String.format(
+            Locale.US, "%04d-%02d-%02d",
+            year, month, match.groupValues[1].toInt()
+        )
     }
     DMY_DAY_PREFIX.find(value)?.let { match ->
         return "20${match.groupValues[3]}-${match.groupValues[2]}-${match.groupValues[1]}"
@@ -154,16 +176,20 @@ internal data class LoadSurveyFilterResult(
     val rawRowCount: Int,
     val keptRowCount: Int,
     val distinctDays: Int,
-    val usedGapFallback: Boolean
+    val usedGapFallback: Boolean,
+    val calendarWindowDays: Int = 0,
+    val totalDistinctDays: Int = 0
 )
 
 /**
  * Pure window filter for load-survey rows.
  *
- * Rows inside `[windowStartMs, windowEndMs]` are kept first. If that leaves
- * fewer than [requiredDays] distinct calendar days (the meter was powered off
- * during the requested window), the most recent [requiredDays] recorded days
- * in the whole buffer are retained instead. Unparseable rows are always kept.
+ * Rows inside `[windowStartMs, windowEndMs]` are kept first. If that calendar
+ * window leaves fewer than [requiredDays] distinct calendar days and the buffer
+ * actually contains more recorded days than the window matched (a power-off
+ * gap), the most recent [requiredDays] recorded days in the whole buffer are
+ * retained instead. The result is sorted oldest-to-newest. Unparseable rows are
+ * always kept.
  */
 internal fun filterLoadSurveyRows(
     rows: List<List<Any?>>,
@@ -182,13 +208,21 @@ internal fun filterLoadSurveyRows(
         val timestamp = profileRowTimestamp(row.getOrNull(timeIndex))
         if (timestamp == null) unparseable += row else parsed += timestamp to row
     }
+    val allDayKeys = parsed.map { profileDayKey(it.first) }
+    val totalDistinctDays = allDayKeys.distinct().size
     val inWindow = parsed.filter { (timestamp, _) -> timestamp in windowStartMs..windowEndMs }
     val inWindowDays = inWindow.map { profileDayKey(it.first) }.distinct().size
     var kept = inWindow
     var usedGapFallback = false
-    if (requiredDays != null && inWindowDays < requiredDays && parsed.isNotEmpty()) {
-        val recentDays = parsed
-            .map { profileDayKey(it.first) }
+    // The fallback is required whenever the calendar window cannot supply the
+    // requested number of distinct days but older recorded days do exist. This
+    // is the defining case for meters with long power-off gaps: the latest 30
+    // calendar days may contain only 2 recorded days while the buffer holds
+    // months of pre-outage history.
+    if (requiredDays != null && requiredDays > 0 &&
+        inWindowDays < requiredDays && totalDistinctDays > inWindowDays
+    ) {
+        val recentDays = allDayKeys
             .distinct()
             .sortedDescending()
             .take(requiredDays)
@@ -209,8 +243,135 @@ internal fun filterLoadSurveyRows(
         rawRowCount = rows.size,
         keptRowCount = resultRows.size,
         distinctDays = distinctDays,
-        usedGapFallback = usedGapFallback
+        usedGapFallback = usedGapFallback,
+        calendarWindowDays = inWindowDays,
+        totalDistinctDays = totalDistinctDays
     )
+}
+
+/** Day key for an already-formatted profile cell such as `28-Dec-23 00:15`. */
+internal fun formattedProfileDay(value: String?): String? =
+    value?.trim()?.takeIf { it.isNotEmpty() }?.let(::canonicalDay)
+
+/** First parseable day among a formatted profile row's cells. */
+private fun firstProfileDay(row: List<String>): String? =
+    row.asSequence().mapNotNull { formattedProfileDay(it) }.firstOrNull()
+
+/**
+ * Re-applies a load-survey chip to a cached full-buffer section without
+ * touching the meter. The newest [LoadSurveySelection.days] distinct days in
+ * [ProfileSection.fullRows] are retained, which is exactly the power-off gap
+ * fallback used by [filterLoadSurveyRows].
+ */
+fun applyLoadSurveySelection(
+    section: ProfileSection,
+    selection: LoadSurveySelection
+): ProfileSection {
+    val fullRows = section.fullRows
+    if (fullRows.isEmpty()) return section
+    val total = section.fullTotalRows.takeIf { it > 0 } ?: fullRows.size
+    val distinctDays = fullRows
+        .mapNotNull { firstProfileDay(it) }
+        .distinct()
+    if (distinctDays.isEmpty()) return section
+    if (selection == LoadSurveySelection.FULL_BUFFER) {
+        val cacheNote = if (section.fullBufferCached) "" else
+            "cached rows only; re-read Full Buffer for the complete profile"
+        return section.copy(
+            rows = fullRows,
+            totalRows = total,
+            selectionLabel = selection.label,
+            windowNote = buildLoadSurveyWindowNote(
+                selection = selection,
+                shownRows = fullRows.size,
+                totalRows = total,
+                distinctDays = distinctDays.size,
+                usedGapFallback = false,
+                oldestShown = oldestProfileRow(fullRows),
+                cacheNote = cacheNote
+            )
+        )
+    }
+    val requiredDays = selection.days ?: return section
+    val latest = distinctDays.max()
+    val windowStart = java.time.LocalDate.parse(latest)
+        .minusDays((requiredDays - 1).coerceAtLeast(0).toLong())
+        .toString()
+    val calendarDays = distinctDays.count { it >= windowStart && it <= latest }
+    val selectedDays = distinctDays.sortedDescending().take(requiredDays).toSet()
+    val rows = fullRows.filter { firstProfileDay(it) in selectedDays }
+    val usedGapFallback = calendarDays < requiredDays && distinctDays.size > calendarDays
+    val cacheNote = when {
+        section.fullBufferCached -> ""
+        selectedDays.size < requiredDays ->
+            "cached rows only (${selectedDays.size} of $requiredDays distinct days available); " +
+                "re-read Full Buffer for the complete profile"
+        else -> ""
+    }
+    return section.copy(
+        rows = rows,
+        totalRows = total,
+        selectionLabel = selection.label,
+        windowNote = buildLoadSurveyWindowNote(
+            selection = selection,
+            shownRows = rows.size,
+            totalRows = total,
+            distinctDays = selectedDays.size,
+            usedGapFallback = usedGapFallback,
+            oldestShown = oldestProfileRow(rows),
+            cacheNote = cacheNote
+        )
+    )
+}
+
+/** Oldest displayed row: load-profile buffers are stored oldest first. */
+private fun oldestProfileRow(rows: List<List<String>>): String =
+    rows.firstOrNull()?.firstOrNull() ?: "N/A"
+
+/** Re-applies [selection] to both cached load-survey profiles in a report. */
+fun applyLoadSurveySelectionToReport(
+    report: MeterDataReport,
+    selection: LoadSurveySelection
+): MeterDataReport {
+    var updated = report
+    report.blockLoad?.let { updated = updated.copy(blockLoad = applyLoadSurveySelection(it, selection)) }
+    report.dailyLoad?.let { updated = updated.copy(dailyLoad = applyLoadSurveySelection(it, selection)) }
+    return updated
+}
+
+internal fun buildLoadSurveyWindowNote(
+    selection: LoadSurveySelection,
+    shownRows: Int,
+    totalRows: Int,
+    distinctDays: Int,
+    usedGapFallback: Boolean,
+    oldestShown: String,
+    cacheNote: String = ""
+): String {
+    val mode = when {
+        selection == LoadSurveySelection.FULL_BUFFER -> "full buffer"
+        usedGapFallback ->
+            "power-off gap fallback: latest ${selection.days} distinct days"
+        else -> "calendar window: latest ${selection.days} days"
+    }
+    val note = "Showing $shownRows of $totalRows entries across $distinctDays distinct days " +
+        "($mode; oldest shown: $oldestShown)"
+    return if (cacheNote.isBlank()) note else "$note — $cacheNote"
+}
+
+/**
+ * Meter-native RTC deviation in minutes, used when patching Selector 1
+ * datetime octet strings. The L&T / Indian meters store +330 (0x014A) in
+ * their profile timestamps, while Gurux can invert it to -330 (0xFEB6) when
+ * UTC-to-normal conversion is enabled.
+ */
+internal fun meterRawDeviationMinutes(meterRtc: GXDateTime?): Int? {
+    val rtc = meterRtc ?: return null
+    val calendar = runCatching { MeterTime.wallClock(rtc) }.getOrNull() ?: return null
+    val zoneMinutes = (calendar.get(Calendar.ZONE_OFFSET) + calendar.get(Calendar.DST_OFFSET)) / 60000
+    if (zoneMinutes != 0) return zoneMinutes
+    val parsed = rtc.deviation
+    return parsed.takeIf { it != 0 }
 }
 
 data class ParameterRow(
@@ -240,7 +401,16 @@ data class ProfileSection(
     val profileObis: String,
     val columns: List<ProfileColumn>,
     val rows: List<List<String>>,
-    val totalRows: Int = rows.size
+    val totalRows: Int = rows.size,
+    /** Full, unfiltered rows captured before the load-survey window was applied. */
+    val fullRows: List<List<String>> = emptyList(),
+    val fullTotalRows: Int = 0,
+    /** True when [fullRows] holds the meter's complete profile buffer. */
+    val fullBufferCached: Boolean = false,
+    /** Selected load-survey chip label, e.g. "30 Days". */
+    val selectionLabel: String = "",
+    /** Human-readable window/fallback subtitle for PDF, Excel, and the UI. */
+    val windowNote: String = ""
 )
 
 private data class ProfileScaler(
@@ -319,15 +489,16 @@ class Is15959DataReader(
     private var meterRtc: GXDateTime? = null
     private var meterTimeConventionChecked = false
     private var meterTimeConventionFlipped = false
-    private var rangeTierDenied = false
-    private var rangeVariantTierDenied = false
-    private var entryTierDenied = false
+    private val rangeTierDeniedProfiles = mutableSetOf<String>()
+    private val rangeVariantTierDeniedProfiles = mutableSetOf<String>()
+    private val entryTierDeniedProfiles = mutableSetOf<String>()
     private var lastEventLogStatus: List<Pair<String, String>> = emptyList()
     val eventLogStatus: List<Pair<String, String>> get() = lastEventLogStatus
     private val executor = GuruxPacketExecutor(
         transport,
         client,
-        packetTimeoutMs = packetTimeoutMs.coerceAtLeast(8000L)
+        packetTimeoutMs = packetTimeoutMs.coerceAtLeast(8000L),
+        onProgress = onProgress
     )
 
     suspend fun readIdentityAndNameplate(): IdentitySection {
@@ -593,6 +764,8 @@ class Is15959DataReader(
         var bestRows = 0
         var bestDays = 0
         var bestBuffer: Array<Array<Any?>>? = null
+        var knownEntriesInUse = 0
+        var fullBufferRead = false
 
         fun rememberBuffer(tier: String, snapshot: Boolean = true) {
             val rows = profile.buffer.size
@@ -615,34 +788,57 @@ class Is15959DataReader(
 
         fun currentDays(): Int = countDistinctDays(profile)
 
+        fun latestBufferDay(): String? {
+            val index = timeColumnIndex(profile)
+            if (index < 0) return null
+            return profile.buffer
+                .mapNotNull { rowValues(it).getOrNull(index)?.let(::profileRowDay) }
+                .maxOrNull()
+        }
+
         if (selection == LoadSurveySelection.FULL_BUFFER) {
             // Full Buffer must never use Selector 1 anchored at today's
             // midnight: that only returns the newest day. Read Selector 0
             // (the complete buffer) first, with Selector 2 as fallback.
             progress("Tier1 range: skipped for Full Buffer (reading complete Selector 0 buffer)")
+            knownEntriesInUse = resolveEntriesInUse(profile)
+            var entriesInUse = knownEntriesInUse
             try {
                 progress("Tier3 full: requesting complete buffer")
-                executor.readObject(profile, 2)
+                executor.readObject(
+                    profile,
+                    2,
+                    progressLabel = "$title (${selection.label})",
+                    expectedEntries = entriesInUse.takeIf { it > 0 }
+                )
                 progress("Tier3 full: success(${profile.buffer.size})")
-                totalRows = profile.buffer.size
+                fullBufferRead = true
+                totalRows = maxOf(profile.buffer.size, entriesInUse)
                 rememberBuffer("Tier 3 Full Buffer", snapshot = false)
             } catch (error: Exception) {
                 progress("Tier3 full: failed(${error.message ?: "unknown error"})")
             }
-            if (!loaded && !entryTierDenied) {
+            if (!loaded && !entryTierDeniedProfiles.contains(obis)) {
                 try {
-                    val entriesRaw = executor.readObject(profile, 7)
-                    val entriesInUse = (entriesRaw as? Number)?.toInt()?.takeIf { it > 0 }
-                        ?: profile.entriesInUse
+                    if (entriesInUse <= 0) {
+                        entriesInUse = resolveEntriesInUse(profile)
+                        knownEntriesInUse = entriesInUse
+                    }
                     val requestCount = entriesInUse.takeIf { it > 0 } ?: maxEntries.coerceAtLeast(1)
                     progress("Tier2 entry: requesting index=1 count=$requestCount of $entriesInUse")
-                    executor.readRowsByEntry(profile, 1, requestCount)
+                    readRowsByEntryWithBounds(
+                        profile = profile,
+                        index = 1,
+                        count = requestCount,
+                        label = "$title (${selection.label})",
+                        expectedEntries = requestCount
+                    )
                     progress("Tier2 entry: success(${profile.buffer.size})")
                     totalRows = maxOf(entriesInUse, profile.buffer.size)
                     rememberBuffer("Tier 2 Entry")
                 } catch (error: Exception) {
                     if (error is GXDLMSException) {
-                        entryTierDenied = true
+                        entryTierDeniedProfiles += obis
                         progress("Tier2 entry: denied(${error.errorCode})")
                     } else {
                         progress("Tier2 entry: failed(${error.message ?: "unknown error"})")
@@ -658,17 +854,31 @@ class Is15959DataReader(
                 ?: error("Load survey window unavailable for ${selection.label}")
             val startDate = GXDateTime(surveyWindow.start)
             val endRangeDate = GXDateTime(surveyWindow.end)
-            if (!rangeTierDenied) {
+            val nativeDeviation = meterRawDeviationMinutes(meterRtc)
+            var latestObservedDay: String? = null
+            if (!rangeTierDeniedProfiles.contains(obis)) {
                 try {
-                    progress("Tier1 range: requesting ${MeterTime.format(startDate)} to ${MeterTime.format(endRangeDate)}")
-                    executor.readRowsByRange(profile, startDate, endRangeDate)
+                    progress(
+                        "Tier1 range: requesting ${MeterTime.format(startDate)} to " +
+                            "${MeterTime.format(endRangeDate)} (native deviation " +
+                            "${nativeDeviation ?: "auto"})"
+                    )
+                    executor.readRowsByRange(
+                        profile,
+                        startDate,
+                        endRangeDate,
+                        nativeDeviationMinutes = nativeDeviation
+                    )
                     progress("Tier1 range: success(${profile.buffer.size})")
-                    totalRows = profile.buffer.size
+                    totalRows = maxOf(totalRows, profile.buffer.size)
                     rememberBuffer("Tier 1 Range")
+                    latestObservedDay = latestBufferDay()
                 } catch (error: GXDLMSException) {
-                    rangeTierDenied = true
+                    rangeTierDeniedProfiles += obis
                     progress("Tier1 range: denied(${error.errorCode})")
-                    if (error.errorCode == 3 && !meterTimeConventionFlipped && !rangeVariantTierDenied) {
+                    if (error.errorCode == 3 && !meterTimeConventionFlipped &&
+                        !rangeVariantTierDeniedProfiles.contains(obis)
+                    ) {
                         val variantStart = GXDateTime(startDate).apply {
                             deviation = 0x8000
                             skip.add(DateTimeSkips.DEVIATION)
@@ -681,21 +891,24 @@ class Is15959DataReader(
                             progress("Tier1 range variant: requesting deviation 0x8000")
                             executor.readRowsByRange(profile, variantStart, variantEnd)
                             progress("Tier1 range variant: success(${profile.buffer.size})")
-                            totalRows = profile.buffer.size
+                            totalRows = maxOf(totalRows, profile.buffer.size)
                             rememberBuffer("Tier 1 Range")
+                            latestObservedDay = latestBufferDay()
                         } catch (variantError: GXDLMSException) {
-                            rangeVariantTierDenied = true
+                            rangeVariantTierDeniedProfiles += obis
                             progress("Tier1 range variant: denied(${variantError.errorCode})")
                         }
                     }
                 }
             } else {
-                progress("Tier1 range: skipped(denied earlier in session)")
+                progress("Tier1 range: skipped(denied earlier for this profile)")
             }
 
             // A successful range read is not proof that the whole window is
             // present: meters often retain only 1-2 days after a long power
             // outage. Compare distinct recorded days and probe older storage.
+            var entriesInUse = 0
+            var tier2MissedNewest = false
             var needsOlderRecords = loaded && requiredDays != null &&
                 currentDays() < requiredDays
             if (needsOlderRecords) {
@@ -705,11 +918,10 @@ class Is15959DataReader(
                 )
             }
 
-            if ((!loaded || needsOlderRecords) && !entryTierDenied) {
+            if ((!loaded || needsOlderRecords) && !entryTierDeniedProfiles.contains(obis)) {
                 try {
-                    val entriesRaw = executor.readObject(profile, 7)
-                    val entriesInUse = (entriesRaw as? Number)?.toInt()?.takeIf { it > 0 }
-                        ?: profile.entriesInUse
+                    entriesInUse = resolveEntriesInUse(profile)
+                    knownEntriesInUse = entriesInUse
                     val requestCount = if (entriesInUse > 0) {
                         minOf(entriesInUse, effectiveMax)
                     } else {
@@ -721,14 +933,33 @@ class Is15959DataReader(
                         1
                     }
                     progress("Tier2 entry: requesting index=$index count=$requestCount of $entriesInUse")
-                    executor.readRowsByEntry(profile, index, requestCount)
+                    readRowsByEntryWithBounds(
+                        profile = profile,
+                        index = index,
+                        count = requestCount,
+                        label = "$title (${selection.label})",
+                        expectedEntries = requestCount
+                    )
                     progress("Tier2 entry: success(${profile.buffer.size})")
                     totalRows = maxOf(totalRows, entriesInUse, profile.buffer.size)
                     rememberBuffer("Tier 2 Entry")
                     if (profile.buffer.size < bestRows) restoreBest()
+                    // Some meters index Selector 2 from the oldest entry. If the
+                    // returned rows do not reach the newest day seen by Tier 1,
+                    // the window cannot be trusted: force the full-buffer path.
+                    val tier2Latest = latestBufferDay()
+                    if (latestObservedDay != null && tier2Latest != null &&
+                        tier2Latest < latestObservedDay
+                    ) {
+                        tier2MissedNewest = true
+                        progress(
+                            "Tier2 entry: returned older rows (latest $tier2Latest < " +
+                                "$latestObservedDay); falling back to full buffer"
+                        )
+                    }
                 } catch (error: Exception) {
                     if (error is GXDLMSException) {
-                        entryTierDenied = true
+                        entryTierDeniedProfiles += obis
                         progress("Tier2 entry: denied(${error.errorCode})")
                     } else {
                         progress("Tier2 entry: failed(${error.message ?: "unknown error"})")
@@ -736,22 +967,34 @@ class Is15959DataReader(
                     restoreBest()
                 }
             } else if (!loaded) {
-                progress("Tier2 entry: skipped(denied earlier in session)")
+                progress("Tier2 entry: skipped(denied earlier for this profile)")
             }
 
             if (requiredDays != null) {
                 needsOlderRecords = loaded && currentDays() < requiredDays
             }
+            needsOlderRecords = needsOlderRecords || tier2MissedNewest
 
             if (!loaded || needsOlderRecords) {
                 try {
+                    if (entriesInUse <= 0) {
+                        entriesInUse = resolveEntriesInUse(profile)
+                        knownEntriesInUse = entriesInUse
+                    }
                     progress(
                         "Tier3 full: requesting complete buffer" +
                             if (needsOlderRecords) " for pre-outage history" else ""
                     )
-                    executor.readObject(profile, 2)
+                    executor.readObject(
+                        profile,
+                        2,
+                        progressLabel = "$title (${selection.label})",
+                        expectedEntries = entriesInUse.takeIf { it > 0 }
+                            ?: bestRows.takeIf { it > 0 }
+                    )
                     progress("Tier3 full: success(${profile.buffer.size})")
-                    totalRows = maxOf(totalRows, profile.buffer.size)
+                    fullBufferRead = true
+                    totalRows = maxOf(totalRows, profile.buffer.size, entriesInUse)
                     rememberBuffer("Tier 3 Full Buffer", snapshot = false)
                     if (profile.buffer.size < bestRows) restoreBest()
                 } catch (error: Exception) {
@@ -762,26 +1005,117 @@ class Is15959DataReader(
             }
         }
 
+        // Snapshot the complete buffer before windowing so a later chip change
+        // can re-filter locally instead of repeating a multi-minute optical
+        // read. Formatting the full buffer first also gives the exporters a
+        // stable "X of Y entries" denominator.
+        val fullSection = formatProfile(profile, title, scalers, totalRows)
+
         // Day-window selections (including 2 Days) honour their window even
         // when the meter answered via Selector 2 or the full buffer.
+        var filterResult: LoadSurveyFilterResult? = null
         if (window != null) {
             val before = profile.buffer.size
-            val filterResult = filterBufferToWindow(profile, window, effectiveMax)
+            filterResult = filterBufferToWindow(profile, window, effectiveMax)
             progress(
                 "Window filter: kept ${filterResult.keptRowCount} of $before rows across " +
                     "${filterResult.distinctDays} distinct day(s) for ${selection.label}" +
-                    if (filterResult.usedGapFallback) " (power-off gap fallback)" else ""
+                    if (filterResult.usedGapFallback) {
+                        " (power-off gap fallback: latest ${selection.days} distinct days)"
+                    } else {
+                        " (calendar window ${selection.days} days)"
+                    }
             )
         }
 
+        val section = if (window != null) formatProfile(profile, title, scalers, totalRows) else fullSection
         val retainedDays = countDistinctDays(profile)
+        // The cached rows are complete only when Selector 0 returned the whole
+        // profile or when the row count reaches the meter's entries-in-use.
+        val fullCacheComplete = fullBufferRead ||
+            (knownEntriesInUse > 0 && fullSection.rows.size >= knownEntriesInUse)
+        val retainedRowCount = filterResult?.distinctDays ?: retainedDays
+        val cacheNote = when {
+            fullCacheComplete -> ""
+            selection == LoadSurveySelection.FULL_BUFFER ->
+                "cached rows only; re-read Full Buffer for the complete profile"
+            retainedRowCount < (selection.days ?: Int.MAX_VALUE) ->
+                "cached rows only (${retainedRowCount} of ${selection.days} distinct days " +
+                    "available); re-read Full Buffer for the complete profile"
+            else -> ""
+        }
+        val note = buildLoadSurveyWindowNote(
+            selection = selection,
+            shownRows = section.rows.size,
+            totalRows = totalRows,
+            distinctDays = retainedRowCount,
+            usedGapFallback = filterResult?.usedGapFallback == true,
+            oldestShown = section.rows.firstOrNull()?.firstOrNull() ?: "N/A",
+            cacheNote = cacheNote
+        )
         transport.log(
             com.utility.dlmsreader.transport.TraceDirection.INFO,
             "Reading Section: Load Survey Diagnostics — $title: " +
                 "selection=${selection.label}, tier=$tierUsed, rawRows=$bestRows, " +
-                "retainedRows=${profile.buffer.size}, retainedDays=$retainedDays"
+                "retainedRows=${profile.buffer.size}, retainedDays=$retainedDays, " +
+                "calendarWindowDays=${filterResult?.calendarWindowDays ?: retainedDays}, " +
+                "powerOffGapFallback=${filterResult?.usedGapFallback == true}, " +
+                "fullCacheComplete=$fullCacheComplete. $note"
         )
-        return formatProfile(profile, title, scalers, totalRows)
+        return section.copy(
+            fullRows = fullSection.rows,
+            fullTotalRows = fullSection.totalRows,
+            fullBufferCached = fullCacheComplete,
+            selectionLabel = selection.label,
+            windowNote = note
+        )
+    }
+
+    /** Attribute 7 (entries in use), falling back to the object's cached value. */
+    private suspend fun resolveEntriesInUse(profile: GXDLMSProfileGeneric): Int =
+        runCatching {
+            val raw = executor.readObject(profile, 7)
+            (raw as? Number)?.toInt()?.takeIf { it > 0 } ?: profile.entriesInUse
+        }.getOrDefault(profile.entriesInUse)
+
+    /**
+     * Selector 2 column bounds vary by meter. Gurux's 3-argument overload sends
+     * `to_selected_value = 0`, which several IS 15959 meters reject with
+     * `denied(3)`. Retry once with `from=1, to=captureObjects.size`.
+     */
+    private suspend fun readRowsByEntryWithBounds(
+        profile: GXDLMSProfileGeneric,
+        index: Int,
+        count: Int,
+        label: String,
+        expectedEntries: Int?
+    ): Array<Array<Any?>> {
+        return try {
+            executor.readRowsByEntry(
+                profile,
+                index,
+                count,
+                progressLabel = label,
+                expectedEntries = expectedEntries
+            )
+        } catch (error: GXDLMSException) {
+            if (error.errorCode != 3) throw error
+            val columnCount = profile.captureObjects.size
+            if (columnCount <= 0) throw error
+            progress(
+                "Tier2 entry: denied(3); retrying with explicit column bounds " +
+                    "1..$columnCount"
+            )
+            executor.readRowsByEntry(
+                profile,
+                index,
+                count,
+                1,
+                columnCount,
+                progressLabel = label,
+                expectedEntries = expectedEntries
+            )
+        }
     }
 
     /** Index of the capture object that carries the row timestamp, or -1. */

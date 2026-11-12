@@ -227,7 +227,9 @@ class MeterLinkPdfExporter(private val context: Context) {
             layout.table(listOf("Profile", "Status"), listOf(listOf(section.profileObis, "No rows returned")))
         } else {
             drawProfileChunks(layout, section, section.columns.indices.toList(), section.title)
-            if (section.rows.size < section.totalRows) {
+            if (section.windowNote.isNotBlank()) {
+                layout.note(section.windowNote)
+            } else if (section.rows.size < section.totalRows) {
                 val oldestShown = section.rows.firstOrNull()?.firstOrNull() ?: "N/A"
                 layout.note("Showing ${section.rows.size} of ${section.totalRows} entries (oldest shown: $oldestShown)")
             }

@@ -1,7 +1,9 @@
 package com.utility.dlmsreader.dlms
 
+import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
+import java.util.Locale
 import java.util.TimeZone
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -54,7 +56,7 @@ class LoadSurveyWindowTest {
         assertEquals(30 * 96, window.maxEntries)
         assertEquals(2026, window.start.get(Calendar.YEAR))
         assertEquals(Calendar.SEPTEMBER, window.start.get(Calendar.MONTH))
-        assertEquals(28, window.start.get(Calendar.DAY_OF_MONTH))
+        assertEquals(29, window.start.get(Calendar.DAY_OF_MONTH))
         assertMidnight(window.start)
     }
 
@@ -65,7 +67,7 @@ class LoadSurveyWindowTest {
         assertEquals(45, window.daysBack)
         assertEquals(45 * 96, window.maxEntries)
         assertEquals(Calendar.SEPTEMBER, window.start.get(Calendar.MONTH))
-        assertEquals(13, window.start.get(Calendar.DAY_OF_MONTH))
+        assertEquals(14, window.start.get(Calendar.DAY_OF_MONTH))
         assertMidnight(window.start)
     }
 
@@ -76,7 +78,7 @@ class LoadSurveyWindowTest {
         assertEquals(75, window.daysBack)
         assertEquals(75 * 96, window.maxEntries)
         assertEquals(Calendar.AUGUST, window.start.get(Calendar.MONTH))
-        assertEquals(14, window.start.get(Calendar.DAY_OF_MONTH))
+        assertEquals(15, window.start.get(Calendar.DAY_OF_MONTH))
         assertMidnight(window.start)
     }
 
@@ -113,8 +115,8 @@ class LoadSurveyWindowTest {
         val window = loadSurveyWindow(LoadSurveySelection.DAYS_45, rtc, isBlockLoad = true)
 
         val spanDays = ((window.end.timeInMillis - window.start.timeInMillis) / 86_400_000L).toInt()
-        // 45 full days back plus the remainder of the current day.
-        assertTrue("span was $spanDays days", spanDays in 45..46)
+        // 45 calendar days inclusive, minus the final second of the last day.
+        assertTrue("span was $spanDays days", spanDays in 44..45)
     }
 
     @Test
@@ -241,6 +243,194 @@ class LoadSurveyWindowTest {
 
         assertFalse(result.usedGapFallback)
         assertTrue("kept ${result.keptRowCount} rows", result.keptRowCount in 30..31)
+    }
+
+    @Test
+    fun `meter 92717295 power-off gaps return the requested number of distinct days`() {
+        val rows = meter92717295Rows()
+        val rtc = Calendar.getInstance().apply {
+            clear()
+            set(2023, Calendar.DECEMBER, 28, 14, 0, 0)
+        }
+
+        assertEquals(3_646, rows.size)
+        assertEquals(76, countDistinctDays(rows))
+
+        fun filtered(selection: LoadSurveySelection): LoadSurveyFilterResult {
+            val window = loadSurveyWindow(selection, rtc, isBlockLoad = true)
+            return filterLoadSurveyRows(
+                rows = rows,
+                timeIndex = 0,
+                windowStartMs = window.start.timeInMillis,
+                windowEndMs = window.end.timeInMillis,
+                requiredDays = window.daysBack,
+                maxEntries = window.maxEntries
+            )
+        }
+
+        val two = filtered(LoadSurveySelection.RECENT)
+        assertEquals(95, two.keptRowCount)
+        assertEquals(2, two.distinctDays)
+        assertEquals(1, two.calendarWindowDays)
+        assertTrue(two.usedGapFallback)
+
+        val thirty = filtered(LoadSurveySelection.DAYS_30)
+        assertEquals(1_439, thirty.keptRowCount)
+        assertEquals(30, thirty.distinctDays)
+        assertTrue(thirty.usedGapFallback)
+
+        val fortyFive = filtered(LoadSurveySelection.DAYS_45)
+        assertEquals(2_159, fortyFive.keptRowCount)
+        assertEquals(45, fortyFive.distinctDays)
+        assertTrue(fortyFive.usedGapFallback)
+
+        val seventyFive = filtered(LoadSurveySelection.DAYS_75)
+        assertEquals(3_599, seventyFive.keptRowCount)
+        assertEquals(75, seventyFive.distinctDays)
+        assertTrue(seventyFive.usedGapFallback)
+
+        // The last 75 calendar days only contain 3 powered-on days.
+        assertEquals(3, seventyFive.calendarWindowDays)
+
+        val full = filterLoadSurveyRows(
+            rows = rows,
+            timeIndex = 0,
+            windowStartMs = Long.MIN_VALUE,
+            windowEndMs = Long.MAX_VALUE,
+            requiredDays = null,
+            maxEntries = Int.MAX_VALUE
+        )
+        assertEquals(3_646, full.keptRowCount)
+        assertEquals(76, full.distinctDays)
+        assertFalse(full.usedGapFallback)
+    }
+
+    @Test
+    fun `cached full buffer re-filters instantly for every range chip`() {
+        val rows = meter92717295Rows()
+        val formatter = SimpleDateFormat("dd-MM-yy HH:mm", Locale.ENGLISH)
+        val formattedRows = rows.map { row ->
+            listOf(formatter.format(row.first() as Date))
+        }
+        val cached = ProfileSection(
+            title = "Block Load Survey",
+            profileObis = "1.0.99.1.0.255",
+            columns = listOf(ProfileColumn("Timestamp", "0.0.1.0.0.255")),
+            rows = formattedRows,
+            totalRows = formattedRows.size,
+            fullRows = formattedRows,
+            fullTotalRows = formattedRows.size,
+            fullBufferCached = true
+        )
+
+        assertEquals(95, applyLoadSurveySelection(cached, LoadSurveySelection.RECENT).rows.size)
+        assertEquals(2, applyLoadSurveySelection(cached, LoadSurveySelection.RECENT).rows
+            .mapNotNull { formattedProfileDay(it.firstOrNull()) }.distinct().size)
+
+        val thirty = applyLoadSurveySelection(cached, LoadSurveySelection.DAYS_30)
+        assertEquals(1_439, thirty.rows.size)
+        assertEquals(30, thirty.rows.mapNotNull { formattedProfileDay(it.firstOrNull()) }.distinct().size)
+        assertTrue(thirty.windowNote.contains("power-off gap fallback"))
+
+        val fortyFive = applyLoadSurveySelection(cached, LoadSurveySelection.DAYS_45)
+        assertEquals(2_159, fortyFive.rows.size)
+        assertEquals(45, fortyFive.rows.mapNotNull { formattedProfileDay(it.firstOrNull()) }.distinct().size)
+
+        val seventyFive = applyLoadSurveySelection(cached, LoadSurveySelection.DAYS_75)
+        assertEquals(3_599, seventyFive.rows.size)
+        assertEquals(75, seventyFive.rows.mapNotNull { formattedProfileDay(it.firstOrNull()) }.distinct().size)
+
+        val full = applyLoadSurveySelection(cached, LoadSurveySelection.FULL_BUFFER)
+        assertEquals(3_646, full.rows.size)
+        assertEquals(76, full.rows.mapNotNull { formattedProfileDay(it.firstOrNull()) }.distinct().size)
+        assertFalse(full.windowNote.contains("cached rows only"))
+    }
+
+    @Test
+    fun `partial cache is labelled instead of pretending to be the full buffer`() {
+        val rows = meter92717295Rows()
+        val formatter = SimpleDateFormat("dd-MM-yy HH:mm", Locale.ENGLISH)
+        val allFormatted = rows.map { row -> listOf(formatter.format(row.first() as Date)) }
+        val recentKeys = allFormatted
+            .mapNotNull { formattedProfileDay(it.firstOrNull()) }
+            .distinct()
+            .sortedDescending()
+            .take(2)
+            .toSet()
+        val partialRows = allFormatted.filter {
+            formattedProfileDay(it.firstOrNull()) in recentKeys
+        }
+        val partial = ProfileSection(
+            title = "Block Load Survey",
+            profileObis = "1.0.99.1.0.255",
+            columns = listOf(ProfileColumn("Timestamp", "0.0.1.0.0.255")),
+            rows = partialRows,
+            totalRows = 3_646,
+            fullRows = partialRows,
+            fullTotalRows = 3_646
+        )
+
+        val thirty = applyLoadSurveySelection(partial, LoadSurveySelection.DAYS_30)
+        assertEquals(
+            2,
+            thirty.rows.mapNotNull { formattedProfileDay(it.firstOrNull()) }.distinct().size
+        )
+        assertTrue(thirty.windowNote.contains("cached rows only"))
+
+        val full = applyLoadSurveySelection(partial, LoadSurveySelection.FULL_BUFFER)
+        assertEquals(partialRows.size, full.rows.size)
+        assertTrue(full.windowNote.contains("cached rows only"))
+    }
+
+    /**
+     * 76 distinct days: 63 continuous days (21-May-2022 .. 22-Jul-2022) and
+     * 13 sparse test days through 28-Dec-2023. The newest and oldest days have
+     * 47 rows; every other day has 48, yielding 3,646 rows total.
+     */
+    private fun meter92717295Rows(): List<List<Any?>> {
+        val days = mutableListOf<Calendar>()
+        val continuous = Calendar.getInstance().apply {
+            clear()
+            set(2022, Calendar.MAY, 21, 0, 0, 0)
+        }
+        repeat(63) {
+            days += (continuous.clone() as Calendar)
+            continuous.add(Calendar.DAY_OF_YEAR, 1)
+        }
+        val sparse = listOf(
+            intArrayOf(2022, Calendar.SEPTEMBER, 7),
+            intArrayOf(2022, Calendar.SEPTEMBER, 14),
+            intArrayOf(2022, Calendar.SEPTEMBER, 21),
+            intArrayOf(2022, Calendar.OCTOBER, 5),
+            intArrayOf(2022, Calendar.OCTOBER, 19),
+            intArrayOf(2022, Calendar.NOVEMBER, 2),
+            intArrayOf(2022, Calendar.NOVEMBER, 16),
+            intArrayOf(2022, Calendar.DECEMBER, 7),
+            intArrayOf(2022, Calendar.DECEMBER, 20),
+            intArrayOf(2023, Calendar.JULY, 22),
+            intArrayOf(2023, Calendar.NOVEMBER, 9),
+            intArrayOf(2023, Calendar.DECEMBER, 12),
+            intArrayOf(2023, Calendar.DECEMBER, 28)
+        )
+        sparse.forEach { parts ->
+            days += Calendar.getInstance().apply {
+                clear()
+                set(parts[0], parts[1], parts[2], 0, 0, 0)
+            }
+        }
+        assertEquals(76, days.size)
+        return days.flatMapIndexed { index, day ->
+            val rowCount = if (index == 0 || index == days.lastIndex) 47 else 48
+            (0 until rowCount).map { slot ->
+                val timestamp = (day.clone() as Calendar).apply {
+                    set(Calendar.HOUR_OF_DAY, slot / 4)
+                    set(Calendar.MINUTE, (slot % 4) * 15)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                listOf<Any?>(timestamp.time)
+            }
+        }
     }
 
     private fun assertMidnight(calendar: Calendar) {

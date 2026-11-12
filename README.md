@@ -44,7 +44,7 @@ Plug an optical probe onto the meter's IR port, point the phone at it, and Meter
 | Daily load | Daily load survey |
 | Tamper logs | Voltage, current, power-fail, transaction and other event logs |
 
-**Load survey ranges:** Recent (2 days block / 15 days daily), 36 days, 45 days, or 75 days. If the meter refuses selective access, MeterLink falls back through entry-range and full-buffer reads and still filters to your requested window.
+**Load survey ranges:** 2, 30, 45 or 75 days, or the full buffer. Each range keeps the most recent *N* recorded days, so a meter with long power-off gaps still returns 75 days of history even when the last 75 calendar days only contain a handful of entries. If the meter refuses selective access, MeterLink falls back through entry-range and full-buffer reads, and the exported report states which window and fallback were used. After a full-buffer read, switching chips re-filters the cached rows instantly without another optical read.
 
 **Exports:**
 - **PDF** — formatted multi-page report with every section, plus a diagnostic summary.
@@ -52,6 +52,8 @@ Plug an optical probe onto the meter's IR port, point the phone at it, and Meter
 - **Hex log (.txt)** — the full protocol trace, byte for byte, for when something does not work and you need to show someone why.
 
 All three are shared through the normal Android share sheet — email, WhatsApp, Drive, whatever you use.
+
+**Protocol reliability:** Multi-frame (segmented) DLMS responses are reassembled across receiver-ready (RR) continuations, so large reads no longer fail with `Invalid Command`. USB reads that arrive in fragments are buffered until a complete HDLC frame is available instead of rejecting the first partial chunk. Units from vendor metadata are displayed in conventional form (`kVA`, `kVAh`, `kVAr`, `kVArh`, `kW`, `kWh`).
 
 ---
 
@@ -118,11 +120,13 @@ The APK lands at `app/build/outputs/apk/debug/app-debug.apk`.
 
 Requires JDK 17 and the Android SDK (compileSdk 35). Built with Kotlin and Jetpack Compose; DLMS parsing is handled by [Gurux DLMS](https://github.com/Gurux/Gurux.DLMS.Java) and USB serial by [usb-serial-for-android](https://github.com/mik3y/usb-serial-for-android).
 
-Run the tests with:
+Run the tests and build the debug APK with:
 
 ```bash
-./gradlew testDebugUnitTest
+./gradlew testDebugUnitTest assembleDebug
 ```
+
+CI runs the same command on every push, so a failing test blocks the release.
 
 ---
 
