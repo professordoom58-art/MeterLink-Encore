@@ -53,6 +53,8 @@ Plug an optical probe onto the meter's IR port, point the phone at it, and Meter
 
 All three are shared through the normal Android share sheet — email, WhatsApp, Drive, whatever you use.
 
+**Saved readings:** Every completed read is stored on the phone in a local SQLite database, newest first. The list shows the meter serial, scan time, read type, cumulative kWh and a one-line profile summary. Tap an entry to pick a load-survey range and re-export PDF or Excel without the meter or probe — the complete raw buffer is kept, so switching ranges re-filters the stored rows instead of re-reading the meter. Entries can be deleted individually. The database lives in app-private storage and is removed when the app is uninstalled.
+
 **Protocol reliability:** Multi-frame (segmented) DLMS responses are reassembled across receiver-ready (RR) continuations, so large reads no longer fail with `Invalid Command`. USB reads that arrive in fragments are buffered until a complete HDLC frame is available instead of rejecting the first partial chunk. Units from vendor metadata are displayed in conventional form (`kVA`, `kVAh`, `kVAr`, `kVArh`, `kW`, `kWh`).
 
 ---
@@ -79,7 +81,7 @@ All three are shared through the normal Android share sheet — email, WhatsApp,
 3. **Wake the meter** if the display is asleep. Most meters need a button press to power the optical port.
 4. **Pick your vendor** and, if needed, tick *Auto-try alternate vendor passwords*.
 5. **Tap a read button.** Start with **Read Identity** — it is the quickest way to confirm the link works before pulling a full dump.
-6. **Export** when the green "Meter data ready" card appears.
+6. **Export** from the reading summary card that appears after the read, or reopen an earlier scan from **Saved Meter Readings**.
 
 **If nothing happens:** open the live protocol trace at the bottom of the screen. If you see TX bytes and no RX, the probe is not seeing the meter — realign it, or press the meter button. If you see nothing at all, the USB permission was probably denied; tap **Scan USB** again and accept the prompt.
 
@@ -88,7 +90,7 @@ All three are shared through the normal Android share sheet — email, WhatsApp,
 ## Privacy
 
 - **No internet permission.** The app cannot send anything anywhere. There is no analytics, no telemetry, no crash reporting, no account.
-- **No cloud.** Every read, every report, every file stays in the phone's app storage until you share it yourself.
+- **No cloud.** Every read, every report, every file stays in the phone's app storage until you share it yourself. Saved readings are kept only in the app's private SQLite database.
 - **Backup disabled.** `allowBackup` is off, so meter data is not swept into Google backups.
 
 The only way data leaves the device is when you tap a share button.
