@@ -43,7 +43,7 @@ class OpticalUsbTransport(private val context: Context) {
 
     companion object {
         private const val ACTION_USB_PERMISSION = "com.utility.dlmsreader.USB_PERMISSION"
-        const val STATUS_USB_CABLE_WAITING = "USB Cable Detected (Waiting for Meter...)"
+        const val STATUS_USB_CABLE_WAITING = "USB Cable Detected"
         const val STATUS_NO_METER_RESPONSE = "❌ Cable Connected, but No Meter Response (Check alignment / push button)"
         const val STATUS_METER_LINK_ESTABLISHED = "✅ Meter Link Established Successfully!"
     }

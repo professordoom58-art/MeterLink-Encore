@@ -470,7 +470,7 @@ fun MeterReaderScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Optical Probe Status", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.Gray)
+                        Text("USB Status", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.Gray)
                         Spacer(Modifier.height(2.dp))
                         Surface(
                             color = probeStatusColor.copy(alpha = 0.12f),
@@ -501,7 +501,7 @@ fun MeterReaderScreen(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Text("Session Configuration", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("DLMS Meter Vendor", fontWeight = FontWeight.Bold, fontSize = 14.sp)
 
                     // Client Selection Row
                     Row(
