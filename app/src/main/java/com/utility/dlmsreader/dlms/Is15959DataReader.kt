@@ -788,14 +788,6 @@ class Is15959DataReader(
 
         fun currentDays(): Int = countDistinctDays(profile)
 
-        fun latestBufferDay(): String? {
-            val index = timeColumnIndex(profile)
-            if (index < 0) return null
-            return profile.buffer
-                .mapNotNull { rowValues(it).getOrNull(index)?.let(::profileRowDay) }
-                .maxOrNull()
-        }
-
         if (selection == LoadSurveySelection.FULL_BUFFER) {
             // Full Buffer must never use Selector 1 anchored at today's
             // midnight: that only returns the newest day. Read Selector 0
@@ -855,135 +847,104 @@ class Is15959DataReader(
             val startDate = GXDateTime(surveyWindow.start)
             val endRangeDate = GXDateTime(surveyWindow.end)
             val nativeDeviation = meterRawDeviationMinutes(meterRtc)
-            var latestObservedDay: String? = null
-            if (!rangeTierDeniedProfiles.contains(obis)) {
-                try {
-                    progress(
-                        "Tier1 range: requesting ${MeterTime.format(startDate)} to " +
-                            "${MeterTime.format(endRangeDate)} (native deviation " +
-                            "${nativeDeviation ?: "auto"})"
-                    )
-                    executor.readRowsByRange(
-                        profile,
-                        startDate,
-                        endRangeDate,
-                        nativeDeviationMinutes = nativeDeviation
-                    )
-                    progress("Tier1 range: success(${profile.buffer.size})")
-                    totalRows = maxOf(totalRows, profile.buffer.size)
-                    rememberBuffer("Tier 1 Range")
-                    latestObservedDay = latestBufferDay()
-                } catch (error: GXDLMSException) {
-                    rangeTierDeniedProfiles += obis
-                    progress("Tier1 range: denied(${error.errorCode})")
-                    if (error.errorCode == 3 && !meterTimeConventionFlipped &&
-                        !rangeVariantTierDeniedProfiles.contains(obis)
-                    ) {
-                        val variantStart = GXDateTime(startDate).apply {
-                            deviation = 0x8000
-                            skip.add(DateTimeSkips.DEVIATION)
-                        }
-                        val variantEnd = GXDateTime(endRangeDate).apply {
-                            deviation = 0x8000
-                            skip.add(DateTimeSkips.DEVIATION)
-                        }
-                        try {
-                            progress("Tier1 range variant: requesting deviation 0x8000")
-                            executor.readRowsByRange(profile, variantStart, variantEnd)
-                            progress("Tier1 range variant: success(${profile.buffer.size})")
-                            totalRows = maxOf(totalRows, profile.buffer.size)
-                            rememberBuffer("Tier 1 Range")
-                            latestObservedDay = latestBufferDay()
-                        } catch (variantError: GXDLMSException) {
-                            rangeVariantTierDeniedProfiles += obis
-                            progress("Tier1 range variant: denied(${variantError.errorCode})")
-                        }
-                    }
-                }
-            } else {
-                progress("Tier1 range: skipped(denied earlier for this profile)")
-            }
-
-            // A successful range read is not proof that the whole window is
-            // present: meters often retain only 1-2 days after a long power
-            // outage. Compare distinct recorded days and probe older storage.
+            val isDailyLoad = obis == "1.0.99.2.0.255"
             var entriesInUse = 0
-            var tier2MissedNewest = false
-            var needsOlderRecords = loaded && requiredDays != null &&
-                currentDays() < requiredDays
-            if (needsOlderRecords) {
-                progress(
-                    "Tier1 range: only ${currentDays()} distinct day(s) for ${selection.label}; " +
-                        "checking older pre-outage records"
-                )
-            }
+            var needsFullBuffer = false
 
-            if ((!loaded || needsOlderRecords) && !entryTierDeniedProfiles.contains(obis)) {
-                try {
-                    entriesInUse = resolveEntriesInUse(profile)
-                    knownEntriesInUse = entriesInUse
-                    val requestCount = if (entriesInUse > 0) {
-                        minOf(entriesInUse, effectiveMax)
-                    } else {
-                        effectiveMax
-                    }
-                    val index = if (entriesInUse > 0) {
-                        maxOf(1, entriesInUse - requestCount + 1)
-                    } else {
-                        1
-                    }
-                    progress("Tier2 entry: requesting index=$index count=$requestCount of $entriesInUse")
-                    readRowsByEntryWithBounds(
-                        profile = profile,
-                        index = index,
-                        count = requestCount,
-                        label = "$title (${selection.label})",
-                        expectedEntries = requestCount
-                    )
-                    progress("Tier2 entry: success(${profile.buffer.size})")
-                    totalRows = maxOf(totalRows, entriesInUse, profile.buffer.size)
-                    rememberBuffer("Tier 2 Entry")
-                    if (profile.buffer.size < bestRows) restoreBest()
-                    // Some meters index Selector 2 from the oldest entry. If the
-                    // returned rows do not reach the newest day seen by Tier 1,
-                    // the window cannot be trusted: force the full-buffer path.
-                    val tier2Latest = latestBufferDay()
-                    if (latestObservedDay != null && tier2Latest != null &&
-                        tier2Latest < latestObservedDay
-                    ) {
-                        tier2MissedNewest = true
+            if (isDailyLoad) {
+                // SMRS never uses selective access on Daily Load: one row per
+                // day is only ~10 blocks for a full buffer, and Selector 0
+                // guarantees every requested day survives power-off gaps.
+                progress(
+                    "Tier1 range: skipped for daily load " +
+                        "(SMRS reads Selector 0 full buffer)"
+                )
+                entriesInUse = resolveEntriesInUse(profile)
+                knownEntriesInUse = entriesInUse
+                needsFullBuffer = true
+            } else {
+                if (!rangeTierDeniedProfiles.contains(obis)) {
+                    try {
                         progress(
-                            "Tier2 entry: returned older rows (latest $tier2Latest < " +
-                                "$latestObservedDay); falling back to full buffer"
+                            "Tier1 range: requesting ${MeterTime.format(startDate)} to " +
+                                "${MeterTime.format(endRangeDate)} (SMRS datetime format)"
+                        )
+                        executor.readRowsByRange(
+                            profile,
+                            startDate,
+                            endRangeDate,
+                            selector1Format = Selector1DateTimeFormat.SMRS
+                        )
+                        progress("Tier1 range: success(${profile.buffer.size})")
+                        totalRows = maxOf(totalRows, profile.buffer.size)
+                        rememberBuffer("Tier 1 Range")
+                    } catch (error: GXDLMSException) {
+                        rangeTierDeniedProfiles += obis
+                        progress("Tier1 range: denied(${error.errorCode})")
+                        // Some firmware rejects the SMRS 80 00 FF wildcards but
+                        // accepts its raw +330 RTC deviation instead.
+                        if (error.errorCode == 3 && !meterTimeConventionFlipped &&
+                            !rangeVariantTierDeniedProfiles.contains(obis)
+                        ) {
+                            try {
+                                progress(
+                                    "Tier1 range variant: retrying with native RTC " +
+                                        "deviation ${nativeDeviation ?: "auto"}"
+                                )
+                                executor.readRowsByRange(
+                                    profile,
+                                    startDate,
+                                    endRangeDate,
+                                    selector1Format = Selector1DateTimeFormat.NATIVE_RTC,
+                                    nativeDeviationMinutes = nativeDeviation
+                                )
+                                progress(
+                                    "Tier1 range variant: success(${profile.buffer.size})"
+                                )
+                                totalRows = maxOf(totalRows, profile.buffer.size)
+                                rememberBuffer("Tier 1 Range")
+                            } catch (variantError: GXDLMSException) {
+                                rangeVariantTierDeniedProfiles += obis
+                                progress(
+                                    "Tier1 range variant: denied(" +
+                                        "${variantError.errorCode})"
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    progress("Tier1 range: skipped(denied earlier for this profile)")
+                }
+
+                entriesInUse = resolveEntriesInUse(profile)
+                knownEntriesInUse = entriesInUse
+                val returnedDays = if (loaded) currentDays() else 0
+                needsFullBuffer = !loaded
+                if (loaded && requiredDays != null && returnedDays < requiredDays) {
+                    val hasMoreRows = entriesInUse <= 0 ||
+                        entriesInUse > profile.buffer.size
+                    if (hasMoreRows) {
+                        needsFullBuffer = true
+                        progress(
+                            "Tier1 range returned only $returnedDays distinct day(s) " +
+                                "for ${selection.label} due to power-off gaps " +
+                                "(entriesInUse=$entriesInUse); fetching full buffer to " +
+                                "collect $requiredDays distinct days..."
+                        )
+                    } else {
+                        progress(
+                            "Tier1 range: only $returnedDays distinct day(s) available " +
+                                "in the meter for ${selection.label}"
                         )
                     }
-                } catch (error: Exception) {
-                    if (error is GXDLMSException) {
-                        entryTierDeniedProfiles += obis
-                        progress("Tier2 entry: denied(${error.errorCode})")
-                    } else {
-                        progress("Tier2 entry: failed(${error.message ?: "unknown error"})")
-                    }
-                    restoreBest()
                 }
-            } else if (!loaded) {
-                progress("Tier2 entry: skipped(denied earlier for this profile)")
             }
 
-            if (requiredDays != null) {
-                needsOlderRecords = loaded && currentDays() < requiredDays
-            }
-            needsOlderRecords = needsOlderRecords || tier2MissedNewest
-
-            if (!loaded || needsOlderRecords) {
+            if (needsFullBuffer) {
                 try {
-                    if (entriesInUse <= 0) {
-                        entriesInUse = resolveEntriesInUse(profile)
-                        knownEntriesInUse = entriesInUse
-                    }
                     progress(
                         "Tier3 full: requesting complete buffer" +
-                            if (needsOlderRecords) " for pre-outage history" else ""
+                            if (loaded) " for pre-outage history" else ""
                     )
                     executor.readObject(
                         profile,
@@ -1000,7 +961,51 @@ class Is15959DataReader(
                 } catch (error: Exception) {
                     progress("Tier3 full: failed(${error.message ?: "unknown error"})")
                     restoreBest()
-                    if (!loaded) throw error
+                }
+            }
+
+            // SMRS never uses Selector 2 and L&T rejects it with denied(3), so
+            // this is a last-resort path only after both range and full-buffer
+            // reads failed to return any rows.
+            if (!loaded && !entryTierDeniedProfiles.contains(obis)) {
+                try {
+                    if (entriesInUse <= 0) {
+                        entriesInUse = resolveEntriesInUse(profile)
+                        knownEntriesInUse = entriesInUse
+                    }
+                    val requestCount = if (entriesInUse > 0) {
+                        minOf(entriesInUse, effectiveMax)
+                    } else {
+                        effectiveMax
+                    }
+                    val index = if (entriesInUse > 0) {
+                        maxOf(1, entriesInUse - requestCount + 1)
+                    } else {
+                        1
+                    }
+                    progress(
+                        "Tier2 entry: requesting index=$index count=$requestCount " +
+                            "of $entriesInUse"
+                    )
+                    readRowsByEntryWithBounds(
+                        profile = profile,
+                        index = index,
+                        count = requestCount,
+                        label = "$title (${selection.label})",
+                        expectedEntries = requestCount
+                    )
+                    progress("Tier2 entry: success(${profile.buffer.size})")
+                    totalRows = maxOf(totalRows, entriesInUse, profile.buffer.size)
+                    rememberBuffer("Tier 2 Entry")
+                    if (profile.buffer.size < bestRows) restoreBest()
+                } catch (error: Exception) {
+                    if (error is GXDLMSException) {
+                        entryTierDeniedProfiles += obis
+                        progress("Tier2 entry: denied(${error.errorCode})")
+                    } else {
+                        progress("Tier2 entry: failed(${error.message ?: "unknown error"})")
+                    }
+                    restoreBest()
                 }
             }
         }

@@ -16,8 +16,38 @@ class CosemDateTimePatchTest {
     )
 
     @Test
-    fun `selector 1 datetimes are patched to wildcard IST format`() {
-        val patched = patchProfileRangeDatetimes(arrayOf(liveRangeApdu), deviationMinutes = 330).single()
+    fun `selector 1 datetimes match SMRS wildcard format`() {
+        val patched = patchProfileRangeDatetimes(arrayOf(liveRangeApdu)).single()
+        val first = firstDateTimeOffset(patched)
+        val second = nextDateTimeOffset(patched, first + 12)
+
+        // SMRS Send_Read_Query_ld: FF day-of-week, 00 hundredths,
+        // 80 00 unspecified deviation, FF clock status.
+        assertArrayEquals(
+            hex("07 E7 0C 1A FF 00 00 00 00 80 00 FF"),
+            patched.copyOfRange(first, first + 12)
+        )
+        assertArrayEquals(
+            hex("07 E7 0C 1C FF 17 3B 3B 00 80 00 FF"),
+            patched.copyOfRange(second, second + 12)
+        )
+        assertEquals(0x80, patched[first + 9].toInt() and 0xFF)
+        assertEquals(0x00, patched[first + 10].toInt() and 0xFF)
+        assertEquals(0xFF, patched[first + 11].toInt() and 0xFF)
+        assertEquals(0x80, patched[second + 9].toInt() and 0xFF)
+        assertEquals(0x00, patched[second + 10].toInt() and 0xFF)
+        assertEquals(0xFF, patched[second + 11].toInt() and 0xFF)
+        assertEquals(0x00, patched[first + 8].toInt() and 0xFF)
+        assertEquals(0x00, patched[second + 8].toInt() and 0xFF)
+    }
+
+    @Test
+    fun `native RTC retry keeps the meter deviation and status`() {
+        val patched = patchProfileRangeDatetimes(
+            arrayOf(liveRangeApdu),
+            format = Selector1DateTimeFormat.NATIVE_RTC,
+            nativeDeviationMinutes = 330
+        ).single()
         val first = firstDateTimeOffset(patched)
         val second = nextDateTimeOffset(patched, first + 12)
 
@@ -29,10 +59,6 @@ class CosemDateTimePatchTest {
             hex("07 E7 0C 1C FF 17 3B 3B FF 01 4A 00"),
             patched.copyOfRange(second, second + 12)
         )
-        assertEquals(0x01, patched[first + 9].toInt() and 0xFF)
-        assertEquals(0x4A, patched[first + 10].toInt() and 0xFF)
-        assertEquals(0x01, patched[second + 9].toInt() and 0xFF)
-        assertEquals(0x4A, patched[second + 10].toInt() and 0xFF)
     }
 
     @Test
@@ -52,7 +78,7 @@ class CosemDateTimePatchTest {
             payload +
             byteArrayOf(0x00, 0x00, 0x7E)
 
-        val patched = patchProfileRangeDatetimes(arrayOf(frame), deviationMinutes = 330).single()
+        val patched = patchProfileRangeDatetimes(arrayOf(frame)).single()
         val expectedFcs = hdlcFcs16(patched, 1, patched.size - 4)
 
         assertEquals(expectedFcs and 0xFF, patched[patched.size - 3].toInt() and 0xFF)
@@ -71,11 +97,11 @@ class CosemDateTimePatchTest {
 
     @Test
     fun `non framed apdu is patched without an fcs rewrite`() {
-        val patched = patchProfileRangeDatetimes(arrayOf(liveRangeApdu), deviationMinutes = 330).single()
+        val patched = patchProfileRangeDatetimes(arrayOf(liveRangeApdu)).single()
         assertTrue(patched.size == liveRangeApdu.size)
         val first = firstDateTimeOffset(patched)
         assertArrayEquals(
-            hex("07 E7 0C 1A FF 00 00 00 FF 01 4A 00"),
+            hex("07 E7 0C 1A FF 00 00 00 00 80 00 FF"),
             patched.copyOfRange(first, first + 12)
         )
     }
