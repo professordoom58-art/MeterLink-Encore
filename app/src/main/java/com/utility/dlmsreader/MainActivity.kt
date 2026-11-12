@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -28,7 +29,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.lifecycleScope
 import com.utility.dlmsreader.dlms.ConnectionParams
 import com.utility.dlmsreader.dlms.DlmsMeterEngine
 import com.utility.dlmsreader.dlms.LoadSurveySelection
@@ -37,9 +37,13 @@ import com.utility.dlmsreader.dlms.MeterDataReport
 import com.utility.dlmsreader.dlms.MeterReadSnapshot
 import com.utility.dlmsreader.dlms.MeterLinkExcelExporter
 import com.utility.dlmsreader.dlms.MeterLinkPdfExporter
-import com.utility.dlmsreader.dlms.ProfileSection
 import com.utility.dlmsreader.dlms.VendorPasswordCatalog
 import com.utility.dlmsreader.dlms.applyLoadSurveySelectionToReport
+import com.utility.dlmsreader.storage.MeterReadingDatabase
+import com.utility.dlmsreader.storage.SavedReadingSummary
+import com.utility.dlmsreader.storage.cumulativeKvahReading
+import com.utility.dlmsreader.storage.cumulativeKwhReading
+import com.utility.dlmsreader.storage.identityValue
 import com.utility.dlmsreader.transport.OpticalUsbTransport
 import com.utility.dlmsreader.transport.TraceDirection
 import com.utility.dlmsreader.transport.TraceLog
@@ -56,12 +60,14 @@ class MainActivity : ComponentActivity() {
 
     private lateinit var transport: OpticalUsbTransport
     private lateinit var engine: DlmsMeterEngine
+    private lateinit var readingDatabase: MeterReadingDatabase
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge() // Fixes camera cutout overlapping
         transport = OpticalUsbTransport(applicationContext)
         engine = DlmsMeterEngine(transport)
+        readingDatabase = MeterReadingDatabase(applicationContext)
         transport.refreshProbeStatus()
 
         setContent {
@@ -81,6 +87,7 @@ class MainActivity : ComponentActivity() {
                     MeterReaderScreen(
                         transport = transport,
                         engine = engine,
+                        readingDatabase = readingDatabase,
                         onRefreshUsb = { transport.refreshProbeStatus() }
                     )
                 }
@@ -96,6 +103,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         transport.closePort()
+        readingDatabase.close()
     }
 }
 
@@ -104,6 +112,7 @@ class MainActivity : ComponentActivity() {
 fun MeterReaderScreen(
     transport: OpticalUsbTransport,
     engine: DlmsMeterEngine,
+    readingDatabase: MeterReadingDatabase,
     onRefreshUsb: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
@@ -126,21 +135,34 @@ fun MeterReaderScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var meterReport by remember { mutableStateOf(MeterDataReport()) }
     var progressText by remember { mutableStateOf<String?>(null) }
-    var reportReady by remember { mutableStateOf(false) }
     var reportStatusText by remember { mutableStateOf<String?>(null) }
     var autoTryAlternatePasswords by remember { mutableStateOf(false) }
     var loadSurveySelection by remember { mutableStateOf(LoadSurveySelection.RECENT) }
     var lastHexLogFile by remember { mutableStateOf<File?>(null) }
+    var savedReadings by remember { mutableStateOf<List<SavedReadingSummary>>(emptyList()) }
+    var selectedSavedReading by remember { mutableStateOf<SavedReadingSummary?>(null) }
     val traceLogs = remember { mutableStateListOf<TraceLog>() }
+
+    fun readTypeLabel(module: MeterDataModule): String = when (module) {
+        MeterDataModule.ALL -> "Full Read (All)"
+        MeterDataModule.BLOCK_LOAD -> "Block Load (${loadSurveySelection.label})"
+        MeterDataModule.DAILY_LOAD -> "Daily Load (${loadSurveySelection.label})"
+        MeterDataModule.TAMPER -> "Tamper Logs"
+        else -> module.name.lowercase(Locale.US)
+            .split('_')
+            .joinToString(" ") { word ->
+                word.replaceFirstChar { it.uppercase(Locale.US) }
+            }
+    }
 
     fun runModule(module: MeterDataModule) {
         isReading = true
         errorMessage = null
         progressText = "Starting ${module.name.lowercase(Locale.US)}..."
         reportStatusText = null
+        val readType = readTypeLabel(module)
         if (module == MeterDataModule.ALL) {
             meterReport = MeterDataReport()
-            reportReady = false
         }
         traceLogs.clear()
         scope.launch {
@@ -187,7 +209,21 @@ fun MeterReaderScreen(
                                 errorMessage = it.message ?: "Automatic report save failed"
                             }
                     }
-                    reportReady = true
+                    // Persist every successful read locally. Compression and
+                    // SQLite work stay on IO so a 3,600-row buffer never blocks
+                    // the UI thread.
+                    val savedResult = runCatching {
+                        withContext(Dispatchers.IO) {
+                            readingDatabase.insertReport(mergedReport, readType)
+                            readingDatabase.listSummaries()
+                        }
+                    }
+                    savedResult
+                        .onSuccess { savedReadings = it }
+                        .onFailure {
+                            errorMessage = "Read succeeded, but local save failed: " +
+                                (it.message ?: "unknown error")
+                        }
                     if (module != MeterDataModule.ALL) {
                         reportStatusText = "✓ ${module.name.replace('_', ' ')} extraction complete. Data is ready for PDF export."
                     }
@@ -276,6 +312,70 @@ fun MeterReaderScreen(
                 .onFailure { errorMessage = it.message ?: "Hex log export failed" }
             isReading = false
         }
+    }
+
+    fun exportSavedReading(
+        reading: SavedReadingSummary,
+        selection: LoadSurveySelection,
+        excel: Boolean
+    ) {
+        isReading = true
+        errorMessage = null
+        scope.launch {
+            // Load, decompress, re-filter and render entirely on IO. Only the
+            // Android share intent returns to the main thread.
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val report = readingDatabase.loadReport(reading.id)
+                        ?: error("Saved reading #${reading.id} no longer exists.")
+                    val filtered = applyLoadSurveySelectionToReport(report, selection)
+                    if (excel) {
+                        MeterLinkExcelExporter(context).export(filtered)
+                    } else {
+                        MeterLinkPdfExporter(context).export(filtered)
+                    }
+                }
+            }
+            result
+                .onSuccess { file ->
+                    reportStatusText = "✓ Saved reading exported as ${file.name}."
+                    selectedSavedReading = null
+                    runCatching {
+                        if (excel) {
+                            MeterLinkExcelExporter(context).share(file)
+                        } else {
+                            MeterLinkPdfExporter(context).share(file)
+                        }
+                    }.onFailure { errorMessage = it.message ?: "Share failed" }
+                }
+                .onFailure { errorMessage = it.message ?: "Saved reading export failed" }
+            isReading = false
+        }
+    }
+
+    fun deleteSavedReading(reading: SavedReadingSummary) {
+        isReading = true
+        errorMessage = null
+        scope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    readingDatabase.deleteReport(reading.id)
+                    readingDatabase.listSummaries()
+                }
+            }
+            result
+                .onSuccess {
+                    savedReadings = it
+                    selectedSavedReading = null
+                    reportStatusText = "✓ Saved reading deleted."
+                }
+                .onFailure { errorMessage = it.message ?: "Delete failed" }
+            isReading = false
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        savedReadings = readingDatabase.listSummaries()
     }
 
     LaunchedEffect(Unit) {
@@ -556,66 +656,55 @@ fun MeterReaderScreen(
                     ) {
                         Text("Read Tamper Logs")
                     }
-                    if (reportReady) {
-                        Surface(
-                            color = Color(0xFFE8F5E9),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(12.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    "Meter data ready",
-                                    color = Color(0xFF166534),
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Text(
-                                    "Export or share the extracted report as a PDF.",
-                                    color = Color(0xFF166534),
-                                    fontSize = 12.sp
-                                )
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Button(
-                                        onClick = ::exportReport,
-                                        enabled = !isReading && meterReport.hasData,
-                                        modifier = Modifier.weight(1f),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text("Export PDF Report", fontSize = 11.sp)
-                                    }
-                                    OutlinedButton(
-                                        onClick = ::exportHexLog,
-                                        enabled = !isReading,
-                                        modifier = Modifier.weight(1f),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text("Export Hex Log (.txt)", fontSize = 11.sp)
-                                    }
-                                }
-                                Button(
-                                    onClick = ::exportExcel,
-                                    enabled = !isReading && meterReport.hasData,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text("Export Excel (.xlsx)", fontSize = 11.sp)
-                                }
-                                lastHexLogFile?.let {
-                                    Text("Hex log ready: ${it.name}", fontSize = 10.sp, color = Color.Gray)
-                                }
-                            }
-                        }
-                    }
                 }
             }
 
             if (meterReport.hasData) {
-                MeterDataReportView(meterReport)
+                MeterReadingSummaryCard(
+                    report = meterReport,
+                    selectedRange = loadSurveySelection,
+                    busy = isReading,
+                    lastHexLogName = lastHexLogFile?.name,
+                    onSelectRange = { selection ->
+                        loadSurveySelection = selection
+                        // Re-filter any cached full buffer instantly instead of
+                        // forcing another multi-minute optical read.
+                        if (!isReading) {
+                            meterReport = applyLoadSurveySelectionToReport(
+                                meterReport,
+                                selection
+                            )
+                        }
+                    },
+                    onExportPdf = ::exportReport,
+                    onExportExcel = ::exportExcel,
+                    onExportHex = ::exportHexLog
+                )
+            }
+
+            SavedReadingsCard(
+                readings = savedReadings,
+                busy = isReading,
+                onSelect = {
+                    errorMessage = null
+                    selectedSavedReading = it
+                }
+            )
+
+            selectedSavedReading?.let { reading ->
+                SavedReadingDialog(
+                    reading = reading,
+                    busy = isReading,
+                    error = errorMessage,
+                    onDismiss = { if (!isReading) selectedSavedReading = null },
+                    onExportPdf = { selection ->
+                        exportSavedReading(reading, selection, excel = false)
+                    },
+                    onExportExcel = { selection ->
+                        exportSavedReading(reading, selection, excel = true)
+                    },
+                    onDelete = { deleteSavedReading(reading) }
+                )
             }
 
             // 3. Parsed Meter Results Card
@@ -651,7 +740,11 @@ fun MeterReaderScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Live Protocol Trace", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                Text(
+                    "Live Protocol Trace (latest ${minOf(traceLogs.size, 150)} of ${traceLogs.size})",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -675,13 +768,14 @@ fun MeterReaderScreen(
                     .padding(10.dp)
             ) {
                 val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.US) }
+                val visibleTraceLogs = traceLogs.take(150)
                 if (traceLogs.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text("Awaiting optical connection...", color = Color.Gray, fontSize = 11.sp)
                     }
                 } else {
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        items(traceLogs) { item ->
+                        items(visibleTraceLogs) { item ->
                             val color = when (item.direction) {
                                 TraceDirection.TX -> Color(0xFF60A5FA)
                                 TraceDirection.RX -> Color(0xFF4ADE80)
@@ -771,158 +865,300 @@ private fun ExtractionButtonRow(
 }
 
 @Composable
-private fun MeterDataReportView(report: MeterDataReport) {
-    report.identity?.let { identity ->
-        ReportCard("Meter Identity & Nameplate") {
-            ReportTable(
-                headers = listOf("Parameter", "OBIS", "Value", "Unit"),
-                rows = identity.rows.map { listOf(it.parameterName, it.obisCode, it.formattedValue, it.unit) }
-            )
-            identity.nameplate?.let {
-                Spacer(Modifier.height(8.dp))
-                Text("Nameplate Profile", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                ProfileTable(it)
-            }
-        }
-    }
-    if (report.cumulativeEnergies.isNotEmpty()) {
-        ReportCard("Cumulative Energy & Maximum Demand") {
-            ReportTable(
-                headers = listOf("Parameter", "OBIS", "Reading", "Unit", "Capture Time"),
-                rows = report.cumulativeEnergies.map {
-                    listOf(it.parameterName, it.obisCode, it.reading, it.unit, it.captureTimestamp)
-                }
-            )
-        }
-    }
-    report.instantaneous?.let { ReportCard(it.title) { ProfileTable(it) } }
-    report.billing?.let { ReportCard(it.title) { ProfileTable(it) } }
-    report.dailyLoad?.let { ReportCard(it.title) { ProfileTable(it) } }
-    report.blockLoad?.let { ReportCard(it.title) { ProfileTable(it) } }
-    if (report.tamperEvents.isNotEmpty() || report.eventLogStatus.isNotEmpty()) {
-        ReportCard("Tamper & Event Logs") {
-            if (report.eventLogStatus.isNotEmpty()) {
-                ReportTable(
-                    headers = listOf("Compartment", "Status"),
-                    rows = report.eventLogStatus.map { listOf(it.first, it.second) }
-                )
-            }
-            report.tamperEvents.groupBy { it.compartment }.forEach { (compartment, events) ->
-                val compact = events.all { event ->
-                    listOf(event.voltage, event.current, event.powerFactor, event.energy, event.kvah, event.neutralCurrent)
-                        .all { it == "N/A" }
-                }
-                Text(compartment, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
-                if (compact) {
-                    ReportTable(
-                        headers = listOf("Compartment", "Date/Time", "Code", "Description"),
-                        rows = events.map { listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription) }
-                    )
-                } else {
-                    ReportTable(
-                        headers = listOf("Compartment", "Date/Time", "Code", "Description", "V", "I", "PF", "kWh", "kVAh", "Neutral I"),
-                        rows = events.map {
-                            listOf(it.compartment, it.dateTime, it.eventCode, it.eventDescription, it.voltage, it.current, it.powerFactor, it.energy, it.kvah, it.neutralCurrent)
-                        }
-                    )
-                }
-            }
-        }
-    }
-    if (report.errors.isNotEmpty()) {
-        ReportCard("Read Notes") {
-            report.errors.forEach { Text(it, color = Color(0xFFB45309), fontSize = 11.sp) }
-        }
-    }
-}
+private fun MeterReadingSummaryCard(
+    report: MeterDataReport,
+    selectedRange: LoadSurveySelection,
+    busy: Boolean,
+    lastHexLogName: String?,
+    onSelectRange: (LoadSurveySelection) -> Unit,
+    onExportPdf: () -> Unit,
+    onExportExcel: () -> Unit,
+    onExportHex: () -> Unit
+) {
+    val nameplateCount = report.identity?.nameplate?.totalRows
+        ?: report.identity?.rows?.size
+        ?: 0
+    val sectionCounts = listOf(
+        "Nameplate" to "$nameplateCount fields",
+        "Instantaneous" to "${report.instantaneous?.totalRows ?: 0} params",
+        "Billing History" to "${report.billing?.totalRows ?: 0} entries",
+        "Daily Load" to "${report.dailyLoad?.totalRows ?: 0} entries",
+        "Block Load" to "${report.blockLoad?.totalRows ?: 0} entries",
+        "Tamper Events" to "${report.tamperEvents.size} entries"
+    )
+    val windowNotes = listOfNotNull(
+        report.blockLoad?.takeIf { it.windowNote.isNotBlank() }?.let { "Block: ${it.windowNote}" },
+        report.dailyLoad?.takeIf { it.windowNote.isNotBlank() }?.let { "Daily: ${it.windowNote}" }
+    )
 
-@Composable
-private fun ProfileTable(section: ProfileSection) {
-    if (section.columns.isEmpty()) {
-        Text("No rows returned", color = Color.Gray, fontSize = 11.sp)
-        return
-    }
-    ReportTable(section.columns.map { it.parameterName }, section.rows)
-    if (section.windowNote.isNotBlank()) {
-        Text(
-            section.windowNote,
-            color = Color.Gray,
-            fontSize = 10.sp
-        )
-    } else if (section.rows.size < section.totalRows) {
-        Text(
-            "Showing ${section.rows.size} of ${section.totalRows} entries (oldest shown: ${section.rows.firstOrNull()?.firstOrNull() ?: "N/A"})",
-            color = Color.Gray,
-            fontSize = 10.sp
-        )
-    }
-    if (section.title.contains("Block Load", ignoreCase = true)) {
-        Text(
-            "Timestamps are interval-end. Zero rows before a power restoration are meter zero-fill.",
-            color = Color.Gray,
-            fontSize = 10.sp
-        )
-    }
-}
-
-@Composable
-private fun ReportCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Text(title, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
-            content()
+            Text(
+                "Current Reading Summary",
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 14.sp
+            )
+            HorizontalDivider()
+            ResultRow(
+                "Serial Number",
+                report.identityValue("0.0.96.1.0.255").ifBlank { "N/A" }
+            )
+            ResultRow(
+                "Logical Device Name",
+                report.identityValue("0.0.42.0.0.255").ifBlank { "N/A" }
+            )
+            ResultRow(
+                "Manufacturer",
+                report.identityValue("0.0.96.1.1.255").ifBlank { "N/A" }
+            )
+            ResultRow(
+                "Firmware Version",
+                report.identityValue("0.0.96.1.4.255").ifBlank { "N/A" }
+            )
+            ResultRow(
+                "Meter RTC",
+                report.identityValue("0.0.1.0.0.255").ifBlank { "N/A" }
+            )
+            HorizontalDivider(Modifier.padding(vertical = 2.dp))
+            ResultRow("Cumulative kWh", report.cumulativeKwhReading())
+            ResultRow("Cumulative kVAh", report.cumulativeKvahReading())
+
+            HorizontalDivider(Modifier.padding(vertical = 2.dp))
+            Text("Section Row Counts", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+            sectionCounts.forEach { (label, count) ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(label, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    Text(
+                        count,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+            if (windowNotes.isNotEmpty()) {
+                Text(
+                    windowNotes.joinToString("\n"),
+                    fontSize = 10.sp,
+                    color = Color.Gray
+                )
+            }
+            report.errors.take(3).forEach {
+                Text(it, color = Color(0xFFB45309), fontSize = 10.sp)
+            }
+
+            Spacer(Modifier.height(2.dp))
+            LoadSurveyRangeChips(
+                selected = selectedRange,
+                enabled = !busy,
+                onSelect = onSelectRange
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = onExportPdf,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Export PDF", fontSize = 11.sp)
+                }
+                OutlinedButton(
+                    onClick = onExportHex,
+                    enabled = !busy,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Export Hex (.txt)", fontSize = 11.sp)
+                }
+            }
+            Button(
+                onClick = onExportExcel,
+                enabled = !busy,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Export Excel (.xlsx)", fontSize = 11.sp)
+            }
+            lastHexLogName?.let {
+                Text("Hex log ready: $it", fontSize = 10.sp, color = Color.Gray)
+            }
         }
     }
 }
 
 @Composable
-private fun ReportTable(headers: List<String>, rows: List<List<String>>) {
-    if (headers.isEmpty()) return
-    val tableWidth = (headers.size * 125).dp
-    Column(Modifier.horizontalScroll(rememberScrollState()).width(tableWidth)) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xFF1E3A8A))
-                .padding(vertical = 5.dp)
+private fun SavedReadingsCard(
+    readings: List<SavedReadingSummary>,
+    busy: Boolean,
+    onSelect: (SavedReadingSummary) -> Unit
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            headers.forEach { header ->
+            Text(
+                "Saved Meter Readings",
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 14.sp
+            )
+            if (readings.isEmpty()) {
                 Text(
-                    header,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 10.sp,
-                    modifier = Modifier.width(125.dp).padding(horizontal = 4.dp),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    "No saved readings yet. Every completed read is stored on this device automatically.",
+                    color = Color.Gray,
+                    fontSize = 11.sp
                 )
-            }
-        }
-        rows.forEachIndexed { rowIndex, row ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(if (rowIndex % 2 == 0) Color(0xFFF8FAFC) else Color.White)
-                    .padding(vertical = 4.dp)
-            ) {
-                headers.indices.forEach { index ->
-                    Text(
-                        row.getOrNull(index) ?: "N/A",
-                        fontSize = 10.sp,
-                        color = Color(0xFF1E293B),
-                        modifier = Modifier.width(125.dp).padding(horizontal = 4.dp),
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis
-                    )
+            } else {
+                Text(
+                    "${readings.size} reading(s) stored locally — newest first",
+                    color = Color.Gray,
+                    fontSize = 11.sp
+                )
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(320.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(readings, key = { it.id }) { reading ->
+                        Surface(
+                            color = Color(0xFFF8FAFC),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !busy) { onSelect(reading) }
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Text(
+                                    "Meter #${reading.serialNumber} — ${reading.scannedAtFormatted}",
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp
+                                )
+                                Text(
+                                    "${reading.readType} • ${reading.kwhReading} • ${reading.summaryStats}",
+                                    color = Color.Gray,
+                                    fontSize = 11.sp,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun SavedReadingDialog(
+    reading: SavedReadingSummary,
+    busy: Boolean,
+    error: String?,
+    onDismiss: () -> Unit,
+    onExportPdf: (LoadSurveySelection) -> Unit,
+    onExportExcel: (LoadSurveySelection) -> Unit,
+    onDelete: () -> Unit
+) {
+    var selection by remember(reading.id) { mutableStateOf(LoadSurveySelection.FULL_BUFFER) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                "Meter #${reading.serialNumber} — ${reading.scannedAtFormatted}",
+                fontSize = 16.sp
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "${reading.readType} • ${reading.kwhReading}",
+                    fontSize = 12.sp,
+                    color = Color.Gray
+                )
+                Text(reading.summaryStats, fontSize = 11.sp, color = Color.Gray)
+                reading.meterRtc
+                    .takeIf { it.isNotBlank() && it != "N/A" }
+                    ?.let { ResultRow("Meter RTC", it) }
+                LoadSurveyRangeChips(
+                    selected = selection,
+                    enabled = !busy,
+                    onSelect = { selection = it }
+                )
+                Button(
+                    onClick = { onExportPdf(selection) },
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Export PDF Report", fontSize = 12.sp)
+                }
+                Button(
+                    onClick = { onExportExcel(selection) },
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Export Excel (.xlsx)", fontSize = 12.sp)
+                }
+                OutlinedButton(
+                    onClick = onDelete,
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Delete Saved Reading", fontSize = 12.sp)
+                }
+                if (busy) {
+                    Text(
+                        "Working — loading and exporting the saved reading...",
+                        color = MaterialTheme.colorScheme.primary,
+                        fontSize = 11.sp
+                    )
+                }
+                error?.let {
+                    Text(
+                        it,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 11.sp
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) {
+                Text("Close")
+            }
+        }
+    )
 }

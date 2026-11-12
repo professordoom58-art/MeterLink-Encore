@@ -30,6 +30,9 @@ android {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // Real org.json implementation for JVM unit tests; the Android runtime
+    // already provides org.json, so this is test-only and adds no app weight.
+    testImplementation("org.json:json:20240303")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
