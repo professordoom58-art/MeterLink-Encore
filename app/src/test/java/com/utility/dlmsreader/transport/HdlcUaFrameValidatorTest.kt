@@ -1,8 +1,10 @@
 package com.utility.dlmsreader.transport
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.ArrayDeque
 
 /**
  * Focused tests for [containsHdlcUaFrame], the gate that decides whether an
@@ -229,6 +231,56 @@ class HdlcUaFrameValidatorTest {
         assertFalse(
             "a format byte outside the A0 nibble must be rejected",
             containsHdlcUaFrame(bad)
+        )
+    }
+
+    // ------------------------------------------------------- chunked USB reads
+
+    /**
+     * Live L&T capture where the USB probe returned the UA frame over three
+     * reads. The first read is only `7E A0 1E 41`; rejecting it would report
+     * "no response" before the remaining bytes ever arrive.
+     */
+    private val liveChunkedUaFrame = byteArrayOf(
+        0x7E,
+        0xA0.toByte(), 0x1E, 0x41, 0x03, 0x73,
+        0x8E.toByte(), 0x7F,
+        0x81.toByte(), 0x80.toByte(), 0x12, 0x05, 0x01,
+        0x80.toByte(), 0x06, 0x01,
+        0x80.toByte(), 0x07, 0x04, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x04, 0x00, 0x00, 0x00, 0x01,
+        0x53, 0x3B,
+        0x7E
+    )
+
+    @Test
+    fun `chunked USB reads are reassembled before UA validation`() {
+        // Exactly the three reads observed on the live optical probe.
+        val chunks = ArrayDeque(
+            listOf(
+                liveChunkedUaFrame.copyOfRange(0, 4),
+                liveChunkedUaFrame.copyOfRange(4, 19),
+                liveChunkedUaFrame.copyOfRange(19, liveChunkedUaFrame.size)
+            )
+        )
+
+        var clock = 0L
+        val response = readHdlcUaResponse(
+            now = { clock },
+            read = {
+                clock += 10L
+                chunks.pollFirst() ?: ByteArray(0)
+            }
+        )
+
+        assertArrayEquals(
+            "all chunks must be collected into the original UA frame",
+            liveChunkedUaFrame,
+            response
+        )
+        assertTrue(
+            "the reassembled frame must pass UA validation",
+            containsHdlcUaFrame(response)
         )
     }
 }

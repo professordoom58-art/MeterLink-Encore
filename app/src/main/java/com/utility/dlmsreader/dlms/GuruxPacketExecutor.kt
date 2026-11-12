@@ -1,6 +1,7 @@
 package com.utility.dlmsreader.dlms
 
 import gurux.dlms.GXByteBuffer
+import gurux.dlms.GXDLMSClient
 import gurux.dlms.GXDLMSException
 import gurux.dlms.GXDateTime
 import gurux.dlms.GXReplyData
@@ -38,50 +39,16 @@ class GuruxPacketExecutor(
         reply: GXReplyData,
         maxRetriesOverride: Int? = null
     ) {
-        if (data.isEmpty()) return
-
-        var attempt = 0
-        val rd = GXByteBuffer()
-        val retries = maxRetriesOverride ?: maxRetries
-
-        while (attempt < retries) {
-            attempt++
-            // Clear both the receive buffer and the reply object so partial
-            // payload bytes from a timed-out frame cannot be spliced onto the
-            // next retry's response.
-            reply.clear()
-            reply.error = 0
-            rd.clear()
-
-            try {
-                transport.write(data, 1000)
-                val deadline = System.currentTimeMillis() + packetTimeoutMs
-
-                while (!client.getData(rd, reply)) {
-                    if (System.currentTimeMillis() >= deadline) {
-                        throw TimeoutException("Timeout waiting for DLMS packet (Attempt $attempt/$retries)")
-                    }
-
-                    val chunk = transport.readBytesRaw(128, 200)
-                    if (chunk.isNotEmpty()) {
-                        transport.log(TraceDirection.RX, chunk.toHexString())
-                        rd.set(chunk, 0, chunk.size)
-                    }
-                }
-
-                if (reply.error != 0) {
-                    throw GXDLMSException(reply.error.toInt())
-                }
-                return
-            } catch (e: GXDLMSException) {
-                throw e
-            } catch (e: Exception) {
-                if (attempt >= retries) {
-                    throw IOException("Failed after $retries attempts: ${e.message}", e)
-                }
-                delay(250)
-            }
-        }
+        readDlmsPacket(
+            client = client,
+            data = data,
+            reply = reply,
+            maxRetries = maxRetriesOverride ?: maxRetries,
+            packetTimeoutMs = packetTimeoutMs,
+            write = { frame, timeoutMs -> transport.write(frame, timeoutMs) },
+            read = { maxBytes, timeoutMs -> transport.readBytesRaw(maxBytes, timeoutMs) },
+            log = { hex -> transport.log(TraceDirection.RX, hex) }
+        )
     }
 
     suspend fun readDataBlock(data: Array<ByteArray>, reply: GXReplyData) {
@@ -181,5 +148,72 @@ class GuruxPacketExecutor(
                 else -> arrayOf(row)
             }
         }.toTypedArray()
+    }
+}
+
+/**
+ * Reads one DLMS response packet while preserving Gurux's multi-frame state.
+ *
+ * [GXReplyData] is not just a result holder: during a segmented HDLC response
+ * it carries the parsed command, block/more-data flags and the partial PDU.
+ * Clearing it before an RR continuation makes Gurux parse the continuation
+ * bytes as a brand-new APDU and throw "Invalid Command.".
+ */
+internal suspend fun readDlmsPacket(
+    client: GXDLMSClient,
+    data: ByteArray,
+    reply: GXReplyData,
+    maxRetries: Int,
+    packetTimeoutMs: Long,
+    write: (ByteArray, Int) -> Unit,
+    read: (Int, Int) -> ByteArray,
+    log: (String) -> Unit,
+    now: () -> Long = System::currentTimeMillis,
+    pause: suspend (Long) -> Unit = { delay(it) }
+) {
+    if (data.isEmpty()) return
+
+    var attempt = 0
+    val rd = GXByteBuffer()
+
+    while (attempt < maxRetries) {
+        attempt++
+        // Clear only when starting a new request. An in-flight segmented reply
+        // must keep its command, more-data flags and accumulated PDU bytes so
+        // the next RR continuation can be appended instead of re-parsed.
+        if (!reply.isMoreData) {
+            reply.clear()
+        }
+        reply.error = 0
+        rd.clear()
+
+        try {
+            write(data, 1000)
+            val deadline = now() + packetTimeoutMs
+
+            while (!client.getData(rd, reply)) {
+                if (now() >= deadline) {
+                    throw TimeoutException("Timeout waiting for DLMS packet (Attempt $attempt/$maxRetries)")
+                }
+
+                val chunk = read(128, 200)
+                if (chunk.isNotEmpty()) {
+                    log(chunk.toHexString())
+                    rd.set(chunk, 0, chunk.size)
+                }
+            }
+
+            if (reply.error != 0) {
+                throw GXDLMSException(reply.error.toInt())
+            }
+            return
+        } catch (e: GXDLMSException) {
+            throw e
+        } catch (e: Exception) {
+            if (attempt >= maxRetries) {
+                throw IOException("Failed after $maxRetries attempts: ${e.message}", e)
+            }
+            pause(250)
+        }
     }
 }

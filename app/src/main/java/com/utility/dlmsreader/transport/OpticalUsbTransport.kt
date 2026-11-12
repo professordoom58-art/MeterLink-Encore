@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicLong
@@ -246,7 +247,11 @@ class OpticalUsbTransport(private val context: Context) {
             write(snrmFrame, 1000)
             log(TraceDirection.TX, "Sent Direct HDLC SNRM (9600 8N1, Public Client 0x10)")
 
-            val response = readBytesRaw(64, 2000)
+            // The USB probe can split one HDLC frame across several reads
+            // (for example 7E A0 1E 41 / 03 73 ... / ... 53 3B 7E). Keep
+            // accumulating until the UA frame is complete instead of
+            // rejecting the first partial chunk.
+            val response = readHdlcUaResponse { readBytesRaw(64, 250) }
             if (containsHdlcUaFrame(response)) {
                 log(TraceDirection.RX, "Meter Responded Directly with HDLC UA: ${response.toHexString()}")
                 markMeterLinkEstablished()
@@ -407,6 +412,42 @@ class OpticalUsbTransport(private val context: Context) {
                 runCatching { context.unregisterReceiver(receiver) }
             }
         }
+}
+
+/**
+ * Reassembles chunked USB reads until a complete HDLC UA frame arrives, the
+ * response deadline expires, or [idleTimeoutMs] passes after the last byte.
+ *
+ * The first read can contain only a fragment such as `7E A0 1E 41`; it must
+ * not be rejected before the remaining chunks are collected.
+ */
+internal fun readHdlcUaResponse(
+    responseTimeoutMs: Long = 1500L,
+    idleTimeoutMs: Long = 250L,
+    now: () -> Long = System::currentTimeMillis,
+    read: () -> ByteArray
+): ByteArray {
+    val startedAt = now()
+    var lastByteAt: Long? = null
+    val response = ByteArrayOutputStream()
+
+    while (true) {
+        val chunk = read()
+        if (chunk.isNotEmpty()) {
+            response.write(chunk, 0, chunk.size)
+            lastByteAt = now()
+            val accumulated = response.toByteArray()
+            if (containsHdlcUaFrame(accumulated)) return accumulated
+        }
+
+        val current = now()
+        if (lastByteAt != null && current - lastByteAt >= idleTimeoutMs) {
+            return response.toByteArray()
+        }
+        if (current - startedAt >= responseTimeoutMs) {
+            return response.toByteArray()
+        }
+    }
 }
 
 /**
