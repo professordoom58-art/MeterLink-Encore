@@ -6,6 +6,7 @@
 
 # Gradle & Android Studio local files
 .gradle/
+.kotlin/
 .idea/
 build/
 app/build/

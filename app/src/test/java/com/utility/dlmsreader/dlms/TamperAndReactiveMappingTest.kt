@@ -138,6 +138,27 @@ class TamperAndReactiveMappingTest {
     }
 
     @Test
+    fun `runtime metadata unit symbols use conventional SI case`() {
+        val demand = mapOf(
+            "1.0.9.6.0.255" to ObisMetadata(
+                "Maximum Demand - Apparent (KVA)",
+                "KVA",
+                ObisCategory.INSTANTANEOUS
+            )
+        )
+        val demandDescriptor = Is15959Formatter.getObisLabelAndUnit("1.0.9.6.0.255", demand)
+        assertEquals("Maximum Demand - Apparent (kVA)", demandDescriptor.label)
+        assertEquals("kVA", demandDescriptor.unit)
+
+        val energy = mapOf(
+            "1.0.9.8.0.255" to ObisMetadata("Apparent Energy (KVAH)", "KVAH")
+        )
+        val energyDescriptor = Is15959Formatter.getObisLabelAndUnit("1.0.9.8.0.255", energy)
+        assertEquals("Apparent Energy (kVAh)", energyDescriptor.label)
+        assertEquals("kVAh", energyDescriptor.unit)
+    }
+
+    @Test
     fun `report with only errors is not treated as having data`() {
         val errorOnly = MeterDataReport(errors = listOf("Billing profile unavailable: read denied"))
         assertFalse(errorOnly.hasData)

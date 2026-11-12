@@ -37,6 +37,8 @@ data class ObisDescriptor(
 
 object Is15959Formatter {
     private val METER_TIME_ZONE: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")
+    private val UNIT_SYMBOL_PATTERN =
+        Regex("\\b(kva(?:rh|r|h)?|kw(?:h)?)\\b", RegexOption.IGNORE_CASE)
 
     // SimpleDateFormat and DecimalFormat are not thread-safe. Create a fresh
     // instance per call instead of sharing mutable formatters across readers,
@@ -138,7 +140,11 @@ object Is15959Formatter {
         meterMake: String? = null
     ): ObisDescriptor {
         Is15959Catalog.metadataFor(obis, runtimeMetadata, meterMake)?.let { metadata ->
-            return ObisDescriptor(metadata.label, metadata.unit, metadata.category)
+            return ObisDescriptor(
+                normalizeUnitSymbols(metadata.label),
+                normalizeUnitSymbols(metadata.unit),
+                metadata.category
+            )
         }
         return when {
         obis == "0.0.42.0.0.255" -> ObisDescriptor("Logical Device Name")
@@ -303,11 +309,31 @@ object Is15959Formatter {
         obis: String?,
         runtimeMetadata: Map<String, ObisMetadata>,
         meterMake: String?
-    ): String = unitSymbol(unit).ifEmpty {
-        Is15959Catalog.metadataFor(obis.orEmpty(), runtimeMetadata, meterMake)?.unit
-            ?.takeIf { it.isNotEmpty() }
-            ?: obisUnitSymbol(obis)
-    }
+    ): String = normalizeUnitSymbols(
+        unitSymbol(unit).ifEmpty {
+            Is15959Catalog.metadataFor(obis.orEmpty(), runtimeMetadata, meterMake)?.unit
+                ?.takeIf { it.isNotEmpty() }
+                ?: obisUnitSymbol(obis)
+        }
+    )
+
+    /**
+     * Vendor RES metadata occasionally stores units in upper case ("KVA").
+     * Keep the conventional SI prefixes lower case wherever metadata reaches
+     * reports, including Section 2 energy/MD rows.
+     */
+    private fun normalizeUnitSymbols(text: String): String =
+        UNIT_SYMBOL_PATTERN.replace(text) { match ->
+            when (match.value.lowercase(Locale.ENGLISH)) {
+                "kva" -> "kVA"
+                "kvah" -> "kVAh"
+                "kvar" -> "kVAr"
+                "kvarh" -> "kVArh"
+                "kw" -> "kW"
+                "kwh" -> "kWh"
+                else -> match.value
+            }
+        }
 
     private fun isEnergyOrPower(unit: DlmsUnit?, obis: String?): Boolean =
         unit in setOf(
