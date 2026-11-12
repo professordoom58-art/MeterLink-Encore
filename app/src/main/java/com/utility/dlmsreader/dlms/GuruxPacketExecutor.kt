@@ -237,15 +237,15 @@ class GuruxPacketExecutor(
         profile: GXDLMSProfileGeneric,
         start: GXDateTime,
         end: GXDateTime,
-        selector1Format: Selector1DateTimeFormat = Selector1DateTimeFormat.SMRS,
+        selector1Format: Selector1DateTimeFormat = Selector1DateTimeFormat.COSEM_WILDCARD,
         nativeDeviationMinutes: Int? = null,
         progressLabel: String? = null,
         expectedEntries: Int? = null,
         bytesPerEntry: Double = DEFAULT_BYTES_PER_ENTRY
     ): Array<Array<Any?>> {
         val generated = client.readRowsByRange(profile, start, end)
-        // Some IS 15959 meters require the exact Selector 1 timestamp format
-        // SMRS writes in Send_Read_Query_ld rather than Gurux's computed one.
+        // Some IS 15959 meters require the IS 15959 / IEC 62056-6-2 COSEM
+        // wildcard datetime encoding rather than Gurux's computed timestamps.
         val data = patchProfileRangeDatetimes(
             generated,
             format = selector1Format,
@@ -336,10 +336,11 @@ internal suspend fun readDlmsPacket(
  */
 enum class Selector1DateTimeFormat {
     /**
-     * SMRS `Send_Read_Query_ld`: day-of-week `0xFF`, hundredths `0x00`,
-     * deviation `0x8000` (COSEM unspecified wildcard), clock status `0xFF`.
+     * IS 15959 / IEC 62056-6-2 COSEM wildcard datetime encoding:
+     * day-of-week `0xFF`, hundredths `0x00`, unspecified deviation `0x8000`,
+     * clock status `0xFF`.
      */
-    SMRS,
+    COSEM_WILDCARD,
 
     /**
      * Firmware that wants the meter's raw positive IST deviation (`0x014A`),
@@ -352,16 +353,16 @@ enum class Selector1DateTimeFormat {
  * Patches the two Selector 1 COSEM datetime octet strings in a generated
  * `readRowsByRange` request before transmission.
  *
- * SMRS `Send_Read_Query_ld` builds the range descriptor with wildcard
- * day-of-week (`0xFF`), hundredths `0x00`, an unspecified COSEM deviation
- * (`0x8000`) and clock status `0xFF`. Gurux instead serializes a calculated
- * day-of-week, inverted deviation (`0xFEB6` for -330) and status `0x00`, which
- * L&T rejects with `denied(3)`. HDLC FCS is recalculated after patching so the
- * frame remains valid on the wire.
+ * IS 15959 / IEC 62056-6-2 COSEM wildcard datetime encoding builds the range
+ * descriptor with a wildcard day-of-week (`0xFF`), hundredths `0x00`, an
+ * unspecified COSEM deviation (`0x8000`) and clock status `0xFF`. Gurux instead
+ * serializes a calculated day-of-week, inverted deviation (`0xFEB6` for -330)
+ * and status `0x00`, which L&T rejects with `denied(3)`. HDLC FCS is
+ * recalculated after patching so the frame remains valid on the wire.
  */
 internal fun patchProfileRangeDatetimes(
     frames: Array<ByteArray>,
-    format: Selector1DateTimeFormat = Selector1DateTimeFormat.SMRS,
+    format: Selector1DateTimeFormat = Selector1DateTimeFormat.COSEM_WILDCARD,
     nativeDeviationMinutes: Int? = null
 ): Array<ByteArray> = frames.map { original ->
     val frame = original.copyOf()
@@ -381,19 +382,19 @@ internal fun patchProfileRangeDatetimes(
         }
         frame[dateTime + 4] = 0xFF.toByte()
         val deviation = when (format) {
-            Selector1DateTimeFormat.SMRS -> byteArrayOf(0x80.toByte(), 0x00)
+            Selector1DateTimeFormat.COSEM_WILDCARD -> byteArrayOf(0x80.toByte(), 0x00)
             Selector1DateTimeFormat.NATIVE_RTC ->
                 encodeDeviationMinutes(nativeDeviationMinutes ?: 0)
         }
         frame[dateTime + 8] = when (format) {
-            // SMRS uses 00 hundredths; the native-format retry uses wildcard FF.
-            Selector1DateTimeFormat.SMRS -> 0x00
+            // IS 15959 wildcard uses 00 hundredths; the native-format retry uses FF.
+            Selector1DateTimeFormat.COSEM_WILDCARD -> 0x00
             Selector1DateTimeFormat.NATIVE_RTC -> 0xFF.toByte()
         }
         frame[dateTime + 9] = deviation[0]
         frame[dateTime + 10] = deviation[1]
         frame[dateTime + 11] = when (format) {
-            Selector1DateTimeFormat.SMRS -> 0xFF.toByte()
+            Selector1DateTimeFormat.COSEM_WILDCARD -> 0xFF.toByte()
             Selector1DateTimeFormat.NATIVE_RTC -> 0x00
         }
         patched = true

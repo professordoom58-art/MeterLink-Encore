@@ -260,7 +260,7 @@ class MeterReportSerializerTest {
         assertEquals("29-Dec-2023 00:34:19", metadata.meterRtc)
         assertEquals("7,443.000 kWh", metadata.kwhReading)
         assertEquals(
-            "Daily: 181 rows | Block: 3601 rows | Tamper: 2",
+            "Daily: 181 rows | Block: 3601 rows | Tamper: 2 | 2 params | 2 fields | 3 regs",
             metadata.summaryStats
         )
     }

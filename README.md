@@ -44,7 +44,7 @@ Plug an optical probe onto the meter's IR port, point the phone at it, and Meter
 | Daily load | Daily load survey |
 | Tamper logs | Voltage, current, power-fail, transaction and other event logs |
 
-**Load survey ranges:** 2, 30, 45 or 75 days, or the full buffer. Each range keeps the most recent *N* recorded days, so a meter with long power-off gaps still returns 75 days of history even when the last 75 calendar days only contain a handful of entries. Block load uses the SMRS-compatible Selector 1 timestamp format and falls back to the full buffer when the recent calendar window contains too few powered-on days; daily load always reads its short full buffer. Entry-range reads remain a last resort. The exported report states which window and fallback were used, and after a full-buffer read, switching chips re-filters the cached rows instantly without another optical read.
+**Load survey ranges:** 2, 30, 45 or 75 days, or the full buffer. Each range keeps the most recent *N* recorded days, so a meter with long power-off gaps still returns 75 days of history even when the last 75 calendar days only contain a handful of entries. Block load uses the IS 15959 wildcard-compatible Selector 1 timestamp format and falls back to the full buffer when the recent calendar window contains too few powered-on days; daily load always reads its short full buffer. Entry-range reads remain a last resort. The exported report states which window and fallback were used, and after a full-buffer read, switching chips re-filters the cached rows instantly without another optical read.
 
 **Exports:**
 - **PDF** — formatted multi-page report with every section, plus a diagnostic summary.
