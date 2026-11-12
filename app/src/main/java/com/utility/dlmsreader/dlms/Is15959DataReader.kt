@@ -858,12 +858,12 @@ class Is15959DataReader(
             var needsFullBuffer = false
 
             if (isDailyLoad) {
-                // SMRS never uses selective access on Daily Load: one row per
-                // day is only ~10 blocks for a full buffer, and Selector 0
-                // guarantees every requested day survives power-off gaps.
+                // Indian utility meters read Daily Load via Selector 0 full buffer:
+                // one row per day is only ~10 blocks, and Selector 0 guarantees
+                // every requested day survives power-off gaps.
                 progress(
                     "Tier1 range: skipped for daily load " +
-                        "(SMRS reads Selector 0 full buffer)"
+                        "(requesting Selector 0 full buffer)"
                 )
                 entriesInUse = resolveEntriesInUse(profile)
                 knownEntriesInUse = entriesInUse
@@ -873,13 +873,13 @@ class Is15959DataReader(
                     try {
                         progress(
                             "Tier1 range: requesting ${MeterTime.format(startDate)} to " +
-                                "${MeterTime.format(endRangeDate)} (SMRS datetime format)"
+                                "${MeterTime.format(endRangeDate)} (COSEM wildcard)"
                         )
                         executor.readRowsByRange(
                             profile,
                             startDate,
                             endRangeDate,
-                            selector1Format = Selector1DateTimeFormat.SMRS
+                            selector1Format = Selector1DateTimeFormat.COSEM_WILDCARD
                         )
                         progress("Tier1 range: success(${profile.buffer.size})")
                         totalRows = maxOf(totalRows, profile.buffer.size)
@@ -887,7 +887,7 @@ class Is15959DataReader(
                     } catch (error: GXDLMSException) {
                         rangeTierDeniedProfiles += obis
                         progress("Tier1 range: denied(${error.errorCode})")
-                        // Some firmware rejects the SMRS 80 00 FF wildcards but
+                        // Some utility meter firmware rejects the 80 00 FF wildcards but
                         // accepts its raw +330 RTC deviation instead.
                         if (error.errorCode == 3 && !meterTimeConventionFlipped &&
                             !rangeVariantTierDeniedProfiles.contains(obis)
@@ -971,7 +971,7 @@ class Is15959DataReader(
                 }
             }
 
-            // SMRS never uses Selector 2 and L&T rejects it with denied(3), so
+            // IS 15959 meters do not use Selector 2 and L&T rejects it with denied(3), so
             // this is a last-resort path only after both range and full-buffer
             // reads failed to return any rows.
             if (!loaded && !entryTierDeniedProfiles.contains(obis)) {

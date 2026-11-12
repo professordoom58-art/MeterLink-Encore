@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!--
+        The Compose UI is always the light palette, so the system bars must stay
+        light with dark icons in every device night mode. Without the light
+        status-bar flags the window kept the platform default and Android drew
+        light icons over the white header, making the clock and battery invisible.
+    -->
+    <style name="Theme.MeterLink" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowFullscreen">false</item>
+        <item name="android:statusBarColor">@android:color/white</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+
+</resources>

@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import com.utility.dlmsreader.dlms.MeterDataReport
+import com.utility.dlmsreader.dlms.ProfileSection
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -34,6 +35,9 @@ data class MeterReadingMetadata(
     val kwhReading: String,
     val summaryStats: String
 )
+
+private const val SERIAL_OBIS = "0.0.96.1.0.255"
+private const val UNKNOWN_SERIAL = "Unknown"
 
 /** Identity value for an OBIS code, or an empty string when it was not read. */
 fun MeterDataReport.identityValue(obis: String): String =
@@ -65,12 +69,63 @@ private fun MeterDataReport.cumulativeReading(obis: String, fallbackUnit: String
     return listOf(reading, unit).filter { it.isNotBlank() }.joinToString(" ")
 }
 
+/**
+ * Values recorded in one profile row.
+ *
+ * An instantaneous snapshot keeps every parameter as a column of a single row,
+ * so this value count is the parameter count, not the row count.
+ */
+fun ProfileSection.recordedValueCount(): Int =
+    rows.firstOrNull()?.size?.takeIf { it > 0 } ?: columns.size
+
+/** Number of instantaneous parameters in the captured snapshot. */
+fun MeterDataReport.instantaneousParameterCount(): Int =
+    instantaneous?.recordedValueCount() ?: 0
+
+/**
+ * Nameplate field count for the summary card.
+ *
+ * Falls back to the identity rows when the meter exposes no nameplate profile.
+ */
+fun MeterDataReport.nameplateFieldCount(): Int =
+    identity?.nameplate?.recordedValueCount() ?: identity?.rows?.size ?: 0
+
 /** Compact one-line statistics for the saved-readings list. */
 fun MeterDataReport.summaryStats(): String = buildList {
     dailyLoad?.let { add("Daily: ${it.totalRows} rows") }
     blockLoad?.let { add("Block: ${it.totalRows} rows") }
     if (tamperEvents.isNotEmpty()) add("Tamper: ${tamperEvents.size}")
+    instantaneousParameterCount().takeIf { it > 0 }?.let { add("$it params") }
+    // Only the nameplate profile counts as nameplate fields; identity rows are
+    // separate values and must not be relabelled here.
+    (identity?.nameplate?.recordedValueCount() ?: 0).takeIf { it > 0 }
+        ?.let { add("$it fields") }
+    if (cumulativeEnergies.isNotEmpty()) add("${cumulativeEnergies.size} regs")
 }.joinToString(" | ").ifEmpty { "No profile rows" }
+
+/**
+ * Combines the newest stored report for a meter with [incoming] before saving.
+ *
+ * A module read only fills the sections it fetched, so storing a partial
+ * Instantaneous or Tamper read as-is would drop earlier sections such as a
+ * 3,600-row block-load buffer. Sections missing from [incoming] are carried over
+ * from [stored], while sections that were just read win. Reports that belong to
+ * a different serial number are never blended.
+ */
+fun mergeSavedReport(stored: MeterDataReport?, incoming: MeterDataReport): MeterDataReport {
+    if (stored == null) return incoming
+    val storedSerial = stored.identityValue(SERIAL_OBIS)
+    val incomingSerial = incoming.identityValue(SERIAL_OBIS)
+    if (storedSerial.isNotBlank() &&
+        incomingSerial.isNotBlank() &&
+        storedSerial != incomingSerial
+    ) {
+        return incoming
+    }
+    val merged = stored.merge(incoming)
+    // Errors accumulate across sessions; keep each distinct message once.
+    return merged.copy(errors = merged.errors.distinct())
+}
 
 /** Extracts the metadata columns stored alongside the compressed report. */
 fun MeterDataReport.toReadingMetadata(): MeterReadingMetadata = MeterReadingMetadata(
@@ -114,6 +169,9 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
         const val COL_RAW_REPORT = "raw_report_gzip"
 
         private const val SCANNED_AT_PATTERN = "dd-MMM-yyyy HH:mm:ss"
+
+        /** Newest-first history cap; older rows beyond this are pruned. */
+        const val MAX_SAVED_READINGS = 50
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -142,13 +200,23 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
         onCreate(db)
     }
 
-    /** Compresses and inserts a completed report, returning its row id. */
+    /**
+     * Compresses and inserts a completed report, returning its row id.
+     *
+     * The report is merged with the newest saved report for the same serial
+     * first, so a partial module read (Instantaneous, Tamper, ...) never wipes
+     * out sections captured by an earlier read. Every save is a new history row;
+     * only the newest [MAX_SAVED_READINGS] rows are kept.
+     */
     suspend fun insertReport(
         report: MeterDataReport,
         readType: String,
         scannedAtEpochMs: Long = System.currentTimeMillis()
     ): Long = withContext(Dispatchers.IO) {
-        val metadata = report.toReadingMetadata()
+        val db = writableDatabase
+        val incoming = report.toReadingMetadata()
+        val merged = mergeSavedReport(latestSavedReport(db, incoming.serialNumber), report)
+        val metadata = merged.toReadingMetadata()
         val scannedAt = SimpleDateFormat(SCANNED_AT_PATTERN, Locale.ENGLISH)
             .format(Date(scannedAtEpochMs))
         val values = ContentValues().apply {
@@ -161,9 +229,54 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
             put(COL_READ_TYPE, readType)
             put(COL_KWH, metadata.kwhReading)
             put(COL_SUMMARY, metadata.summaryStats)
-            put(COL_RAW_REPORT, MeterReportSerializer.toJsonBytesGzip(report))
+            put(COL_RAW_REPORT, MeterReportSerializer.toJsonBytesGzip(merged))
         }
-        writableDatabase.insertOrThrow(TABLE, null, values)
+        db.beginTransaction()
+        try {
+            val rowId = db.insertOrThrow(TABLE, null, values)
+            pruneOldReadings(db)
+            db.setTransactionSuccessful()
+            rowId
+        } finally {
+            db.endTransaction()
+        }
+    }
+
+    /** Newest saved report for [serialNumber], or null when the meter has none. */
+    private fun latestSavedReport(db: SQLiteDatabase, serialNumber: String): MeterDataReport? {
+        if (serialNumber.isBlank() || serialNumber == UNKNOWN_SERIAL) return null
+        val rowId = db.query(
+            TABLE,
+            arrayOf(COL_ID),
+            "$COL_SERIAL = ?",
+            arrayOf(serialNumber),
+            null,
+            null,
+            "$COL_SCANNED_AT_EPOCH DESC, $COL_ID DESC",
+            "1"
+        ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else null } ?: return null
+        return db.query(
+            TABLE,
+            arrayOf(COL_RAW_REPORT),
+            "$COL_ID = ?",
+            arrayOf(rowId.toString()),
+            null,
+            null,
+            null
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) return@use null
+            cursor.getBlob(0)?.let { MeterReportSerializer.fromJsonBytesGzip(it) }
+        }
+    }
+
+    /** Keeps the reading history bounded so partial reads cannot grow it forever. */
+    private fun pruneOldReadings(db: SQLiteDatabase) {
+        db.execSQL(
+            "DELETE FROM $TABLE WHERE $COL_ID NOT IN (" +
+                "SELECT $COL_ID FROM $TABLE " +
+                "ORDER BY $COL_SCANNED_AT_EPOCH DESC, $COL_ID DESC " +
+                "LIMIT $MAX_SAVED_READINGS)"
+        )
     }
 
     /** All saved readings, newest first, without touching the report BLOB. */

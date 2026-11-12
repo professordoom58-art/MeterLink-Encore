@@ -16,13 +16,13 @@ class CosemDateTimePatchTest {
     )
 
     @Test
-    fun `selector 1 datetimes match SMRS wildcard format`() {
+    fun `selector 1 datetimes match IS 15959 wildcard format`() {
         val patched = patchProfileRangeDatetimes(arrayOf(liveRangeApdu)).single()
         val first = firstDateTimeOffset(patched)
         val second = nextDateTimeOffset(patched, first + 12)
 
-        // SMRS Send_Read_Query_ld: FF day-of-week, 00 hundredths,
-        // 80 00 unspecified deviation, FF clock status.
+        // IS 15959 COSEM wildcard format: FF day-of-week, 00 hundredths, 80 00
+        // unspecified deviation, FF clock status.
         assertArrayEquals(
             hex("07 E7 0C 1A FF 00 00 00 00 80 00 FF"),
             patched.copyOfRange(first, first + 12)

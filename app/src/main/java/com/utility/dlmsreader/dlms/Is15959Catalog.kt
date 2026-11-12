@@ -194,8 +194,8 @@ object Is15959Catalog {
         "1.0.2.6.0.255" to ObisMetadata("MD Active Export - Cumulative (kW)", "kW", category = ObisCategory.BILLING),
         "1.0.10.6.0.255" to ObisMetadata("MD Apparent Export - Cumulative (kVA)", "kVA", category = ObisCategory.BILLING),
         "1.0.91.27.0.255" to ObisMetadata("Avg Neutral Current (A)", "A", category = ObisCategory.INSTANTANEOUS),
-        // SMRS defines no dedicated label/unit for this Secure-meter word; keep a
-        // neutral name rather than asserting an unverified meaning.
+        // IS 15959 defines no dedicated standard label/unit for this Secure-meter
+        // word; keep a neutral name rather than asserting an unverified meaning.
         "1.0.149.4.0.255" to ObisMetadata("Block Status / Supply Word", "", category = ObisCategory.LOAD_SURVEY),
         "1.0.5.29.0.255" to ObisMetadata("Block Reactive Energy Q1 (kVArh)", "kVArh", category = ObisCategory.LOAD_SURVEY),
         "1.0.6.29.0.255" to ObisMetadata("Block Reactive Energy Q2 (kVArh)", "kVArh", category = ObisCategory.LOAD_SURVEY),
@@ -248,8 +248,9 @@ object Is15959Catalog {
         "1.0.11.27.0.255" to ObisMetadata("Load Survey Object", category = ObisCategory.LOAD_SURVEY),
         "1.0.1.29.0.255" to ObisMetadata("Block Energy - Active Import (kWh)", "kWh", ObisCategory.LOAD_SURVEY),
         "1.0.9.29.0.255" to ObisMetadata("Block Energy - Apparent Import (kVAh)", "kVAh", ObisCategory.LOAD_SURVEY),
-        // SMRS exposes no vendor label for this L&T object; use a short header so
-        // it never wraps to four-plus lines in the PDF report.
+        // Manufacturer-specific register; no standard IS 15959 label exists for
+        // this L&T object, so use a short header that never wraps to four-plus
+        // lines in the PDF report.
         "1.0.128.8.98.255" to ObisMetadata(
             "Meter Temp / L&T Status",
             category = ObisCategory.VENDOR_SPECIFIC
