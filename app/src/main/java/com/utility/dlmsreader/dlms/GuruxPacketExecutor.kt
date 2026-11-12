@@ -93,7 +93,7 @@ class GuruxPacketExecutor(
             val expected = expectedEntries ?: 0
             val detail = if (totalBlocks != null) {
                 val percent = (blocksReceived * 100 / totalBlocks).coerceIn(0, 100)
-                "Block $blocksReceived of ~$totalBlocks (~$percent% of $expected entries, " +
+                "Block $blocksReceived / ~$totalBlocks ($expected entries, ~$percent%, " +
                     "~${estimatedEntries.coerceAtMost(expected)} received, " +
                     String.format(java.util.Locale.US, "%.1f", kb) + " KB)"
             } else {
@@ -210,19 +210,19 @@ class GuruxPacketExecutor(
         profile: GXDLMSProfileGeneric,
         start: GXDateTime,
         end: GXDateTime,
+        selector1Format: Selector1DateTimeFormat = Selector1DateTimeFormat.SMRS,
         nativeDeviationMinutes: Int? = null,
         progressLabel: String? = null,
         expectedEntries: Int? = null
     ): Array<Array<Any?>> {
         val generated = client.readRowsByRange(profile, start, end)
-        // Some IS 15959 meters require the profile timestamp format they
-        // actually store: wildcard day-of-week/hundredths and their native
-        // positive IST deviation (0x014A), not Gurux's inverted 0xFEB6.
-        val data = if (nativeDeviationMinutes == null) {
-            generated
-        } else {
-            patchProfileRangeDatetimes(generated, nativeDeviationMinutes)
-        }
+        // Some IS 15959 meters require the exact Selector 1 timestamp format
+        // SMRS writes in Send_Read_Query_ld rather than Gurux's computed one.
+        val data = patchProfileRangeDatetimes(
+            generated,
+            format = selector1Format,
+            nativeDeviationMinutes = nativeDeviationMinutes
+        )
         val reply = GXReplyData()
         readDataBlock(data, reply, progressLabel, expectedEntries)
         client.updateValue(profile, 2, reply.value)
@@ -304,26 +304,37 @@ internal suspend fun readDlmsPacket(
 }
 
 /**
+ * Selector 1 datetime layout variants seen in the field.
+ */
+enum class Selector1DateTimeFormat {
+    /**
+     * SMRS `Send_Read_Query_ld`: day-of-week `0xFF`, hundredths `0x00`,
+     * deviation `0x8000` (COSEM unspecified wildcard), clock status `0xFF`.
+     */
+    SMRS,
+
+    /**
+     * Firmware that wants the meter's raw positive IST deviation (`0x014A`),
+     * day-of-week `0xFF`, hundredths `0xFF` and clock status `0x00`.
+     */
+    NATIVE_RTC
+}
+
+/**
  * Patches the two Selector 1 COSEM datetime octet strings in a generated
  * `readRowsByRange` request before transmission.
  *
- * Indian IS 15959 meters commonly store profile timestamps with:
- *  - day-of-week `0xFF` (wildcard),
- *  - hundredths `0xFF` (wildcard),
- *  - their native RTC deviation (`0x014A` for +330), and
- *  - clock status `0x00`.
- *
- * Gurux may serialize the same range with a calculated day-of-week,
- * hundredths `0x00` and an inverted deviation (`0xFEB6` for -330), which the
- * meter rejects with `denied(3)`. HDLC FCS is recalculated after patching so
- * the frame remains valid on the wire.
+ * SMRS `Send_Read_Query_ld` builds the range descriptor with wildcard
+ * day-of-week (`0xFF`), hundredths `0x00`, an unspecified COSEM deviation
+ * (`0x8000`) and clock status `0xFF`. Gurux instead serializes a calculated
+ * day-of-week, inverted deviation (`0xFEB6` for -330) and status `0x00`, which
+ * L&T rejects with `denied(3)`. HDLC FCS is recalculated after patching so the
+ * frame remains valid on the wire.
  */
 internal fun patchProfileRangeDatetimes(
     frames: Array<ByteArray>,
-    deviationMinutes: Int?,
-    wildcardDayOfWeek: Boolean = true,
-    wildcardHundredths: Boolean = true,
-    clockStatus: Int = 0
+    format: Selector1DateTimeFormat = Selector1DateTimeFormat.SMRS,
+    nativeDeviationMinutes: Int? = null
 ): Array<ByteArray> = frames.map { original ->
     val frame = original.copyOf()
     var patched = false
@@ -340,14 +351,23 @@ internal fun patchProfileRangeDatetimes(
             offset++
             continue
         }
-        if (wildcardDayOfWeek) frame[dateTime + 4] = 0xFF.toByte()
-        if (wildcardHundredths) frame[dateTime + 8] = 0xFF.toByte()
-        if (deviationMinutes != null) {
-            val raw = encodeDeviationMinutes(deviationMinutes)
-            frame[dateTime + 9] = raw[0]
-            frame[dateTime + 10] = raw[1]
+        frame[dateTime + 4] = 0xFF.toByte()
+        val deviation = when (format) {
+            Selector1DateTimeFormat.SMRS -> byteArrayOf(0x80.toByte(), 0x00)
+            Selector1DateTimeFormat.NATIVE_RTC ->
+                encodeDeviationMinutes(nativeDeviationMinutes ?: 0)
         }
-        frame[dateTime + 11] = clockStatus.toByte()
+        frame[dateTime + 8] = when (format) {
+            // SMRS uses 00 hundredths; the native-format retry uses wildcard FF.
+            Selector1DateTimeFormat.SMRS -> 0x00
+            Selector1DateTimeFormat.NATIVE_RTC -> 0xFF.toByte()
+        }
+        frame[dateTime + 9] = deviation[0]
+        frame[dateTime + 10] = deviation[1]
+        frame[dateTime + 11] = when (format) {
+            Selector1DateTimeFormat.SMRS -> 0xFF.toByte()
+            Selector1DateTimeFormat.NATIVE_RTC -> 0x00
+        }
         patched = true
         offset += 14
     }

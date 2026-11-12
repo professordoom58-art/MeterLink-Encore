@@ -273,6 +273,10 @@ class LoadSurveyWindowTest {
         assertEquals(2, two.distinctDays)
         assertEquals(1, two.calendarWindowDays)
         assertTrue(two.usedGapFallback)
+        assertEquals(
+            listOf("2023-12-12", "2023-12-28"),
+            two.rows.mapNotNull { profileRowDay(it.firstOrNull()) }.distinct().sorted()
+        )
 
         val thirty = filtered(LoadSurveySelection.DAYS_30)
         assertEquals(1_439, thirty.keptRowCount)
