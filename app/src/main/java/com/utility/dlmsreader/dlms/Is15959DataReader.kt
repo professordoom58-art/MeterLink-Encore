@@ -760,6 +760,10 @@ class Is15959DataReader(
         // though the legacy daily-load default was 400. The maxEntries
         // parameter remains for source compatibility with older callers.
         val effectiveMax = selection.maxEntries
+        // Realistic payload per row: Block Load has 7 columns (~29 B), Daily
+        // Load has 3 (~23 B). Used only to estimate progress from bytes; the
+        // actual row count still comes from the meter's buffer.
+        val bytesPerEntry = if (isBlockLoad) 29.0 else 23.0
 
         var bestRows = 0
         var bestDays = 0
@@ -801,7 +805,8 @@ class Is15959DataReader(
                     profile,
                     2,
                     progressLabel = "$title (${selection.label})",
-                    expectedEntries = entriesInUse.takeIf { it > 0 }
+                    expectedEntries = entriesInUse.takeIf { it > 0 },
+                    bytesPerEntry = bytesPerEntry
                 )
                 progress("Tier3 full: success(${profile.buffer.size})")
                 fullBufferRead = true
@@ -823,7 +828,8 @@ class Is15959DataReader(
                         index = 1,
                         count = requestCount,
                         label = "$title (${selection.label})",
-                        expectedEntries = requestCount
+                        expectedEntries = requestCount,
+                        bytesPerEntry = bytesPerEntry
                     )
                     progress("Tier2 entry: success(${profile.buffer.size})")
                     totalRows = maxOf(entriesInUse, profile.buffer.size)
@@ -951,7 +957,8 @@ class Is15959DataReader(
                         2,
                         progressLabel = "$title (${selection.label})",
                         expectedEntries = entriesInUse.takeIf { it > 0 }
-                            ?: bestRows.takeIf { it > 0 }
+                            ?: bestRows.takeIf { it > 0 },
+                        bytesPerEntry = bytesPerEntry
                     )
                     progress("Tier3 full: success(${profile.buffer.size})")
                     fullBufferRead = true
@@ -992,7 +999,8 @@ class Is15959DataReader(
                         index = index,
                         count = requestCount,
                         label = "$title (${selection.label})",
-                        expectedEntries = requestCount
+                        expectedEntries = requestCount,
+                        bytesPerEntry = bytesPerEntry
                     )
                     progress("Tier2 entry: success(${profile.buffer.size})")
                     totalRows = maxOf(totalRows, entriesInUse, profile.buffer.size)
@@ -1093,7 +1101,8 @@ class Is15959DataReader(
         index: Int,
         count: Int,
         label: String,
-        expectedEntries: Int?
+        expectedEntries: Int?,
+        bytesPerEntry: Double = 29.0
     ): Array<Array<Any?>> {
         return try {
             executor.readRowsByEntry(
@@ -1101,7 +1110,8 @@ class Is15959DataReader(
                 index,
                 count,
                 progressLabel = label,
-                expectedEntries = expectedEntries
+                expectedEntries = expectedEntries,
+                bytesPerEntry = bytesPerEntry
             )
         } catch (error: GXDLMSException) {
             if (error.errorCode != 3) throw error
@@ -1118,7 +1128,8 @@ class Is15959DataReader(
                 1,
                 columnCount,
                 progressLabel = label,
-                expectedEntries = expectedEntries
+                expectedEntries = expectedEntries,
+                bytesPerEntry = bytesPerEntry
             )
         }
     }
