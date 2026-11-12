@@ -534,6 +534,11 @@ object MeterLinkXlsxWriter {
     }
 
     private fun appendTruncationNote(sheet: XlsxSheet, section: ProfileSection) {
+        if (section.windowNote.isNotBlank()) {
+            sheet.blank()
+            sheet.text(section.windowNote)
+            return
+        }
         if (section.rows.size >= section.totalRows) return
         val oldest = section.rows.firstOrNull()?.firstOrNull() ?: "N/A"
         sheet.blank()

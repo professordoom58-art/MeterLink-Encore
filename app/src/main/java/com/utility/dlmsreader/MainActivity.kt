@@ -39,6 +39,7 @@ import com.utility.dlmsreader.dlms.MeterLinkExcelExporter
 import com.utility.dlmsreader.dlms.MeterLinkPdfExporter
 import com.utility.dlmsreader.dlms.ProfileSection
 import com.utility.dlmsreader.dlms.VendorPasswordCatalog
+import com.utility.dlmsreader.dlms.applyLoadSurveySelectionToReport
 import com.utility.dlmsreader.transport.OpticalUsbTransport
 import com.utility.dlmsreader.transport.TraceDirection
 import com.utility.dlmsreader.transport.TraceLog
@@ -534,7 +535,18 @@ fun MeterReaderScreen(
                     LoadSurveyRangeChips(
                         selected = loadSurveySelection,
                         enabled = !isReading,
-                        onSelect = { loadSurveySelection = it }
+                        onSelect = { selection ->
+                            loadSurveySelection = selection
+                            // If a full buffer is already cached, re-filter the
+                            // in-memory rows immediately instead of forcing a
+                            // multi-minute optical re-read.
+                            if (!isReading) {
+                                meterReport = applyLoadSurveySelectionToReport(
+                                    meterReport,
+                                    selection
+                                )
+                            }
+                        }
                     )
                     OutlinedButton(
                         onClick = { runModule(MeterDataModule.TAMPER) },
@@ -831,7 +843,13 @@ private fun ProfileTable(section: ProfileSection) {
         return
     }
     ReportTable(section.columns.map { it.parameterName }, section.rows)
-    if (section.rows.size < section.totalRows) {
+    if (section.windowNote.isNotBlank()) {
+        Text(
+            section.windowNote,
+            color = Color.Gray,
+            fontSize = 10.sp
+        )
+    } else if (section.rows.size < section.totalRows) {
         Text(
             "Showing ${section.rows.size} of ${section.totalRows} entries (oldest shown: ${section.rows.firstOrNull()?.firstOrNull() ?: "N/A"})",
             color = Color.Gray,
