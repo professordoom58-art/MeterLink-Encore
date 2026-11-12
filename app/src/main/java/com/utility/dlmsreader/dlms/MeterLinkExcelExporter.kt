@@ -558,6 +558,15 @@ class MeterLinkExcelExporter(private val context: Context) {
     companion object {
         const val MIME_TYPE =
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+        /**
+         * Writes the exact workbook produced by [export] without the Android
+         * file/share plumbing, so the saved-report round trip can be verified
+         * in JVM unit tests.
+         */
+        fun writeWorkbook(report: MeterDataReport, output: java.io.OutputStream) {
+            MeterLinkXlsxWriter.write(report, output)
+        }
     }
 
     fun export(report: MeterDataReport): File {
@@ -573,7 +582,7 @@ class MeterLinkExcelExporter(private val context: Context) {
             ?: context.filesDir
         directory.mkdirs()
         val file = File(directory, "MeterLink_Report_${serial}_$stamp.xlsx")
-        file.outputStream().use { out -> MeterLinkXlsxWriter.write(report, out) }
+        file.outputStream().use { out -> writeWorkbook(report, out) }
         return file
     }
 
