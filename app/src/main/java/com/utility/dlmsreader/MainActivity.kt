@@ -428,12 +428,16 @@ fun MeterReaderScreen(
                 onHistory = { showHistoryDialog = true },
                 onAbout = { showAboutDialog = true }
             )
-        }
+        },
+        // The custom header and content apply system-bar insets explicitly, so
+        // Scaffold must not add its own copy (that would double-pad on API 35+).
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
     ) { innerPadding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
+                .navigationBarsPadding()
                 .padding(horizontal = 16.dp)
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -794,6 +798,30 @@ private fun savedReadingSubtitle(reading: SavedReadingSummary): String =
         .filter { it.isNotEmpty() && !it.equals("N/A", ignoreCase = true) }
         .joinToString(" • ")
 
+private val ScanNegativeMarkers = listOf(
+    "no ", "not ", "none", "error", "fail", "denied", "disconnect"
+)
+private val ScanHealthyMarkers = listOf("ready", "link", "established", "connected")
+private val ScanDetectedMarkers = listOf("detected", "cable")
+
+/**
+ * Dot colour for the SCAN USB pill.
+ *
+ * Negative/error wording is matched first: "No USB Optical Probe Detected"
+ * contains both "no " and "detected", and "Cable Connected, but No Meter
+ * Response" contains both "cable" and "connected", so a positive-first match
+ * would paint a disconnected probe amber or green.
+ */
+internal fun scanUsbDotColor(probeStatus: String): Color {
+    val status = probeStatus.lowercase(Locale.US)
+    return when {
+        ScanNegativeMarkers.any(status::contains) -> Color(0xFFEF4444)
+        ScanHealthyMarkers.any(status::contains) -> Color(0xFF10B981)
+        ScanDetectedMarkers.any(status::contains) -> Color(0xFFF59E0B)
+        else -> Color(0xFFEF4444)
+    }
+}
+
 /** Unified landing header: wordmark, beta pill, USB scan status, and overflow. */
 @Composable
 private fun LandingHeader(
@@ -803,22 +831,13 @@ private fun LandingHeader(
     onHistory: () -> Unit,
     onAbout: () -> Unit
 ) {
-    val dotColor = when {
-        probeStatus.contains("No Meter", ignoreCase = true) ||
-            probeStatus.contains("No Optical", ignoreCase = true) ||
-            probeStatus.contains("Disconnected", ignoreCase = true) -> Color(0xFFEF4444)
-        probeStatus.contains("Ready", ignoreCase = true) ||
-            probeStatus.contains("Link", ignoreCase = true) ||
-            probeStatus.contains("Connected", ignoreCase = true) -> Color(0xFF10B981)
-        probeStatus.contains("Detected", ignoreCase = true) ||
-            probeStatus.contains("USB", ignoreCase = true) -> Color(0xFFF59E0B)
-        else -> Color(0xFFEF4444)
-    }
+    val dotColor = scanUsbDotColor(probeStatus)
 
     Surface(color = Color(0xFFF8FAFC)) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
