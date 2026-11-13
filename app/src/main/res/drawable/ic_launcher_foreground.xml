@@ -5,62 +5,32 @@
     android:viewportWidth="108"
     android:viewportHeight="108">
     <group
-        android:scaleX="0.67"
-        android:scaleY="0.67"
-        android:translateX="25.19"
-        android:translateY="21.84">
-        <!-- White meter body fill -->
+        android:pivotX="54"
+        android:pivotY="54"
+        android:rotation="-45">
+        <!-- Left link ring -->
         <path
-            android:fillColor="#FFFFFF"
-            android:pathData="M23,11 H55 A11,11 0 0 1 66,22 V74 A11,11 0 0 1 55,85 H23 A11,11 0 0 1 12,74 V22 A11,11 0 0 1 23,11 Z" />
-        <!-- Meter outer outline -->
-        <path
-            android:strokeColor="#CBD5E1"
-            android:strokeWidth="4"
+            android:fillColor="#00000000"
+            android:pathData="M34,37 H25 C17.27,37 11,43.27 11,51 V55 C11,62.73 17.27,69 25,69 H34 C41.73,69 48,62.73 48,55 V51 C48,43.27 41.73,37 34,37 Z"
+            android:strokeColor="#1D4ED8"
             android:strokeLineCap="round"
             android:strokeLineJoin="round"
-            android:pathData="M23,11 H55 A11,11 0 0 1 66,22 V74 A11,11 0 0 1 55,85 H23 A11,11 0 0 1 12,74 V22 A11,11 0 0 1 23,11 Z" />
-        <!-- LCD screen frame -->
+            android:strokeWidth="8" />
+        <!-- White knockout keeps the right ring visually on top at the crossing -->
         <path
-            android:strokeColor="#3FB950"
-            android:strokeWidth="3"
+            android:fillColor="#00000000"
+            android:pathData="M64,37 H55 C47.27,37 41,43.27 41,51 V55 C41,62.73 47.27,69 55,69 H64 C71.73,69 78,62.73 78,55 V51 C78,43.27 71.73,37 64,37 Z"
+            android:strokeColor="#FFFFFF"
             android:strokeLineCap="round"
             android:strokeLineJoin="round"
-            android:pathData="M25,23 H53 A3,3 0 0 1 56,26 V37 A3,3 0 0 1 53,40 H25 A3,3 0 0 1 22,37 V26 A3,3 0 0 1 25,23 Z" />
-        <!-- LCD screen dashed line -->
+            android:strokeWidth="16" />
+        <!-- Right link ring -->
         <path
-            android:strokeColor="#3FB950"
-            android:strokeWidth="2.5"
+            android:fillColor="#00000000"
+            android:pathData="M64,37 H55 C47.27,37 41,43.27 41,51 V55 C41,62.73 47.27,69 55,69 H64 C71.73,69 78,62.73 78,55 V51 C78,43.27 71.73,37 64,37 Z"
+            android:strokeColor="#1D4ED8"
             android:strokeLineCap="round"
             android:strokeLineJoin="round"
-            android:pathData="M28,31h5 M37,31h5 M46,31h4" />
-        <!-- Push button / optical flap -->
-        <path
-            android:strokeColor="#8B949E"
-            android:strokeWidth="3"
-            android:strokeLineCap="round"
-            android:strokeLineJoin="round"
-            android:pathData="M23,51h13" />
-        <!-- Optical IR port circle -->
-        <path
-            android:strokeColor="#3FB950"
-            android:strokeWidth="3"
-            android:strokeLineCap="round"
-            android:strokeLineJoin="round"
-            android:pathData="M48,55 A5,5 0 1,0 48,65 A5,5 0 1,0 48,55 Z" />
-        <!-- Optical communication wave - inner arc -->
-        <path
-            android:strokeColor="#3FB950"
-            android:strokeWidth="3"
-            android:strokeLineCap="round"
-            android:strokeLineJoin="round"
-            android:pathData="M59,52 A11,11 0 0,1 59,68" />
-        <!-- Optical communication wave - outer arc -->
-        <path
-            android:strokeColor="#3FB950"
-            android:strokeWidth="3"
-            android:strokeLineCap="round"
-            android:strokeLineJoin="round"
-            android:pathData="M67,46 A19,19 0 0,1 67,74" />
+            android:strokeWidth="8" />
     </group>
 </vector>
