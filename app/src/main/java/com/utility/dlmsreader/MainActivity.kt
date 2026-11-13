@@ -1257,39 +1257,55 @@ private fun AboutAppDialog(onDismiss: () -> Unit) {
                 Spacer(Modifier.height(4.dp))
                 Text(
                     "MeterLink - DLMS meter reader [BETA]",
-                    fontSize = 14.sp,
+                    fontSize = 13.5.sp,
                     fontWeight = FontWeight.SemiBold,
                     color = Cobalt
                 )
                 Spacer(Modifier.height(16.dp))
                 Text(
                     "Features:",
+                    modifier = Modifier.padding(bottom = 8.dp),
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
                     color = Ink
                 )
-                Spacer(Modifier.height(10.dp))
                 Column(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    AboutFeature("Auto-detect - USB optical probe")
-                    AboutFeature(
-                        "Supported Vendors -\n" +
-                            "L&T/Schneider, Genus, Secure, HPL & Avon\n" +
-                            "(custom lls password also supported for unknown vendors)"
+                    AboutBullet(
+                        title = "Auto-detect:",
+                        description = "USB optical probe"
                     )
-                    AboutFeature(
-                        "Supported Readings -\n" +
-                            "Identity, Cumulative energy & MD, Instantaneous, Billing history, " +
-                            "Block Load, Daily load & Tamper logs"
+                    AboutBullet(
+                        title = "Supported Vendors:",
+                        subItems = listOf(
+                            "L&T / Schneider, Genus, Secure, HPL & Avon",
+                            "Custom LLS password supported for unknown vendors"
+                        )
                     )
-                    AboutFeature("Export supported in Excel format (.xlsx) or PDF format.")
-                    AboutFeature(
-                        "Local save supported, even if you delete the app, your data is safe."
+                    AboutBullet(
+                        title = "Supported Readings:",
+                        subItems = listOf(
+                            "Identity, Cumulative energy & MD, Instantaneous",
+                            "Billing history, Block Load, Daily load & Tamper logs"
+                        )
+                    )
+                    AboutBullet(
+                        title = "Export Formats:",
+                        description = "Excel (.xlsx) & PDF report format"
+                    )
+                    AboutBullet(
+                        title = "Persistent Local Save:",
+                        description = "Even if you delete the app, your data is safe"
                     )
                 }
-                Spacer(Modifier.height(20.dp))
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFFE2E8F0)
+                )
+                Spacer(Modifier.height(14.dp))
                 Text(
                     "Creator",
                     fontSize = 13.sp,
@@ -1329,16 +1345,71 @@ private fun AboutAppDialog(onDismiss: () -> Unit) {
     }
 }
 
-/** One left-aligned feature paragraph inside the About dialog. */
+/**
+ * Primary feature bullet: a cobalt glyph plus a bold title, optional inline
+ * description, and any indented sub-bullets beneath it.
+ */
 @Composable
-private fun AboutFeature(text: String) {
-    Text(
-        text,
+private fun AboutBullet(
+    title: String,
+    description: String? = null,
+    subItems: List<String> = emptyList()
+) {
+    Row(
         modifier = Modifier.fillMaxWidth(),
-        fontSize = 13.sp,
-        lineHeight = 19.sp,
-        color = Color(0xFF334155)
-    )
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            "•",
+            modifier = Modifier.width(14.dp),
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+            fontWeight = FontWeight.Bold,
+            color = Cobalt
+        )
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = buildAnnotatedString {
+                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = Ink)) {
+                        append(title)
+                    }
+                    if (description != null) {
+                        append(" ")
+                        withStyle(SpanStyle(color = Color(0xFF334155))) {
+                            append(description)
+                        }
+                    }
+                },
+                fontSize = 13.sp,
+                lineHeight = 18.sp
+            )
+            subItems.forEach { item -> AboutSubBullet(item) }
+        }
+    }
+}
+
+/** Indented secondary bullet used for the vendor and reading lists. */
+@Composable
+private fun AboutSubBullet(text: String) {
+    Row(modifier = Modifier.padding(start = 14.dp, top = 2.dp)) {
+        Text(
+            "◦",
+            modifier = Modifier.width(12.dp),
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+            color = Color(0xFF64748B)
+        )
+        Text(
+            text,
+            modifier = Modifier.weight(1f),
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+            color = Color(0xFF334155)
+        )
+    }
 }
 
 @Composable
