@@ -28,6 +28,11 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Test and Compile MeterLink APK
+        env:
+          # Drives versionCode = 100 + run number, giving every build a
+          # strictly higher code while the committed keystore keeps the
+          # signature stable for in-place upgrades.
+          GITHUB_RUN_NUMBER: ${{ github.run_number }}
         run: ./gradlew testDebugUnitTest assembleRelease
 
       - name: Stamp MeterLink APK

@@ -10,6 +10,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,6 +33,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,11 +43,13 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import com.utility.dlmsreader.dlms.ConnectionParams
 import com.utility.dlmsreader.dlms.DlmsMeterEngine
+import com.utility.dlmsreader.dlms.ExtractionProgress
 import com.utility.dlmsreader.dlms.LoadSurveySelection
 import com.utility.dlmsreader.dlms.MeterDataModule
 import com.utility.dlmsreader.dlms.MeterDataReport
 import com.utility.dlmsreader.dlms.MeterLinkExcelExporter
 import com.utility.dlmsreader.dlms.MeterLinkPdfExporter
+import com.utility.dlmsreader.dlms.ProfileSection
 import com.utility.dlmsreader.dlms.VendorPasswordCatalog
 import com.utility.dlmsreader.dlms.applyLoadSurveySelectionToReport
 import com.utility.dlmsreader.storage.MeterReadingDatabase
@@ -75,6 +79,16 @@ private val Hairline = Color(0xFFE2E8F0)
 
 /** Landing-screen feature flag for the live hex console; collection/export stay active. */
 private const val SHOW_LIVE_PROTOCOL_TRACE = false
+
+/** The six tappable summary sections and their compact card labels. */
+private enum class PreviewSection(val shortLabel: String, val title: String) {
+    NAMEPLATE("Nameplate", "Nameplate"),
+    INSTANTANEOUS("Instant", "Instantaneous Parameters"),
+    BILLING("Billing", "Billing History"),
+    DAILY("Daily", "Daily Load Survey"),
+    BLOCK("Block", "Block Load Survey"),
+    TAMPER("Tamper", "Tamper Events")
+}
 
 class MainActivity : ComponentActivity() {
 
@@ -173,6 +187,11 @@ fun MeterReaderScreen(
     var selectedSavedReading by remember { mutableStateOf<SavedReadingSummary?>(null) }
     var showHistoryDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
+    var previewSection by remember { mutableStateOf<PreviewSection?>(null) }
+    var selectedSavedReport by remember { mutableStateOf<MeterDataReport?>(null) }
+    var savedPreviewSection by remember { mutableStateOf<PreviewSection?>(null) }
+    var savedPreviewReport by remember { mutableStateOf<MeterDataReport?>(null) }
+    var savedPreviewTitle by remember { mutableStateOf("") }
     val traceLogs = remember { mutableStateListOf<TraceLog>() }
 
     fun readTypeLabel(module: MeterDataModule): String = when (module) {
@@ -187,10 +206,28 @@ fun MeterReaderScreen(
             }
     }
 
+    /** Section label shown at 0% while the optical session is being opened. */
+    fun moduleProgressStart(module: MeterDataModule): String = when (module) {
+        MeterDataModule.IDENTITY, MeterDataModule.ALL ->
+            ExtractionProgress.format(ExtractionProgress.IDENTITY, 0)
+        MeterDataModule.ENERGY ->
+            ExtractionProgress.format(ExtractionProgress.ENERGY, 0)
+        MeterDataModule.INSTANTANEOUS ->
+            ExtractionProgress.format(ExtractionProgress.INSTANTANEOUS, 0)
+        MeterDataModule.BILLING ->
+            ExtractionProgress.format(ExtractionProgress.BILLING, 0)
+        MeterDataModule.BLOCK_LOAD ->
+            ExtractionProgress.format(ExtractionProgress.BLOCK_LOAD, 0)
+        MeterDataModule.DAILY_LOAD ->
+            ExtractionProgress.format(ExtractionProgress.DAILY_LOAD, 0)
+        MeterDataModule.TAMPER ->
+            ExtractionProgress.format(ExtractionProgress.TAMPER, 0)
+    }
+
     fun runModule(module: MeterDataModule) {
         isReading = true
         errorMessage = null
-        progressText = "Starting ${module.name.lowercase(Locale.US)}..."
+        progressText = moduleProgressStart(module)
         reportStatusText = null
         val readType = readTypeLabel(module)
         if (module == MeterDataModule.ALL) {
@@ -412,8 +449,34 @@ fun MeterReaderScreen(
         }
     }
 
+    fun previewSavedSection(reading: SavedReadingSummary, section: PreviewSection) {
+        scope.launch {
+            val report = withContext(Dispatchers.IO) {
+                readingDatabase.loadReport(reading.id)
+            }
+            if (report == null) {
+                errorMessage = "Saved reading #${reading.id} no longer exists."
+                return@launch
+            }
+            savedPreviewReport = applyLoadSurveySelectionToReport(report, loadSurveySelection)
+            savedPreviewTitle = "Meter #${reading.serialNumber}"
+            savedPreviewSection = section
+        }
+    }
+
     LaunchedEffect(Unit) {
         savedReadings = readingDatabase.listSummaries()
+    }
+
+    // Load the full report when a saved reading is opened so its section
+    // boxes and preview dialog show real rows instead of summary text.
+    LaunchedEffect(selectedSavedReading?.id) {
+        val reading = selectedSavedReading
+        selectedSavedReport = if (reading == null) {
+            null
+        } else {
+            withContext(Dispatchers.IO) { readingDatabase.loadReport(reading.id) }
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -572,8 +635,12 @@ fun MeterReaderScreen(
                                     .height(3.dp)
                                     .clip(RoundedCornerShape(50))
                                 if (isReading) {
-                                    // Indeterminate sweep while a module is streaming.
+                                    // Smooth determinate fill from the section
+                                    // percentage in the banner (0%..100%).
+                                    val progressPercent =
+                                        ExtractionProgress.parsePercent(progressText) ?: 0
                                     LinearProgressIndicator(
+                                        progress = { progressPercent / 100f },
                                         modifier = barShape,
                                         color = Cobalt,
                                         trackColor = Color(0xFFDBEAFE)
@@ -670,7 +737,8 @@ fun MeterReaderScreen(
                     lastHexLogName = lastHexLogFile?.name,
                     onExportPdf = ::exportReport,
                     onExportExcel = ::exportExcel,
-                    onExportHex = ::exportHexLog
+                    onExportHex = ::exportHexLog,
+                    onSectionClick = { previewSection = it }
                 )
             }
 
@@ -680,7 +748,8 @@ fun MeterReaderScreen(
                 onSelect = {
                     errorMessage = null
                     selectedSavedReading = it
-                }
+                },
+                onSectionClick = ::previewSavedSection
             )
 
             if (showHistoryDialog) {
@@ -701,6 +770,7 @@ fun MeterReaderScreen(
             selectedSavedReading?.let { reading ->
                 SavedReadingDialog(
                     reading = reading,
+                    report = selectedSavedReport,
                     busy = isReading,
                     error = errorMessage,
                     onDismiss = { if (!isReading) selectedSavedReading = null },
@@ -712,6 +782,29 @@ fun MeterReaderScreen(
                     },
                     onDelete = { deleteSavedReading(reading) }
                 )
+            }
+
+            previewSection?.let { section ->
+                SectionDataPreviewDialog(
+                    section = section,
+                    report = meterReport,
+                    subtitle = "Meter #${meterReport.identityValue("0.0.96.1.0.255").ifBlank { "UNKNOWN" }}",
+                    onDismiss = { previewSection = null }
+                )
+            }
+
+            savedPreviewSection?.let { section ->
+                savedPreviewReport?.let { report ->
+                    SectionDataPreviewDialog(
+                        section = section,
+                        report = report,
+                        subtitle = savedPreviewTitle,
+                        onDismiss = {
+                            savedPreviewSection = null
+                            savedPreviewReport = null
+                        }
+                    )
+                }
             }
 
             // 3. Live Hex Trace Console (kept for field diagnostics; off by default).
@@ -811,13 +904,6 @@ private fun sameMeterSerial(existing: MeterDataReport, incoming: MeterDataReport
         incomingSerial.isBlank() ||
         existingSerial == incomingSerial
 }
-
-/** Subtitle without empty/"N/A" segments, e.g. for a module-only saved read. */
-private fun savedReadingSubtitle(reading: SavedReadingSummary): String =
-    listOf(reading.readType, reading.kwhReading, reading.summaryStats)
-        .map { it.trim() }
-        .filter { it.isNotEmpty() && !it.equals("N/A", ignoreCase = true) }
-        .joinToString(" • ")
 
 private val ScanNegativeMarkers = listOf(
     "no ", "not ", "none", "error", "fail", "denied", "disconnect"
@@ -992,6 +1078,7 @@ private fun MeterLinkDialog(
     icon: ImageVector,
     onDismiss: () -> Unit,
     dismissEnabled: Boolean = true,
+    bodyMaxHeight: Dp = 440.dp,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Dialog(
@@ -1033,10 +1120,10 @@ private fun MeterLinkDialog(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 440.dp)
+                        .heightIn(max = bodyMaxHeight)
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 20.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                     content = content
                 )
                 Row(
@@ -1077,7 +1164,7 @@ private fun SavedReadingsHistoryDialog(
     ) {
         if (readings.isEmpty()) {
             Text(
-                "No saved readings yet. Every completed read is stored on this device automatically.",
+                "No saved readings yet.",
                 color = Color.Gray,
                 fontSize = 12.sp
             )
@@ -1100,15 +1187,6 @@ private fun SavedReadingsHistoryDialog(
                             fontWeight = FontWeight.SemiBold,
                             fontSize = 13.sp
                         )
-                        savedReadingSubtitle(reading).takeIf { it.isNotBlank() }?.let {
-                            Text(
-                                it,
-                                color = Color.Gray,
-                                fontSize = 11.sp,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
                     }
                 }
             }
@@ -1312,7 +1390,8 @@ private fun MeterReadingSummaryCard(
     lastHexLogName: String?,
     onExportPdf: () -> Unit,
     onExportExcel: () -> Unit,
-    onExportHex: () -> Unit
+    onExportHex: () -> Unit,
+    onSectionClick: (PreviewSection) -> Unit
 ) {
     val serial = report.identityValue("0.0.96.1.0.255").ifBlank { "UNKNOWN" }
     val ldn = report.identityValue("0.0.42.0.0.255")
@@ -1320,19 +1399,13 @@ private fun MeterReadingSummaryCard(
     val activeEnergy = report.energyReading("1.0.1.8.0.255")
     val apparentEnergy = report.energyReading("1.0.9.8.0.255")
 
-    val instParamCount = report.instantaneousParameterCount()
-    val nameplate = report.nameplateFieldCount()
-    val billing = report.billing?.rows?.size ?: 0
-    val daily = report.dailyLoad?.rows?.size ?: 0
-    val block = report.blockLoad?.rows?.size ?: 0
-    val tamper = report.tamperEvents.size
-    val sectionRows = listOf(
-        listOf("Nameplate" to nameplate, "Instantaneous" to instParamCount, "Billing" to billing),
-        listOf("Daily" to daily, "Block" to block, "Tamper" to tamper)
-    )
-    val windowNotes = listOfNotNull(
-        report.blockLoad?.takeIf { it.windowNote.isNotBlank() }?.let { "Block: ${it.windowNote}" },
-        report.dailyLoad?.takeIf { it.windowNote.isNotBlank() }?.let { "Daily: ${it.windowNote}" }
+    val sections = listOf(
+        PreviewSection.NAMEPLATE to report.nameplateFieldCount(),
+        PreviewSection.INSTANTANEOUS to report.instantaneousParameterCount(),
+        PreviewSection.BILLING to (report.billing?.rows?.size ?: 0),
+        PreviewSection.DAILY to (report.dailyLoad?.rows?.size ?: 0),
+        PreviewSection.BLOCK to (report.blockLoad?.rows?.size ?: 0),
+        PreviewSection.TAMPER to report.tamperEvents.size
     )
 
     Card(
@@ -1414,29 +1487,23 @@ private fun MeterReadingSummaryCard(
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                sectionRows.forEach { row ->
+                sections.chunked(3).forEach { row ->
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        row.forEach { (label, count) ->
+                        row.forEach { (section, count) ->
                             SectionCountBadge(
-                                label = label,
+                                label = section.shortLabel,
                                 count = count,
-                                modifier = Modifier.weight(1f)
+                                modifier = Modifier.weight(1f),
+                                onClick = { onSectionClick(section) }
                             )
                         }
                     }
                 }
             }
 
-            if (windowNotes.isNotEmpty()) {
-                Text(
-                    windowNotes.joinToString("\n"),
-                    fontSize = 10.sp,
-                    color = Muted
-                )
-            }
             report.errors.take(3).forEach {
                 Text(it, color = Color(0xFFB45309), fontSize = 10.sp)
             }
@@ -1561,13 +1628,18 @@ private fun EnergyReadout(
 private fun SectionCountBadge(
     label: String,
     count: Int,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null
 ) {
     Surface(
-        modifier = modifier,
-        color = TileFill,
+        modifier = modifier
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        color = if (onClick != null) Color(0xFFF8FAFC) else TileFill,
         shape = RoundedCornerShape(8.dp),
-        border = BorderStroke(1.dp, Hairline)
+        border = BorderStroke(
+            1.dp,
+            if (onClick != null) Color(0xFFBFDBFE) else Hairline
+        )
     ) {
         Row(
             modifier = Modifier
@@ -1579,8 +1651,9 @@ private fun SectionCountBadge(
             Text(
                 label,
                 modifier = Modifier.weight(1f),
-                fontSize = 11.sp,
-                color = Muted,
+                fontSize = 10.5.sp,
+                color = if (onClick != null) Cobalt else Muted,
+                fontWeight = if (onClick != null) FontWeight.SemiBold else FontWeight.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -1593,6 +1666,70 @@ private fun SectionCountBadge(
             )
         }
     }
+}
+
+/** Energy strip + tappable section grid shared by saved cards and the dialog. */
+@Composable
+private fun SavedReadingMetrics(
+    activeEnergy: String,
+    apparentEnergy: String,
+    nameplate: Int,
+    instantaneous: Int,
+    billing: Int,
+    daily: Int,
+    block: Int,
+    tamper: Int,
+    onSectionClick: (PreviewSection) -> Unit
+) {
+    val sections = listOf(
+        PreviewSection.NAMEPLATE to nameplate,
+        PreviewSection.INSTANTANEOUS to instantaneous,
+        PreviewSection.BILLING to billing,
+        PreviewSection.DAILY to daily,
+        PreviewSection.BLOCK to block,
+        PreviewSection.TAMPER to tamper
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            EnergyReadout(
+                label = "ACTIVE ENERGY",
+                value = activeEnergy,
+                unit = "kWh",
+                modifier = Modifier.weight(1f)
+            )
+            EnergyReadout(
+                label = "APPARENT ENERGY",
+                value = apparentEnergy,
+                unit = "kVAh",
+                modifier = Modifier.weight(1f)
+            )
+        }
+        sections.chunked(3).forEach { row ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                row.forEach { (section, count) ->
+                    SectionCountBadge(
+                        label = section.shortLabel,
+                        count = count,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onSectionClick(section) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Strips the stored unit suffix so the readout can render `value + unit` once. */
+private fun energyAmount(reading: String, unit: String): String {
+    val trimmed = reading.trim()
+    val withoutUnit = trimmed.removeSuffix(unit).trim()
+    return withoutUnit.ifBlank { "—" }
 }
 
 private fun MeterDataReport.energyReading(obis: String): String =
@@ -1615,7 +1752,8 @@ private fun manufacturerTag(manufacturer: String): String {
 private fun SavedReadingsCard(
     readings: List<SavedReadingSummary>,
     busy: Boolean,
-    onSelect: (SavedReadingSummary) -> Unit
+    onSelect: (SavedReadingSummary) -> Unit,
+    onSectionClick: (SavedReadingSummary, PreviewSection) -> Unit
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color.White),
@@ -1636,7 +1774,7 @@ private fun SavedReadingsCard(
             )
             if (readings.isEmpty()) {
                 Text(
-                    "No saved readings yet. Every completed read is stored on this device automatically.",
+                    "No saved readings yet.",
                     color = Muted,
                     fontSize = 11.sp
                 )
@@ -1668,15 +1806,17 @@ private fun SavedReadingsCard(
                                     fontWeight = FontWeight.SemiBold,
                                     fontSize = 13.sp
                                 )
-                                savedReadingSubtitle(reading).takeIf { it.isNotBlank() }?.let {
-                                    Text(
-                                        it,
-                                        color = Color.Gray,
-                                        fontSize = 11.sp,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
+                                SavedReadingMetrics(
+                                    activeEnergy = energyAmount(reading.kwhReading, "kWh"),
+                                    apparentEnergy = energyAmount(reading.kvahReading, "kVAh"),
+                                    nameplate = reading.nameplateCount,
+                                    instantaneous = reading.instantaneousCount,
+                                    billing = reading.billingCount,
+                                    daily = reading.dailyCount,
+                                    block = reading.blockCount,
+                                    tamper = reading.tamperCount,
+                                    onSectionClick = { section -> onSectionClick(reading, section) }
+                                )
                             }
                         }
                     }
@@ -1689,6 +1829,7 @@ private fun SavedReadingsCard(
 @Composable
 private fun SavedReadingDialog(
     reading: SavedReadingSummary,
+    report: MeterDataReport?,
     busy: Boolean,
     error: String?,
     onDismiss: () -> Unit,
@@ -1697,26 +1838,45 @@ private fun SavedReadingDialog(
     onDelete: () -> Unit
 ) {
     var selection by remember(reading.id) { mutableStateOf(LoadSurveySelection.FULL_BUFFER) }
+    var previewSection by remember(reading.id) { mutableStateOf<PreviewSection?>(null) }
+    val filteredReport = remember(report, selection) {
+        report?.let { applyLoadSurveySelectionToReport(it, selection) }
+    }
 
     MeterLinkDialog(
         title = "Meter #${reading.serialNumber}",
         icon = Icons.AutoMirrored.Filled.List,
         onDismiss = onDismiss,
-        dismissEnabled = !busy
+        dismissEnabled = !busy,
+        bodyMaxHeight = 520.dp
     ) {
         Text(
             reading.scannedAtFormatted,
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.primary
+            color = Cobalt
         )
-        savedReadingSubtitle(reading).takeIf { it.isNotBlank() }?.let {
-            Text(it, fontSize = 12.sp, color = Color.Gray)
-        }
-        Text(reading.summaryStats, fontSize = 11.sp, color = Color.Gray)
         reading.meterRtc
             .takeIf { it.isNotBlank() && it != "N/A" }
             ?.let { ResultRow("Meter RTC", it) }
+        SavedReadingMetrics(
+            activeEnergy = energyAmount(reading.kwhReading, "kWh"),
+            apparentEnergy = energyAmount(reading.kvahReading, "kVAh"),
+            nameplate = reading.nameplateCount,
+            instantaneous = reading.instantaneousCount,
+            billing = reading.billingCount,
+            daily = reading.dailyCount,
+            block = reading.blockCount,
+            tamper = reading.tamperCount,
+            onSectionClick = { previewSection = it }
+        )
+        if (filteredReport == null) {
+            Text(
+                "Loading saved section data...",
+                fontSize = 11.sp,
+                color = Muted
+            )
+        }
         LoadSurveyRangeChips(
             selected = selection,
             enabled = !busy,
@@ -1752,7 +1912,7 @@ private fun SavedReadingDialog(
         if (busy) {
             Text(
                 "Working — loading and exporting the saved reading...",
-                color = MaterialTheme.colorScheme.primary,
+                color = Cobalt,
                 fontSize = 11.sp
             )
         }
@@ -1760,4 +1920,364 @@ private fun SavedReadingDialog(
             Text(it, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
         }
     }
+
+    previewSection?.let { section ->
+        filteredReport?.let { data ->
+            SectionDataPreviewDialog(
+                section = section,
+                report = data,
+                subtitle = "Meter #${reading.serialNumber}",
+                onDismiss = { previewSection = null }
+            )
+        }
+    }
+}
+
+/**
+ * Full-width modal showing the actual extracted rows behind one section box.
+ * Tables scroll horizontally and vertically; key/value sections scroll
+ * vertically inside the fixed 620 dp card.
+ */
+@Composable
+private fun SectionDataPreviewDialog(
+    section: PreviewSection,
+    report: MeterDataReport,
+    subtitle: String,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.94f)
+                .heightIn(max = 620.dp)
+                .padding(vertical = 16.dp),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.List,
+                        contentDescription = null,
+                        tint = Cobalt,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            section.title,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Ink,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            subtitle,
+                            fontSize = 11.sp,
+                            color = Muted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 16.dp)
+                ) {
+                    when (section) {
+                        PreviewSection.NAMEPLATE -> NameplatePreview(report)
+                        PreviewSection.INSTANTANEOUS -> InstantaneousPreview(report)
+                        PreviewSection.BILLING -> ProfilePreview(report.billing, "No billing rows in this reading.")
+                        PreviewSection.DAILY -> ProfilePreview(report.dailyLoad, "No daily load rows in this reading.")
+                        PreviewSection.BLOCK -> ProfilePreview(report.blockLoad, "No block load rows in this reading.")
+                        PreviewSection.TAMPER -> TamperPreview(report)
+                    }
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 16.dp),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    FilledTonalButton(
+                        onClick = onDismiss,
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = SoftBlue,
+                            contentColor = Cobalt
+                        )
+                    ) {
+                        Text("Close", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NameplatePreview(report: MeterDataReport) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        val identityRows = report.identity?.rows.orEmpty()
+        if (identityRows.isEmpty() && report.cumulativeEnergies.isEmpty()) {
+            PreviewEmpty("No nameplate data in this reading.")
+            return@Column
+        }
+        identityRows.forEach { row ->
+            PreviewValueRow(
+                label = row.parameterName,
+                value = row.formattedValue,
+                caption = row.obisCode
+            )
+        }
+        if (report.cumulativeEnergies.isNotEmpty()) {
+            Text(
+                "Cumulative Energy & MD",
+                modifier = Modifier.padding(top = 10.dp, bottom = 4.dp),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = Cobalt
+            )
+            report.cumulativeEnergies.forEach { register ->
+                PreviewValueRow(
+                    label = register.parameterName,
+                    value = listOf(register.reading, register.unit)
+                        .filter { it.isNotBlank() }
+                        .joinToString(" "),
+                    caption = register.obisCode
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun InstantaneousPreview(report: MeterDataReport) {
+    val profile = report.instantaneous
+    val row = profile?.rows?.firstOrNull()
+    if (profile == null || row == null) {
+        PreviewEmpty("No instantaneous parameters in this reading.")
+        return
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        profile.columns.forEachIndexed { index, column ->
+            val value = row.getOrNull(index).orEmpty()
+            PreviewValueRow(
+                label = column.parameterName,
+                value = listOf(value, column.unit)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" "),
+                caption = column.obisCode
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun ProfilePreview(section: ProfileSection?, emptyText: String) {
+    if (section == null || section.columns.isEmpty() || section.rows.isEmpty()) {
+        PreviewEmpty(emptyText)
+        return
+    }
+    val headers = section.columns.map { column ->
+        column.parameterName to previewColumnWidth(column.parameterName)
+    }
+    PreviewDataTable(
+        headers = headers,
+        rows = section.rows,
+        modifier = Modifier.fillMaxSize()
+    )
+}
+
+@Composable
+private fun TamperPreview(report: MeterDataReport) {
+    val statuses = report.eventLogStatus
+    val events = report.tamperEvents
+    if (statuses.isEmpty() && events.isEmpty()) {
+        PreviewEmpty("No tamper events in this reading.")
+        return
+    }
+    Column(modifier = Modifier.fillMaxSize()) {
+        statuses.forEach { (compartment, status) ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 2.dp),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    compartment,
+                    modifier = Modifier.weight(1f),
+                    fontSize = 11.sp,
+                    color = Ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(status, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = Cobalt)
+            }
+        }
+        if (statuses.isNotEmpty() && events.isNotEmpty()) {
+            HorizontalDivider(
+                modifier = Modifier.padding(vertical = 8.dp),
+                color = Hairline
+            )
+        }
+        PreviewDataTable(
+            headers = listOf(
+                "Compartment" to 104.dp,
+                "Date / Time" to 132.dp,
+                "Code" to 64.dp,
+                "Event Description" to 180.dp,
+                "V" to 58.dp,
+                "I" to 58.dp,
+                "PF" to 54.dp,
+                "kWh" to 86.dp
+            ),
+            rows = events.map {
+                listOf(
+                    it.compartment,
+                    it.dateTime,
+                    it.eventCode,
+                    it.eventDescription,
+                    it.voltage,
+                    it.current,
+                    it.powerFactor,
+                    it.energy
+                )
+            },
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+private fun PreviewDataTable(
+    headers: List<Pair<String, Dp>>,
+    rows: List<List<String>>,
+    modifier: Modifier = Modifier
+) {
+    val horizontal = rememberScrollState()
+    Column(modifier = modifier.horizontalScroll(horizontal)) {
+        Row(modifier = Modifier.background(SoftBlue)) {
+            headers.forEach { (title, width) ->
+                PreviewTableCell(text = title, width = width, header = true)
+            }
+        }
+        if (rows.isEmpty()) {
+            Text(
+                "No rows available.",
+                modifier = Modifier.padding(10.dp),
+                fontSize = 11.sp,
+                color = Muted
+            )
+        } else {
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                itemsIndexed(rows) { index, row ->
+                    Row(
+                        modifier = Modifier.background(
+                            if (index % 2 == 0) Color.White else Color(0xFFF8FAFC)
+                        )
+                    ) {
+                        headers.forEachIndexed { columnIndex, (_, width) ->
+                            PreviewTableCell(
+                                text = row.getOrNull(columnIndex).orEmpty(),
+                                width = width,
+                                header = false
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PreviewTableCell(text: String, width: Dp, header: Boolean) {
+    Text(
+        text = text,
+        modifier = Modifier
+            .width(width)
+            .padding(horizontal = 6.dp, vertical = 5.dp),
+        fontSize = if (header) 10.sp else 10.5.sp,
+        fontWeight = if (header) FontWeight.Bold else FontWeight.Normal,
+        fontFamily = if (header) FontFamily.Default else FontFamily.Monospace,
+        color = if (header) Cobalt else Ink,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis
+    )
+}
+
+@Composable
+private fun PreviewValueRow(label: String, value: String, caption: String? = null) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                label,
+                fontSize = 11.sp,
+                color = Ink,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            caption?.takeIf { it.isNotBlank() }?.let {
+                Text(it, fontSize = 9.sp, fontFamily = FontFamily.Monospace, color = Muted)
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            value,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            fontFamily = FontFamily.Monospace,
+            color = Cobalt,
+            textAlign = TextAlign.End,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun PreviewEmpty(message: String) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text(message, fontSize = 12.sp, color = Muted, textAlign = TextAlign.Center)
+    }
+}
+
+private fun previewColumnWidth(title: String): Dp = when {
+    title.contains("date", ignoreCase = true) ||
+        title.contains("time", ignoreCase = true) -> 138.dp
+    title.length > 24 -> 176.dp
+    title.length > 16 -> 146.dp
+    title.length > 9 -> 118.dp
+    else -> 78.dp
 }

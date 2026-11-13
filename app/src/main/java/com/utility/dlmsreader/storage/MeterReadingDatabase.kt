@@ -1,15 +1,23 @@
 package com.utility.dlmsreader.storage
 
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import com.utility.dlmsreader.dlms.MeterDataReport
 import com.utility.dlmsreader.dlms.ProfileSection
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** Lightweight row used by the saved-readings list (never includes the BLOB). */
@@ -23,7 +31,14 @@ data class SavedReadingSummary(
     val scannedAtFormatted: String,
     val readType: String,
     val kwhReading: String,
-    val summaryStats: String
+    val summaryStats: String,
+    val kvahReading: String = "N/A",
+    val nameplateCount: Int = 0,
+    val instantaneousCount: Int = 0,
+    val billingCount: Int = 0,
+    val dailyCount: Int = 0,
+    val blockCount: Int = 0,
+    val tamperCount: Int = 0
 )
 
 /** Metadata extracted from a report before it is persisted. */
@@ -33,7 +48,14 @@ data class MeterReadingMetadata(
     val manufacturer: String,
     val meterRtc: String,
     val kwhReading: String,
-    val summaryStats: String
+    val summaryStats: String,
+    val kvahReading: String = "N/A",
+    val nameplateCount: Int = 0,
+    val instantaneousCount: Int = 0,
+    val billingCount: Int = 0,
+    val dailyCount: Int = 0,
+    val blockCount: Int = 0,
+    val tamperCount: Int = 0
 )
 
 private const val SERIAL_OBIS = "0.0.96.1.0.255"
@@ -134,7 +156,14 @@ fun MeterDataReport.toReadingMetadata(): MeterReadingMetadata = MeterReadingMeta
     manufacturer = identityValue("0.0.96.1.1.255").ifBlank { "Unknown" },
     meterRtc = identityValue("0.0.1.0.0.255").ifBlank { "N/A" },
     kwhReading = cumulativeKwhReading(),
-    summaryStats = summaryStats()
+    summaryStats = summaryStats(),
+    kvahReading = cumulativeKvahReading(),
+    nameplateCount = nameplateFieldCount(),
+    instantaneousCount = instantaneousParameterCount(),
+    billingCount = billing?.rows?.size ?: 0,
+    dailyCount = dailyLoad?.rows?.size ?: 0,
+    blockCount = blockLoad?.rows?.size ?: 0,
+    tamperCount = tamperEvents.size
 )
 
 /**
@@ -144,8 +173,10 @@ fun MeterDataReport.toReadingMetadata(): MeterReadingMetadata = MeterReadingMeta
  * saved reading can be re-exported with any load-survey window later. The list
  * query reads only the metadata columns; the BLOB is loaded on demand.
  */
-class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
-    context.applicationContext,
+class MeterReadingDatabase(
+    private val appContext: Context
+) : SQLiteOpenHelper(
+    appContext.applicationContext,
     DATABASE_NAME,
     null,
     DATABASE_VERSION
@@ -153,7 +184,7 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
 
     companion object {
         const val DATABASE_NAME = "meter_readings.db"
-        const val DATABASE_VERSION = 1
+        const val DATABASE_VERSION = 2
         const val TABLE = "meter_readings"
 
         const val COL_ID = "id"
@@ -166,6 +197,15 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
         const val COL_READ_TYPE = "read_type"
         const val COL_KWH = "kwh_reading"
         const val COL_SUMMARY = "summary_stats"
+        const val COL_KVAH = "kvah_reading"
+        const val COL_NAMEPLATE_COUNT = "nameplate_count"
+        const val COL_INSTANT_COUNT = "instantaneous_count"
+        const val COL_BILLING_COUNT = "billing_count"
+        const val COL_DAILY_COUNT = "daily_count"
+        const val COL_BLOCK_COUNT = "block_count"
+        const val COL_TAMPER_COUNT = "tamper_count"
+        const val COL_FINGERPRINT = "content_fingerprint"
+        const val COL_BACKUP_PATH = "backup_path"
         const val COL_RAW_REPORT = "raw_report_gzip"
 
         private const val SCANNED_AT_PATTERN = "dd-MMM-yyyy HH:mm:ss"
@@ -173,6 +213,10 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
         /** Newest-first history cap; older rows beyond this are pruned. */
         const val MAX_SAVED_READINGS = 50
     }
+
+    /** Guards the one-time `Documents/MeterLink` import across app launches. */
+    private val restoreMutex = Mutex()
+    private var externalRestoreDone = false
 
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
@@ -188,6 +232,15 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
                 $COL_READ_TYPE TEXT NOT NULL,
                 $COL_KWH TEXT NOT NULL,
                 $COL_SUMMARY TEXT NOT NULL,
+                $COL_KVAH TEXT NOT NULL DEFAULT '',
+                $COL_NAMEPLATE_COUNT INTEGER NOT NULL DEFAULT 0,
+                $COL_INSTANT_COUNT INTEGER NOT NULL DEFAULT 0,
+                $COL_BILLING_COUNT INTEGER NOT NULL DEFAULT 0,
+                $COL_DAILY_COUNT INTEGER NOT NULL DEFAULT 0,
+                $COL_BLOCK_COUNT INTEGER NOT NULL DEFAULT 0,
+                $COL_TAMPER_COUNT INTEGER NOT NULL DEFAULT 0,
+                $COL_FINGERPRINT TEXT NOT NULL DEFAULT '',
+                $COL_BACKUP_PATH TEXT NOT NULL DEFAULT '',
                 $COL_RAW_REPORT BLOB NOT NULL
             )
             """.trimIndent()
@@ -196,8 +249,44 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS $TABLE")
-        onCreate(db)
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $COL_KVAH TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $COL_NAMEPLATE_COUNT INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $COL_INSTANT_COUNT INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $COL_BILLING_COUNT INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $COL_DAILY_COUNT INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $COL_BLOCK_COUNT INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $COL_TAMPER_COUNT INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $COL_FINGERPRINT TEXT NOT NULL DEFAULT ''")
+            db.execSQL("ALTER TABLE $TABLE ADD COLUMN $COL_BACKUP_PATH TEXT NOT NULL DEFAULT ''")
+            backfillV2(db)
+        }
+    }
+
+    /** Recomputes the v2 metric columns for readings saved by older builds. */
+    private fun backfillV2(db: SQLiteDatabase) {
+        db.query(TABLE, arrayOf(COL_ID, COL_RAW_REPORT), null, null, null, null, null)
+            .use { cursor ->
+                while (cursor.moveToNext()) {
+                    val id = cursor.getLong(0)
+                    val bytes = cursor.getBlob(1) ?: continue
+                    val report = runCatching {
+                        MeterReportSerializer.fromJsonBytesGzip(bytes)
+                    }.getOrNull() ?: continue
+                    val metadata = report.toReadingMetadata()
+                    val values = ContentValues().apply {
+                        put(COL_KVAH, metadata.kvahReading)
+                        put(COL_NAMEPLATE_COUNT, metadata.nameplateCount)
+                        put(COL_INSTANT_COUNT, metadata.instantaneousCount)
+                        put(COL_BILLING_COUNT, metadata.billingCount)
+                        put(COL_DAILY_COUNT, metadata.dailyCount)
+                        put(COL_BLOCK_COUNT, metadata.blockCount)
+                        put(COL_TAMPER_COUNT, metadata.tamperCount)
+                        put(COL_FINGERPRINT, ExternalReadingBackup.fingerprint(report))
+                    }
+                    db.update(TABLE, values, "$COL_ID = ?", arrayOf(id.toString()))
+                }
+            }
     }
 
     /**
@@ -216,10 +305,39 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
         val db = writableDatabase
         val incoming = report.toReadingMetadata()
         val merged = mergeSavedReport(latestSavedReport(db, incoming.serialNumber), report)
-        val metadata = merged.toReadingMetadata()
+        db.beginTransaction()
+        val rowId = try {
+            val id = db.insertOrThrow(TABLE, null, readingValues(merged, readType, scannedAtEpochMs))
+            pruneOldReadings(db)
+            db.setTransactionSuccessful()
+            id
+        } finally {
+            db.endTransaction()
+        }
+        // Persist a human-readable JSON copy in Documents/MeterLink so the
+        // reading survives an uninstall (internal SQLite storage does not).
+        val backupPath = writeBackup(merged, rowId)
+        if (backupPath.isNotBlank()) {
+            db.update(
+                TABLE,
+                ContentValues().apply { put(COL_BACKUP_PATH, backupPath) },
+                "$COL_ID = ?",
+                arrayOf(rowId.toString())
+            )
+        }
+        rowId
+    }
+
+    /** Builds the full column set for a report row. */
+    private fun readingValues(
+        report: MeterDataReport,
+        readType: String,
+        scannedAtEpochMs: Long
+    ): ContentValues {
+        val metadata = report.toReadingMetadata()
         val scannedAt = SimpleDateFormat(SCANNED_AT_PATTERN, Locale.ENGLISH)
             .format(Date(scannedAtEpochMs))
-        val values = ContentValues().apply {
+        return ContentValues().apply {
             put(COL_SERIAL, metadata.serialNumber)
             put(COL_LDN, metadata.ldn)
             put(COL_MANUFACTURER, metadata.manufacturer)
@@ -229,16 +347,15 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
             put(COL_READ_TYPE, readType)
             put(COL_KWH, metadata.kwhReading)
             put(COL_SUMMARY, metadata.summaryStats)
-            put(COL_RAW_REPORT, MeterReportSerializer.toJsonBytesGzip(merged))
-        }
-        db.beginTransaction()
-        try {
-            val rowId = db.insertOrThrow(TABLE, null, values)
-            pruneOldReadings(db)
-            db.setTransactionSuccessful()
-            rowId
-        } finally {
-            db.endTransaction()
+            put(COL_KVAH, metadata.kvahReading)
+            put(COL_NAMEPLATE_COUNT, metadata.nameplateCount)
+            put(COL_INSTANT_COUNT, metadata.instantaneousCount)
+            put(COL_BILLING_COUNT, metadata.billingCount)
+            put(COL_DAILY_COUNT, metadata.dailyCount)
+            put(COL_BLOCK_COUNT, metadata.blockCount)
+            put(COL_TAMPER_COUNT, metadata.tamperCount)
+            put(COL_FINGERPRINT, ExternalReadingBackup.fingerprint(report))
+            put(COL_RAW_REPORT, MeterReportSerializer.toJsonBytesGzip(report))
         }
     }
 
@@ -269,18 +386,31 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
         }
     }
 
-    /** Keeps the reading history bounded so partial reads cannot grow it forever. */
+    /**
+     * Keeps the reading history bounded so partial reads cannot grow it forever.
+     * External backup files belonging to the dropped rows are removed too, so a
+     * later startup scan cannot resurrect them.
+     */
     private fun pruneOldReadings(db: SQLiteDatabase) {
-        db.execSQL(
-            "DELETE FROM $TABLE WHERE $COL_ID NOT IN (" +
-                "SELECT $COL_ID FROM $TABLE " +
-                "ORDER BY $COL_SCANNED_AT_EPOCH DESC, $COL_ID DESC " +
-                "LIMIT $MAX_SAVED_READINGS)"
-        )
+        val keep = "SELECT $COL_ID FROM $TABLE " +
+            "ORDER BY $COL_SCANNED_AT_EPOCH DESC, $COL_ID DESC LIMIT $MAX_SAVED_READINGS"
+        val doomed = mutableListOf<Triple<Long, String, String>>()
+        db.rawQuery(
+            "SELECT $COL_ID, $COL_SERIAL, $COL_BACKUP_PATH FROM $TABLE " +
+                "WHERE $COL_ID NOT IN ($keep)",
+            null
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                doomed += Triple(cursor.getLong(0), cursor.getString(1), cursor.getString(2))
+            }
+        }
+        db.execSQL("DELETE FROM $TABLE WHERE $COL_ID NOT IN ($keep)")
+        doomed.forEach { (id, serial, path) -> deleteBackup(serial, id, path) }
     }
 
     /** All saved readings, newest first, without touching the report BLOB. */
     suspend fun listSummaries(): List<SavedReadingSummary> = withContext(Dispatchers.IO) {
+        restoreExternalBackupsIfNeeded()
         val columns = arrayOf(
             COL_ID,
             COL_SERIAL,
@@ -291,7 +421,14 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
             COL_SCANNED_AT_FORMATTED,
             COL_READ_TYPE,
             COL_KWH,
-            COL_SUMMARY
+            COL_SUMMARY,
+            COL_KVAH,
+            COL_NAMEPLATE_COUNT,
+            COL_INSTANT_COUNT,
+            COL_BILLING_COUNT,
+            COL_DAILY_COUNT,
+            COL_BLOCK_COUNT,
+            COL_TAMPER_COUNT
         )
         readableDatabase.query(
             TABLE,
@@ -315,7 +452,14 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
                             scannedAtFormatted = cursor.getString(6),
                             readType = cursor.getString(7),
                             kwhReading = cursor.getString(8),
-                            summaryStats = cursor.getString(9)
+                            summaryStats = cursor.getString(9),
+                            kvahReading = cursor.getString(10),
+                            nameplateCount = cursor.getInt(11),
+                            instantaneousCount = cursor.getInt(12),
+                            billingCount = cursor.getInt(13),
+                            dailyCount = cursor.getInt(14),
+                            blockCount = cursor.getInt(15),
+                            tamperCount = cursor.getInt(16)
                         )
                     )
                 }
@@ -341,6 +485,244 @@ class MeterReadingDatabase(context: Context) : SQLiteOpenHelper(
     }
 
     suspend fun deleteReport(id: Long): Int = withContext(Dispatchers.IO) {
-        writableDatabase.delete(TABLE, "$COL_ID = ?", arrayOf(id.toString()))
+        val db = writableDatabase
+        var serial = UNKNOWN_SERIAL
+        var backupPath = ""
+        db.query(
+            TABLE,
+            arrayOf(COL_SERIAL, COL_BACKUP_PATH),
+            "$COL_ID = ?",
+            arrayOf(id.toString()),
+            null,
+            null,
+            null
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                serial = cursor.getString(0).orEmpty()
+                backupPath = cursor.getString(1).orEmpty()
+            }
+        }
+        val deleted = db.delete(TABLE, "$COL_ID = ?", arrayOf(id.toString()))
+        if (deleted > 0) deleteBackup(serial, id, backupPath)
+        deleted
+    }
+
+    // ------------------------------------------------------------------
+    // Documents/MeterLink persistence
+    // ------------------------------------------------------------------
+
+    /** Restores any JSON backups missing from SQLite before the list is read. */
+    private suspend fun restoreExternalBackupsIfNeeded() {
+        if (externalRestoreDone) return
+        restoreMutex.withLock {
+            if (externalRestoreDone) return@withLock
+            runCatching { restoreExternalBackupsBlocking() }
+            externalRestoreDone = true
+        }
+    }
+
+    private fun restoreExternalBackupsBlocking() {
+        val db = writableDatabase
+        val knownFingerprints = mutableSetOf<String>()
+        db.query(TABLE, arrayOf(COL_FINGERPRINT), null, null, null, null, null)
+            .use { cursor ->
+                while (cursor.moveToNext()) {
+                    cursor.getString(0)?.takeIf { it.isNotBlank() }
+                        ?.let(knownFingerprints::add)
+                }
+            }
+
+        var imported = 0
+        listExternalBackups().forEach { backup ->
+            val text = backup.readText() ?: return@forEach
+            val report = ExternalReadingBackup.fromJson(text) ?: return@forEach
+            val fingerprint = ExternalReadingBackup.fingerprint(report)
+            if (!knownFingerprints.add(fingerprint)) return@forEach
+
+            val rowId = db.insertOrThrow(
+                TABLE,
+                null,
+                readingValues(report, "Restored Backup", backup.lastModifiedMs)
+            )
+            imported++
+            // Re-key the file to the new SQLite id (ids change after a
+            // reinstall) and remove the old name.
+            val newPath = writeBackup(report, rowId)
+            if (newPath.isNotBlank()) {
+                db.update(
+                    TABLE,
+                    ContentValues().apply { put(COL_BACKUP_PATH, newPath) },
+                    "$COL_ID = ?",
+                    arrayOf(rowId.toString())
+                )
+            }
+            val expectedName = ExternalReadingBackup.fileName(
+                report.identityValue(SERIAL_OBIS),
+                rowId
+            )
+            if (backup.name != expectedName) backup.delete()
+        }
+        if (imported > 0) pruneOldReadings(db)
+        // Create Documents/MeterLink on first launch even when it is empty.
+        externalDirectory()
+    }
+
+    private data class ExternalBackupFile(
+        val name: String,
+        val lastModifiedMs: Long,
+        val readText: () -> String?,
+        val delete: () -> Unit
+    )
+
+    /** Enumerates backups through MediaStore (API 29+) and the direct folder. */
+    private fun listExternalBackups(): List<ExternalBackupFile> {
+        val backups = mutableListOf<ExternalBackupFile>()
+        val seenNames = mutableSetOf<String>()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching {
+                val resolver = appContext.contentResolver
+                val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+                val relative = "${Environment.DIRECTORY_DOCUMENTS}/${ExternalReadingBackup.FOLDER_NAME}"
+                resolver.query(
+                    collection,
+                    arrayOf(
+                        MediaStore.Files.FileColumns._ID,
+                        MediaStore.Files.FileColumns.DISPLAY_NAME,
+                        MediaStore.Files.FileColumns.DATE_MODIFIED
+                    ),
+                    "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? AND " +
+                        "${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE ?",
+                    arrayOf(
+                        "${ExternalReadingBackup.FILE_PREFIX}%${ExternalReadingBackup.FILE_SUFFIX}",
+                        "$relative%"
+                    ),
+                    null
+                )?.use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getLong(0)
+                        val name = cursor.getString(1) ?: continue
+                        if (!seenNames.add(name)) continue
+                        val uri = ContentUris.withAppendedId(collection, id)
+                        backups += ExternalBackupFile(
+                            name = name,
+                            lastModifiedMs = cursor.getLong(2) * 1000L,
+                            readText = {
+                                runCatching {
+                                    resolver.openInputStream(uri)?.use { input ->
+                                        input.readBytes().toString(Charsets.UTF_8)
+                                    }
+                                }.getOrNull()
+                            },
+                            delete = { runCatching { resolver.delete(uri, null, null) } }
+                        )
+                    }
+                }
+            }
+        }
+
+        externalDirectory()?.let { directory ->
+            ExternalReadingBackup.scan(directory).forEach { file ->
+                if (!seenNames.add(file.name)) return@forEach
+                backups += ExternalBackupFile(
+                    name = file.name,
+                    lastModifiedMs = file.lastModified(),
+                    readText = { runCatching { file.readText(Charsets.UTF_8) }.getOrNull() },
+                    delete = { runCatching { file.delete() } }
+                )
+            }
+        }
+        return backups
+    }
+
+    /** Public Documents directory, or null when shared storage is unavailable. */
+    private fun externalDirectory(): File? = runCatching {
+        val directory = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+            ExternalReadingBackup.FOLDER_NAME
+        )
+        if (!directory.exists()) directory.mkdirs()
+        directory.takeIf { it.isDirectory }
+    }.getOrNull()
+
+    /** Writes the JSON backup and returns a content URI or absolute path. */
+    private fun writeBackup(report: MeterDataReport, id: Long): String {
+        val serial = report.identityValue(SERIAL_OBIS)
+        val name = ExternalReadingBackup.fileName(serial, id)
+        val json = ExternalReadingBackup.toJson(report)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            writeBackupViaMediaStore(name, json)?.let { return it }
+        }
+        val directory = externalDirectory() ?: return ""
+        return runCatching {
+            ExternalReadingBackup.write(directory, report, id).absolutePath
+        }.getOrDefault("")
+    }
+
+    private fun writeBackupViaMediaStore(name: String, json: String): String? = runCatching {
+        val resolver = appContext.contentResolver
+        val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+        val relative = "${Environment.DIRECTORY_DOCUMENTS}/${ExternalReadingBackup.FOLDER_NAME}"
+        val existing = resolver.query(
+            collection,
+            arrayOf(MediaStore.Files.FileColumns._ID),
+            "${MediaStore.Files.FileColumns.DISPLAY_NAME} = ? AND " +
+                "${MediaStore.Files.FileColumns.RELATIVE_PATH} = ?",
+            arrayOf(name, "$relative/"),
+            null
+        )?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                ContentUris.withAppendedId(collection, cursor.getLong(0))
+            } else {
+                null
+            }
+        }
+        val uri = existing ?: run {
+            val values = ContentValues().apply {
+                put(MediaStore.Files.FileColumns.DISPLAY_NAME, name)
+                put(MediaStore.Files.FileColumns.MIME_TYPE, "application/json")
+                put(MediaStore.Files.FileColumns.RELATIVE_PATH, relative)
+                put(MediaStore.Files.FileColumns.IS_PENDING, 1)
+            }
+            resolver.insert(collection, values) ?: return@runCatching null
+        }
+        val written = resolver.openOutputStream(uri, "wt")?.use { stream ->
+            stream.write(json.toByteArray(Charsets.UTF_8))
+            true
+        } ?: false
+        if (!written) return@runCatching null
+        if (existing == null) {
+            resolver.update(
+                uri,
+                ContentValues().apply { put(MediaStore.Files.FileColumns.IS_PENDING, 0) },
+                null,
+                null
+            )
+        }
+        uri.toString()
+    }.getOrNull()
+
+    /** Deletes the MediaStore entry and/or direct file backing one reading. */
+    private fun deleteBackup(serial: String, id: Long, path: String) {
+        when {
+            path.startsWith("content://") ->
+                runCatching { appContext.contentResolver.delete(Uri.parse(path), null, null) }
+            path.isNotBlank() -> runCatching { File(path).delete() }
+        }
+        val name = ExternalReadingBackup.fileName(serial, id)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching {
+                val relative = "${Environment.DIRECTORY_DOCUMENTS}/${ExternalReadingBackup.FOLDER_NAME}"
+                appContext.contentResolver.delete(
+                    MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                    "${MediaStore.Files.FileColumns.DISPLAY_NAME} = ? AND " +
+                        "${MediaStore.Files.FileColumns.RELATIVE_PATH} = ?",
+                    arrayOf(name, "$relative/")
+                )
+            }
+        }
+        externalDirectory()?.let { directory ->
+            runCatching { File(directory, name).delete() }
+        }
     }
 }
