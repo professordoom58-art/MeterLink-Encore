@@ -1245,7 +1245,7 @@ private fun AboutAppDialog(onDismiss: () -> Unit) {
                     .fillMaxWidth()
                     .heightIn(max = 620.dp)
                     .verticalScroll(rememberScrollState())
-                    .padding(start = 22.dp, end = 22.dp, top = 22.dp, bottom = 18.dp),
+                    .padding(start = 18.dp, end = 18.dp, top = 22.dp, bottom = 18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -1346,8 +1346,8 @@ private fun AboutAppDialog(onDismiss: () -> Unit) {
 }
 
 /**
- * Primary feature bullet: a cobalt glyph plus a bold title, optional inline
- * description, and any indented sub-bullets beneath it.
+ * Centered primary feature bullet: cobalt glyph, bold title and optional
+ * inline description, with centered sub-bullets beneath it.
  */
 @Composable
 private fun AboutBullet(
@@ -1355,61 +1355,50 @@ private fun AboutBullet(
     description: String? = null,
     subItems: List<String> = emptyList()
 ) {
-    Row(
+    Column(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.Top
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp)
     ) {
         Text(
-            "•",
-            modifier = Modifier.width(14.dp),
+            text = buildAnnotatedString {
+                withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Cobalt)) {
+                    append("•  ")
+                }
+                withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = Ink)) {
+                    append(title)
+                }
+                if (description != null) {
+                    append(" ")
+                    withStyle(SpanStyle(color = Color(0xFF334155))) {
+                        append(description)
+                    }
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
             fontSize = 13.sp,
             lineHeight = 18.sp,
-            fontWeight = FontWeight.Bold,
-            color = Cobalt
+            textAlign = TextAlign.Center
         )
-        Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(2.dp)
-        ) {
-            Text(
-                text = buildAnnotatedString {
-                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = Ink)) {
-                        append(title)
-                    }
-                    if (description != null) {
-                        append(" ")
-                        withStyle(SpanStyle(color = Color(0xFF334155))) {
-                            append(description)
-                        }
-                    }
-                },
-                fontSize = 13.sp,
-                lineHeight = 18.sp
-            )
-            subItems.forEach { item -> AboutSubBullet(item) }
-        }
+        subItems.forEach { item -> AboutSubBullet(item) }
     }
 }
 
-/** Indented secondary bullet used for the vendor and reading lists. */
+/** Centered secondary bullet used for the vendor and reading lists. */
 @Composable
 private fun AboutSubBullet(text: String) {
-    Row(modifier = Modifier.padding(start = 14.dp, top = 2.dp)) {
-        Text(
-            "◦",
-            modifier = Modifier.width(12.dp),
-            fontSize = 13.sp,
-            lineHeight = 18.sp,
-            color = Color(0xFF64748B)
-        )
-        Text(
-            text,
-            modifier = Modifier.weight(1f),
-            fontSize = 13.sp,
-            lineHeight = 18.sp,
-            color = Color(0xFF334155)
-        )
-    }
+    Text(
+        text = buildAnnotatedString {
+            withStyle(SpanStyle(color = Color(0xFF64748B))) { append("◦  ") }
+            withStyle(SpanStyle(color = Color(0xFF334155))) { append(text) }
+        },
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 6.dp),
+        fontSize = 13.sp,
+        lineHeight = 18.sp,
+        textAlign = TextAlign.Center
+    )
 }
 
 @Composable
