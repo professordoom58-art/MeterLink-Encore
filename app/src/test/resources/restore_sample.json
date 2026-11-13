@@ -1,0 +1,91 @@
+{
+  "identity": {
+    "rows": [
+      {"parameterName":"Meter Serial Number","obisCode":"0.0.96.1.0.255","formattedValue":"TEST12345","unit":""},
+      {"parameterName":"Manufacturer Name","obisCode":"0.0.96.1.1.255","formattedValue":"LARSEN AND TOUBRO LIMITED","unit":""},
+      {"parameterName":"Logical Device Name","obisCode":"0.0.42.0.0.255","formattedValue":"MH123456","unit":""},
+      {"parameterName":"Meter RTC","obisCode":"0.0.1.0.0.255","formattedValue":"13-11-26 12:00","unit":""}
+    ],
+    "nameplate": {
+      "title":"Nameplate Profile",
+      "profileObis":"0.0.94.91.0.255",
+      "columns":[{"parameterName":"Rated Voltage","obisCode":"1.0.12.27.0.255","unit":"V","attributeIndex":2}],
+      "rows":[["230.0"]],
+      "totalRows":1,
+      "fullRows":[["230.0"]],
+      "fullTotalRows":1,
+      "fullBufferCached":true,
+      "selectionLabel":"FULL_BUFFER",
+      "windowNote":""
+    }
+  },
+  "cumulativeEnergies": [
+    {"parameterName":"Active Energy","obisCode":"1.0.1.8.0.255","reading":"1234.500","unit":"kWh","captureTimestamp":""},
+    {"parameterName":"Apparent Energy","obisCode":"1.0.9.8.0.255","reading":"1500.700","unit":"kVAh","captureTimestamp":""}
+  ],
+  "instantaneous": {
+    "title":"Instantaneous Parameters Snapshot",
+    "profileObis":"1.0.94.91.0.255",
+    "columns":[
+      {"parameterName":"Voltage R","obisCode":"1.0.12.27.0.255","unit":"V","attributeIndex":2},
+      {"parameterName":"Current R","obisCode":"1.0.31.7.0.255","unit":"A","attributeIndex":2}
+    ],
+    "rows":[["230.1","4.2"]],
+    "totalRows":1,
+    "fullRows":[],
+    "fullTotalRows":0,
+    "fullBufferCached":false,
+    "selectionLabel":"",
+    "windowNote":""
+  },
+  "billing": {
+    "title":"Billing History Profile",
+    "profileObis":"1.0.98.1.0.255",
+    "columns":[
+      {"parameterName":"Billing Date","obisCode":"0.0.1.0.0.255","unit":"","attributeIndex":5},
+      {"parameterName":"Active Energy","obisCode":"1.0.1.8.0.255","unit":"kWh","attributeIndex":2}
+    ],
+    "rows":[["01-11-26 00:00","1100.000"],["01-12-25 00:00","1000.000"]],
+    "totalRows":2,
+    "fullRows":[],
+    "fullTotalRows":0,
+    "fullBufferCached":false,
+    "selectionLabel":"",
+    "windowNote":""
+  },
+  "dailyLoad": {
+    "title":"Daily Load Survey",
+    "profileObis":"1.0.99.2.0.255",
+    "columns":[
+      {"parameterName":"Real-Time Clock","obisCode":"0.0.1.0.0.255","unit":"","attributeIndex":5},
+      {"parameterName":"Active Energy","obisCode":"1.0.1.8.0.255","unit":"kWh","attributeIndex":2}
+    ],
+    "rows":[["12-11-26 00:00","1200.000"],["13-11-26 00:00","1234.500"]],
+    "totalRows":2,
+    "fullRows":[],
+    "fullTotalRows":0,
+    "fullBufferCached":false,
+    "selectionLabel":"",
+    "windowNote":""
+  },
+  "blockLoad": {
+    "title":"Block Load Survey",
+    "profileObis":"1.0.99.1.0.255",
+    "columns":[
+      {"parameterName":"Real-Time Clock","obisCode":"0.0.1.0.0.255","unit":"","attributeIndex":5},
+      {"parameterName":"Active Energy","obisCode":"1.0.1.29.0.255","unit":"kWh","attributeIndex":2}
+    ],
+    "rows":[["13-11-26 00:15","1230.000"],["13-11-26 00:30","1231.000"]],
+    "totalRows":2,
+    "fullRows":[],
+    "fullTotalRows":0,
+    "fullBufferCached":false,
+    "selectionLabel":"",
+    "windowNote":""
+  },
+  "tamperEvents": [
+    {"compartment":"Compartment 1","dateTime":"13-11-26 01:00","eventCode":"1","eventDescription":"Magnetic Tamper","voltage":"230.1","current":"4.2","powerFactor":"0.99","energy":"1234.500","kvah":"1500.700","neutralCurrent":"0.1"}
+  ],
+  "eventLogStatus": [["Compartment 1","1 entries"]],
+  "errors": []
+}

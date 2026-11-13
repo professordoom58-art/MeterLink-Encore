@@ -494,46 +494,90 @@ class Is15959DataReader(
     private val entryTierDeniedProfiles = mutableSetOf<String>()
     private var lastEventLogStatus: List<Pair<String, String>> = emptyList()
     val eventLogStatus: List<Pair<String, String>> get() = lastEventLogStatus
+    /** Section currently streaming frames; frame estimates are mapped onto it. */
+    private var activeSection: String? = null
     private val executor = GuruxPacketExecutor(
         transport,
         client,
         packetTimeoutMs = packetTimeoutMs.coerceAtLeast(8000L),
-        onProgress = onProgress
+        onProgress = { message -> forwardFrameProgress(message) }
     )
 
+    /**
+     * Forwards only a percentage to the UI. Raw frame/tier diagnostics never
+     * reach the progress banner; they remain in the optical trace log.
+     */
+    private suspend fun emitPercent(section: String, percent: Int) {
+        onProgress(ExtractionProgress.format(section, percent))
+    }
+
+    private suspend fun beginSection(section: String) {
+        activeSection = section
+        emitPercent(section, 0)
+    }
+
+    private suspend fun finishSection(section: String) {
+        emitPercent(section, 100)
+        if (activeSection == section) activeSection = null
+    }
+
+    private suspend fun forwardFrameProgress(message: String) {
+        transport.log(com.utility.dlmsreader.transport.TraceDirection.INFO, message)
+        val section = activeSection ?: return
+        val percent = ExtractionProgress.parseEmbeddedPercent(message) ?: return
+        // Keep streaming at 99% so the bar never completes before the final
+        // buffer (and any fallback tier) has actually landed.
+        emitPercent(section, percent.coerceAtMost(99))
+    }
+
     suspend fun readIdentityAndNameplate(): IdentitySection {
-        progress("Reading identity and nameplate...")
+        val totalSteps = 7
+        var step = 0
+        suspend fun tick() {
+            step++
+            emitPercent(ExtractionProgress.IDENTITY, ExtractionProgress.percent(step, totalSteps))
+        }
+        emitPercent(ExtractionProgress.IDENTITY, 0)
         val rows = mutableListOf<ParameterRow>()
-        readTextObject("0.0.42.0.0.255", rows)
-        readTextObject("0.0.96.1.0.255", rows)
-        readTextObject("0.0.96.1.1.255", rows)
-        readTextObject("0.0.96.1.4.255", rows)
-        readTextObject("1.0.0.2.0.255", rows)
+        readTextObject("0.0.42.0.0.255", rows); tick()
+        readTextObject("0.0.96.1.0.255", rows); tick()
+        readTextObject("0.0.96.1.1.255", rows); tick()
+        readTextObject("0.0.96.1.4.255", rows); tick()
+        readTextObject("1.0.0.2.0.255", rows); tick()
         runCatching {
             val clock = GXDLMSClock("0.0.1.0.0.255")
             val value = executor.readObject(clock, 2)
             acceptMeterRtc(value)
             addRow(rows, "0.0.1.0.0.255", value)
         }
+        tick()
         val nameplate = runCatching {
             val profile = Is15959Catalog.profileByName("Nameplate Profile")
             loadProfile(profile.dataObis, profile.name)
         }.getOrNull()
+        tick()
+        emitPercent(ExtractionProgress.IDENTITY, 100)
         return IdentitySection(rows, nameplate)
     }
 
     suspend fun readIdentityHeader(): IdentitySection {
-        progress("Reading identity header...")
+        val totalSteps = 4
+        var step = 0
+        suspend fun tick() {
+            step++
+            emitPercent(ExtractionProgress.IDENTITY, ExtractionProgress.percent(step, totalSteps))
+        }
+        emitPercent(ExtractionProgress.IDENTITY, 0)
         val rows = mutableListOf<ParameterRow>()
-        readTextObject("0.0.42.0.0.255", rows)
-        readTextObject("0.0.96.1.0.255", rows)
-        readTextObject("0.0.96.1.1.255", rows)
-        runCatching { readMeterRtc() }
+        readTextObject("0.0.42.0.0.255", rows); tick()
+        readTextObject("0.0.96.1.0.255", rows); tick()
+        readTextObject("0.0.96.1.1.255", rows); tick()
+        runCatching { readMeterRtc() }; tick()
+        emitPercent(ExtractionProgress.IDENTITY, 100)
         return IdentitySection(rows)
     }
 
     suspend fun readCumulativeEnergies(): List<RegisterReading> {
-        progress("Reading cumulative energy and maximum demand registers...")
         val definitions = listOf(
             "1.0.1.8.0.255",
             "1.0.9.8.0.255",
@@ -544,35 +588,54 @@ class Is15959DataReader(
             "1.0.1.6.0.255",
             "1.0.9.6.0.255"
         )
-        return definitions.mapNotNull { obis ->
-            runCatching { readRegister(obis, obis.endsWith(".6.0.255")) }.getOrNull()
+        emitPercent(ExtractionProgress.ENERGY, 0)
+        val readings = mutableListOf<RegisterReading>()
+        definitions.forEachIndexed { index, obis ->
+            runCatching { readRegister(obis, obis.endsWith(".6.0.255")) }
+                .getOrNull()
+                ?.let(readings::add)
+            emitPercent(
+                ExtractionProgress.ENERGY,
+                ExtractionProgress.percent(index + 1, definitions.size)
+            )
         }
+        emitPercent(ExtractionProgress.ENERGY, 100)
+        return readings
     }
 
     suspend fun readInstantaneousProfile(): ProfileSection {
-        progress("Reading instantaneous profile...")
         val profile = Is15959Catalog.profileByName("Instantaneous Profile")
-        return loadProfile(profile.dataObis, "Instantaneous Parameters Snapshot", profile.scalerObis)
+        return loadProfile(
+            profile.dataObis,
+            "Instantaneous Parameters Snapshot",
+            profile.scalerObis,
+            progressSection = ExtractionProgress.INSTANTANEOUS
+        )
     }
 
     suspend fun readBillingProfile(): ProfileSection {
-        progress("Reading billing history profile...")
         val profile = Is15959Catalog.profileByName("Billing Profile")
-        return loadProfile(profile.dataObis, "Billing History Profile", profile.scalerObis)
+        return loadProfile(
+            profile.dataObis,
+            "Billing History Profile",
+            profile.scalerObis,
+            progressSection = ExtractionProgress.BILLING,
+            entriesBasedProgress = true
+        )
     }
 
     suspend fun readBlockLoadSurvey(
         maxEntries: Int = BLOCK_LOAD_MAX_ENTRIES,
         selection: LoadSurveySelection = loadSurveySelection
     ): ProfileSection {
-        progress("Reading block load survey (${selection.label})...")
         val profile = Is15959Catalog.profileByName("Block Load Profile")
         return loadRecentProfile(
             profile.dataObis,
             "Block Load Survey",
             maxEntries,
             profile.scalerObis,
-            selection
+            selection,
+            progressSection = ExtractionProgress.BLOCK_LOAD
         )
     }
 
@@ -580,38 +643,44 @@ class Is15959DataReader(
         maxEntries: Int = DAILY_LOAD_MAX_ENTRIES,
         selection: LoadSurveySelection = loadSurveySelection
     ): ProfileSection {
-        progress("Reading daily load survey (${selection.label})...")
         val profile = Is15959Catalog.profileByName("Daily Load Profile")
         return loadRecentProfile(
             profile.dataObis,
             "Daily Load Survey",
             maxEntries,
             profile.scalerObis,
-            selection
+            selection,
+            progressSection = ExtractionProgress.DAILY_LOAD
         )
     }
 
     suspend fun readTamperEventLogs(): List<TamperEventRow> {
-        progress("Reading tamper and event logs...")
         val statuses = mutableListOf<Pair<String, String>>()
-        val rows = Is15959Catalog.PROFILES
+        val compartments = Is15959Catalog.PROFILES
             .filter { it.dataObis.startsWith("0.0.99.98.") }
-            .flatMap { profile ->
-                runCatching { readTamperProfile(profile.name, profile.dataObis) }
-                    .onSuccess { values -> statuses += profile.name to "${values.size} entries" }
-                    .onFailure { error ->
-                        if (isObjectUndefined(error)) {
-                            statuses += profile.name to "not supported by this meter"
-                            transport.log(
-                                com.utility.dlmsreader.transport.TraceDirection.INFO,
-                                "${profile.name}: object undefined; treating as not supported"
-                            )
-                        } else {
-                            statuses += profile.name to "read failed: ${error.message ?: "unknown error"}"
-                        }
+        emitPercent(ExtractionProgress.TAMPER, 0)
+        val rows = compartments.flatMapIndexed { index, profile ->
+            val values = runCatching { readTamperProfile(profile.name, profile.dataObis) }
+                .onSuccess { values -> statuses += profile.name to "${values.size} entries" }
+                .onFailure { error ->
+                    if (isObjectUndefined(error)) {
+                        statuses += profile.name to "not supported by this meter"
+                        transport.log(
+                            com.utility.dlmsreader.transport.TraceDirection.INFO,
+                            "${profile.name}: object undefined; treating as not supported"
+                        )
+                    } else {
+                        statuses += profile.name to "read failed: ${error.message ?: "unknown error"}"
                     }
-                    .getOrDefault(emptyList())
-            }
+                }
+                .getOrDefault(emptyList())
+            emitPercent(
+                ExtractionProgress.TAMPER,
+                ExtractionProgress.percent(index + 1, compartments.size)
+            )
+            values
+        }
+        emitPercent(ExtractionProgress.TAMPER, 100)
         lastEventLogStatus = statuses
         return rows
     }
@@ -717,15 +786,39 @@ class Is15959DataReader(
         )
     }
 
-    private suspend fun loadProfile(obis: String, title: String, scalerObis: String? = null): ProfileSection {
-        val profile = GXDLMSProfileGeneric(obis)
-        executor.readObject(profile, 3)
-        configureRangeRestrictingObject(profile)
-        progress("Profile $obis captureObjects count=${profile.captureObjects.size}, scaler=$scalerObis")
-        val scalers = loadCompanionScalers(scalerObis ?: Is15959Catalog.profileByDataObis(obis).scalerObis)
-        if (scalers.isEmpty()) loadCaptureScalers(profile)
-        executor.readObject(profile, 2)
-        return formatProfile(profile, title, scalers)
+    private suspend fun loadProfile(
+        obis: String,
+        title: String,
+        scalerObis: String? = null,
+        progressSection: String? = null,
+        entriesBasedProgress: Boolean = false
+    ): ProfileSection {
+        progressSection?.let { beginSection(it) }
+        try {
+            val profile = GXDLMSProfileGeneric(obis)
+            executor.readObject(profile, 3)
+            configureRangeRestrictingObject(profile)
+            progress("Profile $obis captureObjects count=${profile.captureObjects.size}, scaler=$scalerObis")
+            val scalers = loadCompanionScalers(scalerObis ?: Is15959Catalog.profileByDataObis(obis).scalerObis)
+            if (scalers.isEmpty()) loadCaptureScalers(profile)
+            progressSection?.let { emitPercent(it, 50) }
+            val expectedEntries = if (entriesBasedProgress) {
+                runCatching { resolveEntriesInUse(profile) }.getOrDefault(0).takeIf { it > 0 }
+            } else {
+                null
+            }
+            executor.readObject(
+                profile,
+                2,
+                progressLabel = progressSection.takeIf { entriesBasedProgress },
+                expectedEntries = expectedEntries
+            )
+            val result = formatProfile(profile, title, scalers)
+            progressSection?.let { emitPercent(it, 100) }
+            return result
+        } finally {
+            if (progressSection != null && activeSection == progressSection) activeSection = null
+        }
     }
 
     private suspend fun loadRecentProfile(
@@ -733,8 +826,10 @@ class Is15959DataReader(
         title: String,
         maxEntries: Int,
         scalerObis: String?,
-        selection: LoadSurveySelection = LoadSurveySelection.RECENT
+        selection: LoadSurveySelection = LoadSurveySelection.RECENT,
+        progressSection: String? = null
     ): ProfileSection {
+        progressSection?.let { beginSection(it) }
         val profile = GXDLMSProfileGeneric(obis)
         executor.readObject(profile, 3)
         configureRangeRestrictingObject(profile)
@@ -1075,6 +1170,7 @@ class Is15959DataReader(
                 "powerOffGapFallback=${filterResult?.usedGapFallback == true}, " +
                 "fullCacheComplete=$fullCacheComplete. $note"
         )
+        progressSection?.let { finishSection(it) }
         return section.copy(
             fullRows = fullSection.rows,
             fullTotalRows = fullSection.totalRows,
@@ -1397,8 +1493,11 @@ class Is15959DataReader(
     private fun descriptor(obis: String): ObisDescriptor =
         Is15959Formatter.getObisLabelAndUnit(obis, runtimeMetadata, meterMake)
 
+    /**
+     * Technical diagnostic for the optical trace log only. User-facing
+     * progress is emitted strictly through [emitPercent].
+     */
     private suspend fun progress(message: String) {
-        onProgress(message)
         transport.log(com.utility.dlmsreader.transport.TraceDirection.INFO, message)
     }
 

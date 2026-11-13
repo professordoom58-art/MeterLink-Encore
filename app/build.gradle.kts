@@ -12,7 +12,7 @@ android {
         applicationId = "com.utility.dlmsreader"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()?.plus(100)) ?: 100
         versionName = "1.0.0-poc"
 
         ndk {
@@ -20,7 +20,21 @@ android {
         }
     }
 
+    signingConfigs {
+        // Permanent, committed key shared by local builds and GitHub Actions.
+        // Every APK therefore has the same signature and installs in place.
+        create("release") {
+            storeFile = file("meterlink-release.jks")
+            storePassword = "meterlink123"
+            keyAlias = "meterlink"
+            keyPassword = "meterlink123"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("release")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -28,7 +42,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
         }
     }
 

@@ -87,7 +87,8 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
     ): Result<MeterDataReport> = withContext(Dispatchers.IO) {
         runCatching {
             suspend fun reportProgress(message: String) {
-                onProgress(message)
+                // Connection/session diagnostics stay in the optical trace log;
+                // the user-facing banner only receives section percentages.
                 transport.log(TraceDirection.INFO, message)
             }
 
@@ -108,6 +109,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
 
                 if (module == MeterDataModule.IDENTITY && params.clientAddress == 0x10) {
                     transport.markMeterLinkEstablished()
+                    onProgress(ExtractionProgress.format(ExtractionProgress.IDENTITY, 100))
                     return@runCatching MeterDataReport(identity = publicIdentity.toIdentitySection())
                 }
                 if (params.clientAddress == 0x10) {
