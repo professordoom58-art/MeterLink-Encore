@@ -3,6 +3,11 @@
 
     <uses-feature android:name="android.hardware.usb.host" android:required="true" />
 
+    <!-- Update check against the GitHub Releases API and APK download. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Lets the downloaded APK be handed to the system package installer. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- Legacy shared-storage access for the Documents/MeterLink backup folder
          on Android 8/9. Android 10+ uses scoped MediaStore access instead. -->
     <uses-permission

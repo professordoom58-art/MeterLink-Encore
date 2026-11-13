@@ -9,7 +9,10 @@ import com.utility.dlmsreader.dlms.RegisterReading
 import com.utility.dlmsreader.storage.ExternalReadingBackup
 import com.utility.dlmsreader.storage.identityValue
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Locale
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -25,6 +28,10 @@ class ExternalReadingBackupTest {
 
     @get:Rule
     val temp = TemporaryFolder()
+
+    private fun timestamp(text: String): Long =
+        SimpleDateFormat(ExternalReadingBackup.TIMESTAMP_PATTERN, Locale.US)
+            .parse(text)!!.time
 
     private fun report(serial: String = "92717295"): MeterDataReport = MeterDataReport(
         identity = IdentitySection(
@@ -58,19 +65,21 @@ class ExternalReadingBackupTest {
     )
 
     @Test
-    fun `backup file uses the MeterLink naming convention`() {
+    fun `backup file uses the Meterlink serial and scan timestamp`() {
         val directory = temp.newFolder("MeterLink")
-        val file = ExternalReadingBackup.write(directory, report(), id = 7)
+        val scannedAt = timestamp("13-Nov-2026_13-23-21")
+        val file = ExternalReadingBackup.write(directory, report(), scannedAt)
 
-        assertEquals("MeterLink_Reading_92717295_7.json", file.name)
+        assertEquals("Meterlink-92717295-13-Nov-2026_13-23-21.json", file.name)
         assertTrue(file.exists())
         assertNotNull(ExternalReadingBackup.fromJson(file.readText()))
+        assertEquals(scannedAt, ExternalReadingBackup.parseScanTimestamp(file.name))
     }
 
     @Test
     fun `a new install rescans the folder and restores every reading`() {
         val directory = temp.newFolder("MeterLink")
-        ExternalReadingBackup.write(directory, report(), id = 1)
+        ExternalReadingBackup.write(directory, report(), timestamp("13-Nov-2026_13-23-21"))
 
         // Simulate a fresh SQLite database: only the shared folder survives.
         val restored = ExternalReadingBackup.scan(directory)
@@ -82,15 +91,60 @@ class ExternalReadingBackupTest {
     }
 
     @Test
-    fun `scan ignores unrelated files and parses the row id`() {
+    fun `scan accepts current and legacy names and rejects unrelated files`() {
         val directory = temp.newFolder("MeterLink")
-        ExternalReadingBackup.write(directory, report(), id = 42)
+        ExternalReadingBackup.write(directory, report(), timestamp("13-Nov-2026_13-23-21"))
+        File(
+            directory,
+            ExternalReadingBackup.legacyFileName("92717295", 42)
+        ).writeText(ExternalReadingBackup.toJson(report()))
         File(directory, "notes.json").writeText("{}")
         File(directory, "MeterLink_Reading_92717295_42.txt").writeText("ignored")
 
         val files = ExternalReadingBackup.scan(directory)
-        assertEquals(1, files.size)
-        assertEquals(42L, ExternalReadingBackup.parseId(files.single().name))
+        assertEquals(2, files.size)
+
+        val legacy = files.first {
+            it.name.startsWith(ExternalReadingBackup.LEGACY_FILE_PREFIX)
+        }
+        assertEquals(42L, ExternalReadingBackup.parseId(legacy.name))
+        assertEquals(
+            1234L,
+            ExternalReadingBackup.parseScanTimestamp(legacy.name, fallbackMs = 1234L)
+        )
+    }
+
+    @Test
+    fun `filename filter recognises both MeterLink conventions`() {
+        assertTrue(
+            ExternalReadingBackup.isMeterLinkJsonFile(
+                "Meterlink-92717295-13-Nov-2026_13-23-21.json"
+            )
+        )
+        assertTrue(
+            ExternalReadingBackup.isMeterLinkJsonFile("MeterLink_Reading_92717295_1.json")
+        )
+        assertTrue(ExternalReadingBackup.isMeterLinkJsonFile("meterlink-123.json"))
+        assertFalse(ExternalReadingBackup.isMeterLinkJsonFile("notes.json"))
+        assertFalse(ExternalReadingBackup.isMeterLinkJsonFile("MeterLink_Reading_1.txt"))
+    }
+
+    @Test
+    fun `scan timestamp falls back for legacy and malformed names`() {
+        assertEquals(
+            999L,
+            ExternalReadingBackup.parseScanTimestamp(
+                "MeterLink_Reading_92717295_1.json",
+                fallbackMs = 999L
+            )
+        )
+        assertEquals(
+            999L,
+            ExternalReadingBackup.parseScanTimestamp(
+                "Meterlink-92717295-broken.json",
+                fallbackMs = 999L
+            )
+        )
     }
 
     @Test

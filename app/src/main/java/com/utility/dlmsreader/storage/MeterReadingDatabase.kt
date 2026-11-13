@@ -5,9 +5,11 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import com.utility.dlmsreader.dlms.MeterDataReport
 import com.utility.dlmsreader.dlms.ProfileSection
@@ -316,7 +318,8 @@ class MeterReadingDatabase(
         }
         // Persist a human-readable JSON copy in Documents/MeterLink so the
         // reading survives an uninstall (internal SQLite storage does not).
-        val backupPath = writeBackup(merged, rowId)
+        // The file name carries the scan timestamp, not the changing row id.
+        val backupPath = writeBackup(merged, scannedAtEpochMs)
         if (backupPath.isNotBlank()) {
             db.update(
                 TABLE,
@@ -394,23 +397,59 @@ class MeterReadingDatabase(
     private fun pruneOldReadings(db: SQLiteDatabase) {
         val keep = "SELECT $COL_ID FROM $TABLE " +
             "ORDER BY $COL_SCANNED_AT_EPOCH DESC, $COL_ID DESC LIMIT $MAX_SAVED_READINGS"
-        val doomed = mutableListOf<Triple<Long, String, String>>()
+        val doomed = mutableListOf<BackupKey>()
         db.rawQuery(
-            "SELECT $COL_ID, $COL_SERIAL, $COL_BACKUP_PATH FROM $TABLE " +
+            "SELECT $COL_ID, $COL_SERIAL, $COL_SCANNED_AT_EPOCH, $COL_BACKUP_PATH FROM $TABLE " +
                 "WHERE $COL_ID NOT IN ($keep)",
             null
         ).use { cursor ->
             while (cursor.moveToNext()) {
-                doomed += Triple(cursor.getLong(0), cursor.getString(1), cursor.getString(2))
+                doomed += BackupKey(
+                    id = cursor.getLong(0),
+                    serial = cursor.getString(1),
+                    scannedAtEpochMs = cursor.getLong(2),
+                    path = cursor.getString(3)
+                )
             }
         }
         db.execSQL("DELETE FROM $TABLE WHERE $COL_ID NOT IN ($keep)")
-        doomed.forEach { (id, serial, path) -> deleteBackup(serial, id, path) }
+        doomed.forEach { deleteBackup(it) }
     }
 
     /** All saved readings, newest first, without touching the report BLOB. */
     suspend fun listSummaries(): List<SavedReadingSummary> = withContext(Dispatchers.IO) {
         restoreExternalBackupsIfNeeded()
+        querySummaries()
+    }
+
+    /**
+     * Rescans `Documents/MeterLink` on demand (the Refresh control) so files
+     * copied in later, or hidden by a reinstall's new app UID until the user
+     * grants folder access, appear without restarting the app.
+     */
+    suspend fun refreshExternalBackups(): List<SavedReadingSummary> = withContext(Dispatchers.IO) {
+        restoreMutex.withLock {
+            runCatching { restoreExternalBackupsBlocking() }
+            externalRestoreDone = true
+        }
+        querySummaries()
+    }
+
+    /**
+     * Imports every MeterLink JSON below a folder tree the user picked through
+     * `ACTION_OPEN_DOCUMENT_TREE`. This is the scoped-storage fallback: after a
+     * reinstall the new app UID cannot see JSONs written by the previous
+     * install, but a user-granted tree exposes them again.
+     */
+    suspend fun importFromTree(treeUri: Uri): Int = withContext(Dispatchers.IO) {
+        restoreMutex.withLock {
+            val imported = runCatching { importTreeBlocking(treeUri) }.getOrDefault(0)
+            externalRestoreDone = true
+            imported
+        }
+    }
+
+    private fun querySummaries(): List<SavedReadingSummary> {
         val columns = arrayOf(
             COL_ID,
             COL_SERIAL,
@@ -430,7 +469,7 @@ class MeterReadingDatabase(
             COL_BLOCK_COUNT,
             COL_TAMPER_COUNT
         )
-        readableDatabase.query(
+        return readableDatabase.query(
             TABLE,
             columns,
             null,
@@ -487,10 +526,11 @@ class MeterReadingDatabase(
     suspend fun deleteReport(id: Long): Int = withContext(Dispatchers.IO) {
         val db = writableDatabase
         var serial = UNKNOWN_SERIAL
+        var scannedAtEpochMs = 0L
         var backupPath = ""
         db.query(
             TABLE,
-            arrayOf(COL_SERIAL, COL_BACKUP_PATH),
+            arrayOf(COL_SERIAL, COL_SCANNED_AT_EPOCH, COL_BACKUP_PATH),
             "$COL_ID = ?",
             arrayOf(id.toString()),
             null,
@@ -499,11 +539,14 @@ class MeterReadingDatabase(
         ).use { cursor ->
             if (cursor.moveToFirst()) {
                 serial = cursor.getString(0).orEmpty()
-                backupPath = cursor.getString(1).orEmpty()
+                scannedAtEpochMs = cursor.getLong(1)
+                backupPath = cursor.getString(2).orEmpty()
             }
         }
         val deleted = db.delete(TABLE, "$COL_ID = ?", arrayOf(id.toString()))
-        if (deleted > 0) deleteBackup(serial, id, backupPath)
+        if (deleted > 0) {
+            deleteBackup(BackupKey(id, serial, scannedAtEpochMs, backupPath))
+        }
         deleted
     }
 
@@ -523,49 +566,154 @@ class MeterReadingDatabase(
 
     private fun restoreExternalBackupsBlocking() {
         val db = writableDatabase
-        val knownFingerprints = mutableSetOf<String>()
-        db.query(TABLE, arrayOf(COL_FINGERPRINT), null, null, null, null, null)
-            .use { cursor ->
-                while (cursor.moveToNext()) {
-                    cursor.getString(0)?.takeIf { it.isNotBlank() }
-                        ?.let(knownFingerprints::add)
-                }
-            }
-
+        val knownFingerprints = loadKnownFingerprints(db)
         var imported = 0
         listExternalBackups().forEach { backup ->
-            val text = backup.readText() ?: return@forEach
-            val report = ExternalReadingBackup.fromJson(text) ?: return@forEach
-            val fingerprint = ExternalReadingBackup.fingerprint(report)
-            if (!knownFingerprints.add(fingerprint)) return@forEach
-
-            val rowId = db.insertOrThrow(
-                TABLE,
-                null,
-                readingValues(report, "Restored Backup", backup.lastModifiedMs)
-            )
-            imported++
-            // Re-key the file to the new SQLite id (ids change after a
-            // reinstall) and remove the old name.
-            val newPath = writeBackup(report, rowId)
-            if (newPath.isNotBlank()) {
-                db.update(
-                    TABLE,
-                    ContentValues().apply { put(COL_BACKUP_PATH, newPath) },
-                    "$COL_ID = ?",
-                    arrayOf(rowId.toString())
-                )
-            }
-            val expectedName = ExternalReadingBackup.fileName(
-                report.identityValue(SERIAL_OBIS),
-                rowId
-            )
-            if (backup.name != expectedName) backup.delete()
+            if (importBackup(db, knownFingerprints, backup)) imported++
         }
         if (imported > 0) pruneOldReadings(db)
         // Create Documents/MeterLink on first launch even when it is empty.
         externalDirectory()
     }
+
+    private fun loadKnownFingerprints(db: SQLiteDatabase): MutableSet<String> {
+        val known = mutableSetOf<String>()
+        db.query(TABLE, arrayOf(COL_FINGERPRINT), null, null, null, null, null)
+            .use { cursor ->
+                while (cursor.moveToNext()) {
+                    cursor.getString(0)?.takeIf { it.isNotBlank() }?.let(known::add)
+                }
+            }
+        return known
+    }
+
+    /**
+     * Imports one backup file. The scan timestamp is recovered from the file
+     * name (falling back to the file's last-modified time), so restored rows
+     * keep the original reading date and the backup is renamed from the legacy
+     * `_<id>` form to `Meterlink-<serial>-<date>.json`.
+     */
+    private fun importBackup(
+        db: SQLiteDatabase,
+        knownFingerprints: MutableSet<String>,
+        backup: ExternalBackupFile
+    ): Boolean {
+        val text = backup.readText() ?: return false
+        val report = ExternalReadingBackup.fromJson(text) ?: return false
+        val fingerprint = ExternalReadingBackup.fingerprint(report)
+        if (!knownFingerprints.add(fingerprint)) return false
+
+        val scannedAt = ExternalReadingBackup.parseScanTimestamp(
+            backup.name,
+            backup.lastModifiedMs
+        )
+        val rowId = db.insertOrThrow(
+            TABLE,
+            null,
+            readingValues(report, "Restored Backup", scannedAt)
+        )
+        val newPath = writeBackup(report, scannedAt)
+        if (newPath.isNotBlank()) {
+            db.update(
+                TABLE,
+                ContentValues().apply { put(COL_BACKUP_PATH, newPath) },
+                "$COL_ID = ?",
+                arrayOf(rowId.toString())
+            )
+        }
+        val expectedName = ExternalReadingBackup.buildMeterJsonFileName(
+            report.identityValue(SERIAL_OBIS),
+            scannedAt
+        )
+        if (backup.name != expectedName) backup.delete()
+        return true
+    }
+
+    /** Imports MeterLink JSONs exposed by a user-granted SAF folder tree. */
+    private fun importTreeBlocking(treeUri: Uri): Int {
+        val db = writableDatabase
+        val knownFingerprints = loadKnownFingerprints(db)
+        var imported = 0
+        listTreeBackups(treeUri).forEach { backup ->
+            if (importBackup(db, knownFingerprints, backup)) imported++
+        }
+        if (imported > 0) pruneOldReadings(db)
+        return imported
+    }
+
+    /**
+     * Lists MeterLink JSONs under a SAF tree. The user normally picks the
+     * `MeterLink` folder itself, but picking `Documents` also works because a
+     * direct child folder named `MeterLink` is descended into.
+     */
+    private fun listTreeBackups(treeUri: Uri): List<ExternalBackupFile> {
+        val resolver = appContext.contentResolver
+        val rootId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }
+            .getOrNull() ?: return emptyList()
+        val backups = mutableListOf<ExternalBackupFile>()
+
+        fun collect(parentId: String, depth: Int) {
+            if (depth > 2) return
+            val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId)
+            runCatching {
+                resolver.query(
+                    children,
+                    arrayOf(
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE,
+                        DocumentsContract.Document.COLUMN_LAST_MODIFIED
+                    ),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val documentId = cursor.getString(0) ?: continue
+                        val name = cursor.getString(1) ?: continue
+                        val mimeType = cursor.getString(2).orEmpty()
+                        val modified = if (cursor.isNull(3)) 0L else cursor.getLong(3)
+                        if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
+                            if (name.equals(ExternalReadingBackup.FOLDER_NAME, ignoreCase = true)) {
+                                collect(documentId, depth + 1)
+                            }
+                        } else if (ExternalReadingBackup.isMeterLinkJsonFile(name)) {
+                            val documentUri = DocumentsContract.buildDocumentUriUsingTree(
+                                treeUri,
+                                documentId
+                            )
+                            backups += ExternalBackupFile(
+                                name = name,
+                                lastModifiedMs = modified,
+                                readText = {
+                                    runCatching {
+                                        resolver.openInputStream(documentUri)?.use { input ->
+                                            input.readBytes().toString(Charsets.UTF_8)
+                                        }
+                                    }.getOrNull()
+                                },
+                                delete = {
+                                    runCatching {
+                                        DocumentsContract.deleteDocument(resolver, documentUri)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        collect(rootId, 0)
+        return backups
+    }
+
+    private data class BackupKey(
+        val id: Long,
+        val serial: String,
+        val scannedAtEpochMs: Long,
+        val path: String
+    )
 
     private data class ExternalBackupFile(
         val name: String,
@@ -591,10 +739,12 @@ class MeterReadingDatabase(
                         MediaStore.Files.FileColumns.DISPLAY_NAME,
                         MediaStore.Files.FileColumns.DATE_MODIFIED
                     ),
-                    "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? AND " +
+                    "(${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? OR " +
+                        "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?) AND " +
                         "${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE ?",
                     arrayOf(
                         "${ExternalReadingBackup.FILE_PREFIX}%${ExternalReadingBackup.FILE_SUFFIX}",
+                        "${ExternalReadingBackup.LEGACY_FILE_PREFIX}%${ExternalReadingBackup.FILE_SUFFIX}",
                         "$relative%"
                     ),
                     null
@@ -641,21 +791,34 @@ class MeterReadingDatabase(
             Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
             ExternalReadingBackup.FOLDER_NAME
         )
-        if (!directory.exists()) directory.mkdirs()
+        val created = !directory.exists()
+        if (created) directory.mkdirs()
+        if (created && directory.isDirectory) {
+            // Make the freshly created folder visible to file managers and to
+            // the MediaStore index immediately, not only after a device reboot.
+            runCatching {
+                MediaScannerConnection.scanFile(
+                    appContext,
+                    arrayOf(directory.absolutePath),
+                    null,
+                    null
+                )
+            }
+        }
         directory.takeIf { it.isDirectory }
     }.getOrNull()
 
     /** Writes the JSON backup and returns a content URI or absolute path. */
-    private fun writeBackup(report: MeterDataReport, id: Long): String {
+    private fun writeBackup(report: MeterDataReport, scanTimestampMillis: Long): String {
         val serial = report.identityValue(SERIAL_OBIS)
-        val name = ExternalReadingBackup.fileName(serial, id)
+        val name = ExternalReadingBackup.buildMeterJsonFileName(serial, scanTimestampMillis)
         val json = ExternalReadingBackup.toJson(report)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             writeBackupViaMediaStore(name, json)?.let { return it }
         }
         val directory = externalDirectory() ?: return ""
         return runCatching {
-            ExternalReadingBackup.write(directory, report, id).absolutePath
+            ExternalReadingBackup.write(directory, report, scanTimestampMillis).absolutePath
         }.getOrDefault("")
     }
 
@@ -703,26 +866,36 @@ class MeterReadingDatabase(
     }.getOrNull()
 
     /** Deletes the MediaStore entry and/or direct file backing one reading. */
-    private fun deleteBackup(serial: String, id: Long, path: String) {
+    private fun deleteBackup(backup: BackupKey) {
         when {
-            path.startsWith("content://") ->
-                runCatching { appContext.contentResolver.delete(Uri.parse(path), null, null) }
-            path.isNotBlank() -> runCatching { File(path).delete() }
+            backup.path.startsWith("content://") ->
+                runCatching { appContext.contentResolver.delete(Uri.parse(backup.path), null, null) }
+            backup.path.isNotBlank() -> runCatching { File(backup.path).delete() }
         }
-        val name = ExternalReadingBackup.fileName(serial, id)
+        // Both the current timestamp name and the legacy `_<id>` name may exist
+        // for a row saved by an older build.
+        val names = listOf(
+            ExternalReadingBackup.buildMeterJsonFileName(
+                backup.serial,
+                backup.scannedAtEpochMs
+            ),
+            ExternalReadingBackup.legacyFileName(backup.serial, backup.id)
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             runCatching {
                 val relative = "${Environment.DIRECTORY_DOCUMENTS}/${ExternalReadingBackup.FOLDER_NAME}"
-                appContext.contentResolver.delete(
-                    MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
-                    "${MediaStore.Files.FileColumns.DISPLAY_NAME} = ? AND " +
-                        "${MediaStore.Files.FileColumns.RELATIVE_PATH} = ?",
-                    arrayOf(name, "$relative/")
-                )
+                names.forEach { name ->
+                    appContext.contentResolver.delete(
+                        MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
+                        "${MediaStore.Files.FileColumns.DISPLAY_NAME} = ? AND " +
+                            "${MediaStore.Files.FileColumns.RELATIVE_PATH} = ?",
+                        arrayOf(name, "$relative/")
+                    )
+                }
             }
         }
         externalDirectory()?.let { directory ->
-            runCatching { File(directory, name).delete() }
+            names.forEach { name -> runCatching { File(directory, name).delete() } }
         }
     }
 }
