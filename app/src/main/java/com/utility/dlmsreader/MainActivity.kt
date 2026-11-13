@@ -16,7 +16,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.material3.MenuAnchorType
@@ -27,6 +26,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.vectorResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -952,6 +953,7 @@ private fun HeaderOverflowMenu(
                         fontSize = 14.sp
                     )
                 },
+                leadingIcon = { MenuItemIcon(R.drawable.ic_menu_history) },
                 onClick = {
                     expanded = false
                     onHistory()
@@ -959,6 +961,7 @@ private fun HeaderOverflowMenu(
             )
             DropdownMenuItem(
                 text = { Text("About App", fontSize = 14.sp) },
+                leadingIcon = { MenuItemIcon(R.drawable.ic_menu_about) },
                 onClick = {
                     expanded = false
                     onAbout()
@@ -966,6 +969,17 @@ private fun HeaderOverflowMenu(
             )
         }
     }
+}
+
+/** Leading slot icon for the overflow menu, tinted with the cobalt accent. */
+@Composable
+private fun MenuItemIcon(drawableRes: Int) {
+    Icon(
+        painter = painterResource(drawableRes),
+        contentDescription = null,
+        tint = Cobalt,
+        modifier = Modifier.size(18.dp)
+    )
 }
 
 /**
@@ -1058,7 +1072,7 @@ private fun SavedReadingsHistoryDialog(
 ) {
     MeterLinkDialog(
         title = "Saved Meter Readings",
-        icon = Icons.AutoMirrored.Filled.List,
+        icon = ImageVector.vectorResource(R.drawable.ic_menu_history),
         onDismiss = onDismiss
     ) {
         if (readings.isEmpty()) {
@@ -1106,7 +1120,7 @@ private fun SavedReadingsHistoryDialog(
 private fun AboutAppDialog(onDismiss: () -> Unit) {
     MeterLinkDialog(
         title = "About MeterLink",
-        icon = Icons.Default.Info,
+        icon = ImageVector.vectorResource(R.drawable.ic_menu_about),
         onDismiss = onDismiss
     ) {
         Text(
