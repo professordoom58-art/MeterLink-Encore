@@ -6,4 +6,7 @@
     <files-path
         name="meterlink_internal"
         path="." />
+    <cache-path
+        name="meterlink_updates"
+        path="updates/" />
 </paths>

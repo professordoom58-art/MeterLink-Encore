@@ -2,6 +2,9 @@ package com.utility.dlmsreader.storage
 
 import com.utility.dlmsreader.dlms.MeterDataReport
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import org.json.JSONObject
 
 /**
@@ -15,8 +18,17 @@ import org.json.JSONObject
 object ExternalReadingBackup {
 
     const val FOLDER_NAME = "MeterLink"
-    const val FILE_PREFIX = "MeterLink_Reading_"
+
+    /** Current readable name: `Meterlink-<serial>-<scan date>.json`. */
+    const val FILE_PREFIX = "Meterlink-"
+
+    /** Name written by builds up to 1.0.57; still read during restore. */
+    const val LEGACY_FILE_PREFIX = "MeterLink_Reading_"
+
     const val FILE_SUFFIX = ".json"
+
+    /** Filesystem-safe scan timestamp used both in names and restore ordering. */
+    const val TIMESTAMP_PATTERN = "dd-MMM-yyyy_HH-mm-ss"
 
     private const val SERIAL_OBIS = "0.0.96.1.0.255"
     private const val UNKNOWN_SERIAL = "Unknown"
@@ -29,14 +41,61 @@ object ExternalReadingBackup {
         return cleaned.ifBlank { UNKNOWN_SERIAL }
     }
 
-    fun fileName(serial: String, id: Long): String =
-        "$FILE_PREFIX${sanitizeSerial(serial)}_$id$FILE_SUFFIX"
+    /**
+     * Builds `Meterlink-<serial>-<scan date>.json`, e.g.
+     * `Meterlink-92717295-13-Nov-2026_13-23-21.json`.
+     *
+     * Colons are illegal on FAT32, so the time uses hyphens.
+     */
+    fun buildMeterJsonFileName(
+        serial: String,
+        scanTimestampMillis: Long = System.currentTimeMillis()
+    ): String {
+        val formatted = SimpleDateFormat(TIMESTAMP_PATTERN, Locale.US)
+            .format(Date(scanTimestampMillis))
+        return "$FILE_PREFIX${sanitizeSerial(serial)}-$formatted$FILE_SUFFIX"
+    }
 
-    /** Row id encoded in a backup file name, or null for unrelated files. */
+    /** True for both the current and the legacy MeterLink JSON names. */
+    fun isMeterLinkJsonFile(name: String): Boolean {
+        val lower = name.lowercase(Locale.US)
+        return lower.endsWith(FILE_SUFFIX) &&
+            (lower.startsWith(FILE_PREFIX.lowercase(Locale.US)) ||
+                lower.startsWith(LEGACY_FILE_PREFIX.lowercase(Locale.US)))
+    }
+
+    /** Legacy `MeterLink_Reading_<serial>_<id>.json` name. */
+    fun legacyFileName(serial: String, id: Long): String =
+        "$LEGACY_FILE_PREFIX${sanitizeSerial(serial)}_$id$FILE_SUFFIX"
+
+    /** Row id encoded in a legacy backup file name, or null for other files. */
     fun parseId(name: String): Long? {
-        if (!name.startsWith(FILE_PREFIX) || !name.endsWith(FILE_SUFFIX)) return null
-        val stem = name.removePrefix(FILE_PREFIX).removeSuffix(FILE_SUFFIX)
+        if (!name.startsWith(LEGACY_FILE_PREFIX) || !name.endsWith(FILE_SUFFIX)) return null
+        val stem = name.removePrefix(LEGACY_FILE_PREFIX).removeSuffix(FILE_SUFFIX)
         return stem.substringAfterLast('_', "").toLongOrNull()
+    }
+
+    /**
+     * Scan timestamp embedded in a current file name, or [fallbackMs] for
+     * legacy names and unparseable files.
+     */
+    fun parseScanTimestamp(name: String, fallbackMs: Long = 0L): Long {
+        val lower = name.lowercase(Locale.US)
+        if (!lower.startsWith(FILE_PREFIX.lowercase(Locale.US))) return fallbackMs
+        if (!lower.endsWith(FILE_SUFFIX)) return fallbackMs
+        val stem = name.substring(FILE_PREFIX.length)
+            .substring(0, name.length - FILE_PREFIX.length - FILE_SUFFIX.length)
+        // A serial may itself contain '-', so the timestamp is always the last
+        // five dash-separated tokens: dd, MMM, yyyy_HH, mm, ss.
+        val parts = stem.split('-')
+        if (parts.size < 5) return fallbackMs
+        val stamp = parts.takeLast(5).joinToString("-")
+        return runCatching {
+            SimpleDateFormat(TIMESTAMP_PATTERN, Locale.US)
+                .apply { isLenient = false }
+                .parse(stamp)
+                ?.time
+        }.getOrNull() ?: fallbackMs
     }
 
     fun toJson(report: MeterDataReport): String =
@@ -46,19 +105,24 @@ object ExternalReadingBackup {
         runCatching { MeterReportSerializer.fromJson(JSONObject(text)) }.getOrNull()
 
     /** Writes a readable JSON backup into [directory] and returns the file. */
-    fun write(directory: File, report: MeterDataReport, id: Long): File {
+    fun write(
+        directory: File,
+        report: MeterDataReport,
+        scanTimestampMillis: Long = System.currentTimeMillis()
+    ): File {
         directory.mkdirs()
-        val file = File(directory, fileName(report.identityValue(SERIAL_OBIS), id))
+        val file = File(
+            directory,
+            buildMeterJsonFileName(report.identityValue(SERIAL_OBIS), scanTimestampMillis)
+        )
         file.writeText(toJson(report), Charsets.UTF_8)
         return file
     }
 
-    /** All `MeterLink_Reading_*.json` files, newest first. */
+    /** All current and legacy MeterLink JSON files, newest first. */
     fun scan(directory: File): List<File> =
         directory.listFiles { candidate ->
-            candidate.isFile &&
-                candidate.name.startsWith(FILE_PREFIX) &&
-                candidate.name.endsWith(FILE_SUFFIX)
+            candidate.isFile && isMeterLinkJsonFile(candidate.name)
         }?.sortedByDescending { it.lastModified() }.orEmpty()
 
     /**

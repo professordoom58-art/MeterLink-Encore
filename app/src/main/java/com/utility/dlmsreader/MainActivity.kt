@@ -1,8 +1,12 @@
 package com.utility.dlmsreader
 
+import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -18,6 +22,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.runtime.*
@@ -63,6 +68,8 @@ import com.utility.dlmsreader.storage.nameplateFieldCount
 import com.utility.dlmsreader.transport.OpticalUsbTransport
 import com.utility.dlmsreader.transport.TraceDirection
 import com.utility.dlmsreader.transport.TraceLog
+import com.utility.dlmsreader.update.MeterLinkRelease
+import com.utility.dlmsreader.update.MeterLinkUpdater
 import gurux.dlms.enums.Authentication
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -202,7 +209,138 @@ fun MeterReaderScreen(
     var savedPreviewSection by remember { mutableStateOf<PreviewSection?>(null) }
     var savedPreviewReport by remember { mutableStateOf<MeterDataReport?>(null) }
     var savedPreviewTitle by remember { mutableStateOf("") }
+    var refreshingSavedReadings by remember { mutableStateOf(false) }
     val traceLogs = remember { mutableStateListOf<TraceLog>() }
+
+    /**
+     * Scoped-storage fallback. A reinstall gets a new app UID, so JSONs written
+     * by the previous install are invisible to MediaStore/direct file access.
+     * The picker grants read access to Documents/MeterLink again and the import
+     * path re-adds the readings to the local database.
+     */
+    val folderPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        }
+        refreshingSavedReadings = true
+        scope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    val imported = readingDatabase.importFromTree(uri)
+                    imported to readingDatabase.listSummaries()
+                }
+            }
+            result
+                .onSuccess { (imported, list) ->
+                    savedReadings = list
+                    reportStatusText = if (imported > 0) {
+                        "✓ Restored $imported saved reading(s) from the selected folder."
+                    } else {
+                        "No new MeterLink JSON files were found in that folder."
+                    }
+                }
+                .onFailure { errorMessage = it.message ?: "Folder restore failed" }
+            refreshingSavedReadings = false
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // GitHub release updater
+    // ------------------------------------------------------------------
+
+    var checkingForUpdates by remember { mutableStateOf(false) }
+    var availableRelease by remember { mutableStateOf<MeterLinkRelease?>(null) }
+    var downloadingUpdate by remember { mutableStateOf(false) }
+    var updateError by remember { mutableStateOf<String?>(null) }
+    var pendingUpdateApk by remember { mutableStateOf<File?>(null) }
+
+    fun launchApkInstaller(apk: File) {
+        runCatching { context.startActivity(MeterLinkUpdater.installIntent(context, apk)) }
+            .onFailure { updateError = "Could not open the installer: ${it.message}" }
+    }
+
+    /** Returns from the "install unknown apps" screen; install continues if granted. */
+    val installPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {
+        val apk = pendingUpdateApk
+        pendingUpdateApk = null
+        if (apk == null) return@rememberLauncherForActivityResult
+        if (MeterLinkUpdater.canInstallPackages(context)) {
+            launchApkInstaller(apk)
+        } else {
+            updateError = "Allow MeterLink to install unknown apps, then tap Download & Install again."
+        }
+    }
+
+    fun installDownloadedApk(apk: File) {
+        if (MeterLinkUpdater.canInstallPackages(context)) {
+            launchApkInstaller(apk)
+            return
+        }
+        pendingUpdateApk = apk
+        runCatching {
+            installPermissionLauncher.launch(
+                MeterLinkUpdater.unknownSourcesSettingsIntent(context)
+            )
+        }.onFailure {
+            pendingUpdateApk = null
+            updateError = "Allow MeterLink to install unknown apps, then tap Download & Install again."
+        }
+    }
+
+    fun downloadAndInstall(release: MeterLinkRelease) {
+        if (downloadingUpdate) return
+        downloadingUpdate = true
+        updateError = null
+        scope.launch {
+            runCatching { MeterLinkUpdater.downloadApk(context, release) }
+                .onSuccess { apk ->
+                    downloadingUpdate = false
+                    installDownloadedApk(apk)
+                }
+                .onFailure {
+                    downloadingUpdate = false
+                    updateError = it.message ?: "The update download failed."
+                }
+        }
+    }
+
+    fun checkForUpdates() {
+        if (checkingForUpdates) return
+        checkingForUpdates = true
+        updateError = null
+        scope.launch {
+            runCatching { MeterLinkUpdater.checkForUpdate(context) }
+                .onSuccess { release ->
+                    checkingForUpdates = false
+                    if (release == null) {
+                        Toast.makeText(
+                            context,
+                            "MeterLink is up to date " +
+                                "(${MeterLinkUpdater.installedVersion(context)}).",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        availableRelease = release
+                    }
+                }
+                .onFailure {
+                    checkingForUpdates = false
+                    Toast.makeText(
+                        context,
+                        it.message ?: "Could not check for updates.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+        }
+    }
 
     fun readTypeLabel(module: MeterDataModule): String = when (module) {
         MeterDataModule.ALL -> "Full Read (All)"
@@ -474,6 +612,36 @@ fun MeterReaderScreen(
         }
     }
 
+    /**
+     * Re-scans `Documents/MeterLink` and reloads the saved list. When nothing is
+     * visible — the usual symptom after a reinstall — the SAF folder picker is
+     * offered so the previous install's JSONs can be imported.
+     */
+    fun refreshSavedReadings() {
+        if (refreshingSavedReadings) return
+        refreshingSavedReadings = true
+        scope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    val previousCount = savedReadings.size
+                    val list = readingDatabase.refreshExternalBackups()
+                    previousCount to list
+                }
+            }
+            result
+                .onSuccess { (previousCount, list) ->
+                    savedReadings = list
+                    val added = list.size - previousCount
+                    if (added > 0) {
+                        reportStatusText = "✓ $added new saved reading(s) found in Documents/MeterLink."
+                    }
+                    if (list.isEmpty()) folderPicker.launch(null)
+                }
+                .onFailure { errorMessage = it.message ?: "Refresh failed" }
+            refreshingSavedReadings = false
+        }
+    }
+
     LaunchedEffect(Unit) {
         savedReadings = readingDatabase.listSummaries()
     }
@@ -501,8 +669,10 @@ fun MeterReaderScreen(
             LandingHeader(
                 probeStatus = probeStatus,
                 historyCount = savedReadings.size,
+                checkingForUpdates = checkingForUpdates,
                 onScanUsb = onRefreshUsb,
                 onHistory = { showHistoryDialog = true },
+                onCheckUpdates = ::checkForUpdates,
                 onAbout = { showAboutDialog = true }
             )
         },
@@ -764,6 +934,8 @@ fun MeterReaderScreen(
             SavedReadingsCard(
                 readings = savedReadings,
                 busy = isReading,
+                refreshing = refreshingSavedReadings,
+                onRefresh = ::refreshSavedReadings,
                 onSelect = {
                     errorMessage = null
                     selectedSavedReading = it
@@ -784,6 +956,22 @@ fun MeterReaderScreen(
 
             if (showAboutDialog) {
                 AboutAppDialog(onDismiss = { showAboutDialog = false })
+            }
+
+            availableRelease?.let { release ->
+                UpdateAvailableDialog(
+                    release = release,
+                    installedVersion = MeterLinkUpdater.installedVersion(context),
+                    downloading = downloadingUpdate,
+                    error = updateError,
+                    onInstall = { downloadAndInstall(release) },
+                    onDismiss = {
+                        if (!downloadingUpdate) {
+                            availableRelease = null
+                            updateError = null
+                        }
+                    }
+                )
             }
 
             selectedSavedReading?.let { reading ->
@@ -953,8 +1141,10 @@ internal fun scanUsbDotColor(probeStatus: String): Color {
 private fun LandingHeader(
     probeStatus: String,
     historyCount: Int,
+    checkingForUpdates: Boolean,
     onScanUsb: () -> Unit,
     onHistory: () -> Unit,
+    onCheckUpdates: () -> Unit,
     onAbout: () -> Unit
 ) {
     val dotColor = scanUsbDotColor(probeStatus)
@@ -1022,7 +1212,9 @@ private fun LandingHeader(
                 }
                 HeaderOverflowMenu(
                     historyCount = historyCount,
+                    checkingForUpdates = checkingForUpdates,
                     onHistory = onHistory,
+                    onCheckUpdates = onCheckUpdates,
                     onAbout = onAbout
                 )
             }
@@ -1034,7 +1226,9 @@ private fun LandingHeader(
 @Composable
 private fun HeaderOverflowMenu(
     historyCount: Int,
+    checkingForUpdates: Boolean,
     onHistory: () -> Unit,
+    onCheckUpdates: () -> Unit,
     onAbout: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -1067,6 +1261,23 @@ private fun HeaderOverflowMenu(
                 onClick = {
                     expanded = false
                     onHistory()
+                },
+                colors = MenuDefaults.itemColors(
+                    textColor = Ink,
+                    leadingIconColor = Cobalt
+                )
+            )
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = if (checkingForUpdates) "Checking for Updates…" else "Check for Updates",
+                        fontSize = 14.sp
+                    )
+                },
+                leadingIcon = { MenuItemIcon(R.drawable.ic_system_update) },
+                onClick = {
+                    expanded = false
+                    onCheckUpdates()
                 },
                 colors = MenuDefaults.itemColors(
                     textColor = Ink,
@@ -1111,6 +1322,7 @@ private fun MeterLinkDialog(
     onDismiss: () -> Unit,
     dismissEnabled: Boolean = true,
     bodyMaxHeight: Dp = 440.dp,
+    actionContent: (@Composable RowScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Dialog(
@@ -1164,6 +1376,7 @@ private fun MeterLinkDialog(
                         .padding(start = 20.dp, end = 20.dp, bottom = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
                 ) {
+                    actionContent?.invoke(this)
                     FilledTonalButton(
                         onClick = onDismiss,
                         enabled = dismissEnabled,
@@ -1223,6 +1436,79 @@ private fun SavedReadingsHistoryDialog(
                 }
             }
         }
+    }
+}
+
+/**
+ * Release-notes dialog for a newer GitHub build. The APK is downloaded on tap
+ * and handed to the system package installer, which asks for confirmation.
+ */
+@Composable
+private fun UpdateAvailableDialog(
+    release: MeterLinkRelease,
+    installedVersion: String,
+    downloading: Boolean,
+    error: String?,
+    onInstall: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    MeterLinkDialog(
+        title = "Update available",
+        icon = ImageVector.vectorResource(R.drawable.ic_system_update),
+        onDismiss = onDismiss,
+        dismissEnabled = !downloading,
+        actionContent = {
+            Button(
+                onClick = onInstall,
+                enabled = !downloading,
+                shape = RoundedCornerShape(10.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Cobalt)
+            ) {
+                if (downloading) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = Color.White
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Downloading…", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                } else {
+                    Text(
+                        "Download & Install",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+        }
+    ) {
+        Text(
+            "A newer MeterLink build is available on GitHub.",
+            fontSize = 12.sp,
+            color = Ink
+        )
+        ResultRow("Latest release", release.tagName)
+        ResultRow("Installed build", installedVersion)
+        HorizontalDivider(color = Hairline)
+        Text(
+            "Release notes",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            color = Ink
+        )
+        Text(
+            release.notes.ifBlank { "No release notes were provided for this version." },
+            fontSize = 12.sp,
+            color = Muted
+        )
+        error?.let {
+            Text(it, fontSize = 12.sp, color = Color(0xFFB91C1C))
+        }
+        Text(
+            "The APK downloads from GitHub into the app cache. Android asks for confirmation before installing.",
+            fontSize = 10.sp,
+            color = Muted
+        )
     }
 }
 
@@ -1865,11 +2151,20 @@ private fun SavedReadingMetrics(
     }
 }
 
+/**
+ * UI-only preview formatter: drops the decimal fraction so `7,443.000` becomes
+ * `7,443`. Raw report data, JSON, PDF and Excel keep full precision.
+ */
+private fun String.toPreviewWholeUnits(): String {
+    val trimmed = trim()
+    if (trimmed.isBlank() || trimmed == "—") return trimmed
+    return trimmed.substringBefore('.').ifBlank { trimmed }
+}
+
 /** Strips the stored unit suffix so the readout can render `value + unit` once. */
 private fun energyAmount(reading: String, unit: String): String {
-    val trimmed = reading.trim()
-    val withoutUnit = trimmed.removeSuffix(unit).trim()
-    return withoutUnit.ifBlank { "—" }
+    val withoutUnit = reading.trim().removeSuffix(unit).trim()
+    return withoutUnit.toPreviewWholeUnits().ifBlank { "—" }
 }
 
 private fun MeterDataReport.energyReading(obis: String): String =
@@ -1878,6 +2173,7 @@ private fun MeterDataReport.energyReading(obis: String): String =
         ?.trim()
         .orEmpty()
         .ifBlank { "—" }
+        .toPreviewWholeUnits()
 
 private fun manufacturerTag(manufacturer: String): String {
     val upper = manufacturer.uppercase(Locale.US)
@@ -1892,6 +2188,8 @@ private fun manufacturerTag(manufacturer: String): String {
 private fun SavedReadingsCard(
     readings: List<SavedReadingSummary>,
     busy: Boolean,
+    refreshing: Boolean,
+    onRefresh: () -> Unit,
     onSelect: (SavedReadingSummary) -> Unit,
     onSectionClick: (SavedReadingSummary, PreviewSection) -> Unit
 ) {
@@ -1906,18 +2204,51 @@ private fun SavedReadingsCard(
             modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(
-                "Saved Meter Readings",
-                fontWeight = FontWeight.Bold,
-                color = Ink,
-                fontSize = 14.sp
-            )
-            if (readings.isEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
-                    "No saved readings yet.",
-                    color = Muted,
-                    fontSize = 11.sp
+                    "Saved Meter Readings",
+                    modifier = Modifier.weight(1f),
+                    fontWeight = FontWeight.Bold,
+                    color = Ink,
+                    fontSize = 14.sp
                 )
+                if (refreshing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = Cobalt
+                    )
+                } else {
+                    IconButton(
+                        onClick = onRefresh,
+                        enabled = !busy,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refresh saved readings",
+                            tint = Cobalt,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                }
+            }
+            if (readings.isEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(
+                        "No saved readings yet.",
+                        color = Muted,
+                        fontSize = 11.sp
+                    )
+                    Text(
+                        "If you reinstalled MeterLink, tap refresh to restore older files.",
+                        color = Muted,
+                        fontSize = 10.sp
+                    )
+                }
             } else {
                 Text(
                     "${readings.size} reading(s) stored locally — newest first",
@@ -1962,6 +2293,12 @@ private fun SavedReadingsCard(
                     }
                 }
             }
+            HorizontalDivider(color = Hairline)
+            Text(
+                "Data is saved locally inside Documents/MeterLink folder.",
+                fontSize = 10.sp,
+                color = Muted
+            )
         }
     }
 }
