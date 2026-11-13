@@ -17,7 +17,6 @@ import org.json.JSONObject
 data class MeterLinkRelease(
     val tagName: String,
     val version: String,
-    val notes: String,
     val apkUrl: String,
     val apkName: String
 )
@@ -100,7 +99,6 @@ object MeterLinkUpdater {
             return MeterLinkRelease(
                 tagName = tag,
                 version = tag.removePrefix("v").removePrefix("V"),
-                notes = json.optString("body").trim(),
                 apkUrl = apkUrl,
                 apkName = apkName
             )
