@@ -1115,23 +1115,28 @@ private fun sameMeterSerial(existing: MeterDataReport, incoming: MeterDataReport
 private val ScanNegativeMarkers = listOf(
     "no ", "not ", "none", "error", "fail", "denied", "disconnect"
 )
-private val ScanHealthyMarkers = listOf("ready", "link", "established", "connected")
-private val ScanDetectedMarkers = listOf("detected", "cable")
+/**
+ * Green markers: a probe/cable is physically present, or the meter link is up.
+ * "USB Cable Detected" turns the dot green without waiting for a meter reply.
+ */
+private val ScanHealthyMarkers = listOf(
+    "ready", "link", "established", "connected", "detected", "cable"
+)
 
 /**
- * Dot colour for the SCAN USB pill.
+ * Dot colour for the SCAN USB pill: red with no USB probe, green once one is
+ * detected.
  *
  * Negative/error wording is matched first: "No USB Optical Probe Detected"
  * contains both "no " and "detected", and "Cable Connected, but No Meter
  * Response" contains both "cable" and "connected", so a positive-first match
- * would paint a disconnected probe amber or green.
+ * would paint a disconnected probe green.
  */
 internal fun scanUsbDotColor(probeStatus: String): Color {
     val status = probeStatus.lowercase(Locale.US)
     return when {
         ScanNegativeMarkers.any(status::contains) -> Color(0xFFEF4444)
         ScanHealthyMarkers.any(status::contains) -> Color(0xFF10B981)
-        ScanDetectedMarkers.any(status::contains) -> Color(0xFFF59E0B)
         else -> Color(0xFFEF4444)
     }
 }

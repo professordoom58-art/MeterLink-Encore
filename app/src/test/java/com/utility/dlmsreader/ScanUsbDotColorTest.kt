@@ -8,7 +8,6 @@ import org.junit.Test
 class ScanUsbDotColorTest {
 
     private val red = Color(0xFFEF4444)
-    private val amber = Color(0xFFF59E0B)
     private val green = Color(0xFF10B981)
 
     @Test
@@ -38,8 +37,8 @@ class ScanUsbDotColorTest {
     }
 
     @Test
-    fun `cable detected without link is amber`() {
-        assertEquals(amber, scanUsbDotColor("USB Cable Detected"))
+    fun `a detected usb probe turns the dot green`() {
+        assertEquals(green, scanUsbDotColor("USB Cable Detected"))
     }
 
     @Test
