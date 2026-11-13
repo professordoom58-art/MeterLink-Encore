@@ -29,10 +29,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.vectorResource
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
@@ -127,8 +130,15 @@ class MainActivity : ComponentActivity() {
                     onBackground = Ink,
                     surface = Color.White,
                     onSurface = Ink,
-                    surfaceVariant = SoftBlue,
+                    surfaceVariant = Color(0xFFF8FAFC),
                     onSurfaceVariant = Muted,
+                    surfaceTint = Color.Transparent,
+                    surfaceContainer = Color.White,
+                    surfaceContainerLow = Color.White,
+                    surfaceContainerHigh = Color.White,
+                    surfaceContainerHighest = Color(0xFFF1F5F9),
+                    secondaryContainer = Color(0xFFEFF6FF),
+                    onSecondaryContainer = Color(0xFF1D4ED8),
                     outline = Hairline,
                     error = Color(0xFFEF4444)
                 )
@@ -542,7 +552,12 @@ fun MeterReaderScreen(
                         )
                         ExposedDropdownMenu(
                             expanded = vendorMenuExpanded,
-                            onDismissRequest = { vendorMenuExpanded = false }
+                            onDismissRequest = { vendorMenuExpanded = false },
+                            containerColor = Color.White,
+                            tonalElevation = 0.dp,
+                            shadowElevation = 8.dp,
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, Hairline)
                         ) {
                             VendorPasswordCatalog.VENDORS.forEach { vendor ->
                                 DropdownMenuItem(
@@ -551,7 +566,11 @@ fun MeterReaderScreen(
                                         selectedVendor = vendor
                                         llsPassword = vendor.defaultPrimaryPassword
                                         vendorMenuExpanded = false
-                                    }
+                                    },
+                                    colors = MenuDefaults.itemColors(
+                                        textColor = Ink,
+                                        leadingIconColor = Cobalt
+                                    )
                                 )
                             }
                         }
@@ -1030,7 +1049,12 @@ private fun HeaderOverflowMenu(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            offset = DpOffset(x = (-16).dp, y = 4.dp)
+            offset = DpOffset(x = (-16).dp, y = 4.dp),
+            containerColor = Color.White,
+            tonalElevation = 0.dp,
+            shadowElevation = 8.dp,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, Hairline)
         ) {
             DropdownMenuItem(
                 text = {
@@ -1043,7 +1067,11 @@ private fun HeaderOverflowMenu(
                 onClick = {
                     expanded = false
                     onHistory()
-                }
+                },
+                colors = MenuDefaults.itemColors(
+                    textColor = Ink,
+                    leadingIconColor = Cobalt
+                )
             )
             DropdownMenuItem(
                 text = { Text("About App", fontSize = 14.sp) },
@@ -1051,7 +1079,11 @@ private fun HeaderOverflowMenu(
                 onClick = {
                     expanded = false
                     onAbout()
-                }
+                },
+                colors = MenuDefaults.itemColors(
+                    textColor = Ink,
+                    leadingIconColor = Cobalt
+                )
             )
         }
     }
@@ -1196,69 +1228,117 @@ private fun SavedReadingsHistoryDialog(
 
 @Composable
 private fun AboutAppDialog(onDismiss: () -> Unit) {
-    MeterLinkDialog(
-        title = "About MeterLink",
-        icon = ImageVector.vectorResource(R.drawable.ic_menu_about),
-        onDismiss = onDismiss
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Text(
-            "MeterLink DLMS meter reader (beta)",
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = Ink
-        )
-        Text(
-            "Supported capabilities",
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = Cobalt
-        )
-        CapabilityBullet("Supported meter companies: L&T / Schneider, Genus, Secure, HPL, Avon")
-        CapabilityBullet("Saved meter readings with instant offline PDF & Excel re-export")
-        CapabilityBullet(
-            "All kinds of readings supported: Identity, Cumulative Energy & MD, " +
-                "Instantaneous, Billing History, Block Load, Daily Load, and Tamper Logs"
-        )
-        CapabilityBullet("Optical USB probe")
-        AboutBlock("Builder", "Made by Mihir")
+        Card(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .padding(vertical = 16.dp),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 620.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(start = 22.dp, end = 22.dp, top = 22.dp, bottom = 18.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "About App",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Ink
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "MeterLink - DLMS meter reader [BETA]",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Cobalt
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Features:",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Ink
+                )
+                Spacer(Modifier.height(10.dp))
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    AboutFeature("Auto-detect - USB optical probe")
+                    AboutFeature(
+                        "Supported Vendors -\n" +
+                            "L&T/Schneider, Genus, Secure, HPL & Avon\n" +
+                            "(custom lls password also supported for unknown vendors)"
+                    )
+                    AboutFeature(
+                        "Supported Readings -\n" +
+                            "Identity, Cumulative energy & MD, Instantaneous, Billing history, " +
+                            "Block Load, Daily load & Tamper logs"
+                    )
+                    AboutFeature("Export supported in Excel format (.xlsx) or PDF format.")
+                    AboutFeature(
+                        "Local save supported, even if you delete the app, your data is safe."
+                    )
+                }
+                Spacer(Modifier.height(20.dp))
+                Text(
+                    "Creator",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Ink
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = buildAnnotatedString {
+                        append("Made by ")
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) {
+                            append("MIHIR")
+                        }
+                    },
+                    fontSize = 13.sp,
+                    color = Ink
+                )
+                Text(
+                    "made by using GURUx open source library",
+                    modifier = Modifier.padding(top = 6.dp),
+                    fontSize = 11.5.sp,
+                    color = Color(0xFF64748B)
+                )
+                Spacer(Modifier.height(16.dp))
+                FilledTonalButton(
+                    onClick = onDismiss,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = SoftBlue,
+                        contentColor = Cobalt
+                    )
+                ) {
+                    Text("Close", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
     }
 }
 
+/** One left-aligned feature paragraph inside the About dialog. */
 @Composable
-private fun CapabilityBullet(text: String) {
-    Row(
+private fun AboutFeature(text: String) {
+    Text(
+        text,
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.Top
-    ) {
-        Text(
-            "•",
-            modifier = Modifier.width(14.dp),
-            fontSize = 13.sp,
-            lineHeight = 18.sp,
-            fontWeight = FontWeight.Bold,
-            color = Cobalt
-        )
-        Text(
-            text,
-            modifier = Modifier.weight(1f),
-            fontSize = 13.sp,
-            lineHeight = 18.sp,
-            color = Color(0xFF334155)
-        )
-    }
-}
-
-@Composable
-private fun AboutBlock(label: String, value: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(
-            label,
-            fontSize = 11.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = Cobalt
-        )
-        Text(value, fontSize = 12.sp, color = Ink)
-    }
+        fontSize = 13.sp,
+        lineHeight = 19.sp,
+        color = Color(0xFF334155)
+    )
 }
 
 @Composable
