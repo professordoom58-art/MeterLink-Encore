@@ -12,8 +12,11 @@ android {
         applicationId = "com.utility.dlmsreader"
         minSdk = 26
         targetSdk = 35
-        versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()?.plus(100)) ?: 100
-        versionName = "1.0.0-poc"
+        // CI publishes tag v1.0.<run> with versionCode = 100 + run. Local builds
+        // use the current release line so About and the update check agree.
+        val ciBuildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+        versionCode = (ciBuildNumber ?: 0) + 100
+        versionName = "1.0.${ciBuildNumber ?: 58}"
 
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")

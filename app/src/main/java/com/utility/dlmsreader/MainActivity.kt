@@ -9,6 +9,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -955,7 +956,10 @@ fun MeterReaderScreen(
             }
 
             if (showAboutDialog) {
-                AboutAppDialog(onDismiss = { showAboutDialog = false })
+                AboutAppDialog(
+                    version = MeterLinkUpdater.installedVersion(context),
+                    onDismiss = { showAboutDialog = false }
+                )
             }
 
             availableRelease?.let { release ->
@@ -1506,7 +1510,7 @@ private fun UpdateAvailableDialog(
 }
 
 @Composable
-private fun AboutAppDialog(onDismiss: () -> Unit) {
+private fun AboutAppDialog(version: String, onDismiss: () -> Unit) {
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -1529,69 +1533,76 @@ private fun AboutAppDialog(onDismiss: () -> Unit) {
             ) {
                 Text(
                     "About App",
-                    fontSize = 18.sp,
+                    fontSize = 19.sp,
                     fontWeight = FontWeight.Bold,
                     color = Ink
                 )
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(
-                    "MeterLink - DLMS meter reader [BETA]",
-                    fontSize = 13.5.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Cobalt
+                    "DLMS / IS 15959 Optical Meter Reader",
+                    fontSize = 12.5.sp,
+                    color = Muted,
+                    textAlign = TextAlign.Center
                 )
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    "Features:",
-                    modifier = Modifier.padding(bottom = 8.dp),
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = Ink
-                )
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                Spacer(Modifier.height(10.dp))
+                Surface(
+                    color = SoftBlue,
+                    shape = RoundedCornerShape(percent = 50),
+                    border = BorderStroke(1.dp, SoftBlueBorder)
                 ) {
-                    AboutBullet(
-                        title = "Auto-detect:",
-                        description = "USB optical probe"
-                    )
-                    AboutBullet(
-                        title = "Supported Vendors:",
-                        subItems = listOf(
-                            "L&T / Schneider, Genus, Secure, HPL & Avon",
-                            "Custom LLS password supported for unknown vendors"
-                        )
-                    )
-                    AboutBullet(
-                        title = "Supported Readings:",
-                        subItems = listOf(
-                            "Identity, Cumulative energy & MD, Instantaneous",
-                            "Billing history, Block Load, Daily load & Tamper logs"
-                        )
-                    )
-                    AboutBullet(
-                        title = "Export Formats:",
-                        description = "Excel (.xlsx) & PDF report format"
-                    )
-                    AboutBullet(
-                        title = "Persistent Local Save:",
-                        description = "Even if you delete the app, your data is safe"
+                    Text(
+                        "BETA • $version",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 0.6.sp,
+                        color = Cobalt
                     )
                 }
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(20.dp))
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(TileFill)
+                        .border(1.dp, Hairline, RoundedCornerShape(14.dp))
+                        .padding(horizontal = 16.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    AboutFeature(
+                        title = "Supported Vendors",
+                        body = "L&T / Schneider, Genus, Secure, HPL & Avon",
+                        caption = "Custom LLS password support for unknown vendors"
+                    )
+                    AboutFeature(
+                        title = "Supported Readings",
+                        body = "Identity, Cumulative Energy & MD, Instantaneous, " +
+                            "Billing History, Block Load, Daily Load & Tamper Logs"
+                    )
+                    AboutFeature(
+                        title = "Export Formats",
+                        body = "Excel (.xlsx) & PDF Report Format"
+                    )
+                    AboutFeature(
+                        title = "Persistent Local Storage",
+                        body = "Readings are safely stored in Documents/MeterLink and persist " +
+                            "across app updates or uninstalls."
+                    )
+                }
+                Spacer(Modifier.height(18.dp))
                 HorizontalDivider(
                     modifier = Modifier.fillMaxWidth(),
-                    color = Color(0xFFE2E8F0)
+                    color = Hairline
                 )
                 Spacer(Modifier.height(14.dp))
                 Text(
-                    "Creator",
-                    fontSize = 13.sp,
+                    "CREATOR",
+                    fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
-                    color = Ink
+                    letterSpacing = 1.2.sp,
+                    color = Muted
                 )
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(
                     text = buildAnnotatedString {
                         append("Made by ")
@@ -1600,22 +1611,24 @@ private fun AboutAppDialog(onDismiss: () -> Unit) {
                         }
                     },
                     fontSize = 13.sp,
-                    color = Ink
+                    color = Ink,
+                    textAlign = TextAlign.Center
                 )
+                Spacer(Modifier.height(4.dp))
                 Text(
-                    "made by using GURUx open source library",
-                    modifier = Modifier.padding(top = 6.dp),
-                    fontSize = 11.5.sp,
-                    color = Color(0xFF64748B)
+                    "Powered by Gurux DLMS Open Source Library",
+                    fontSize = 11.sp,
+                    color = Muted,
+                    textAlign = TextAlign.Center
                 )
-                Spacer(Modifier.height(16.dp))
-                FilledTonalButton(
+                Spacer(Modifier.height(18.dp))
+                Button(
                     onClick = onDismiss,
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.filledTonalButtonColors(
-                        containerColor = SoftBlue,
-                        contentColor = Cobalt
-                    )
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp),
+                    shape = RoundedCornerShape(percent = 50),
+                    colors = ButtonDefaults.buttonColors(containerColor = Cobalt)
                 ) {
                     Text("Close", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 }
@@ -1625,59 +1638,43 @@ private fun AboutAppDialog(onDismiss: () -> Unit) {
 }
 
 /**
- * Centered primary feature bullet: cobalt glyph, bold title and optional
- * inline description, with centered sub-bullets beneath it.
+ * Left-aligned feature block: a quiet uppercase heading, the value line, and
+ * an optional muted caption. Used inside the rounded features container.
  */
 @Composable
-private fun AboutBullet(
+private fun AboutFeature(
     title: String,
-    description: String? = null,
-    subItems: List<String> = emptyList()
+    body: String,
+    caption: String? = null
 ) {
     Column(
         modifier = Modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(3.dp)
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(
-            text = buildAnnotatedString {
-                withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = Cobalt)) {
-                    append("•  ")
-                }
-                withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, color = Ink)) {
-                    append(title)
-                }
-                if (description != null) {
-                    append(" ")
-                    withStyle(SpanStyle(color = Color(0xFF334155))) {
-                        append(description)
-                    }
-                }
-            },
-            modifier = Modifier.fillMaxWidth(),
+            title,
+            fontSize = 10.5.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = 0.4.sp,
+            color = Muted
+        )
+        Text(
+            body,
             fontSize = 13.sp,
             lineHeight = 18.sp,
-            textAlign = TextAlign.Center
+            color = Ink,
+            textAlign = TextAlign.Start
         )
-        subItems.forEach { item -> AboutSubBullet(item) }
+        caption?.let {
+            Text(
+                it,
+                fontSize = 11.sp,
+                lineHeight = 15.sp,
+                color = Muted,
+                textAlign = TextAlign.Start
+            )
+        }
     }
-}
-
-/** Centered secondary bullet used for the vendor and reading lists. */
-@Composable
-private fun AboutSubBullet(text: String) {
-    Text(
-        text = buildAnnotatedString {
-            withStyle(SpanStyle(color = Color(0xFF64748B))) { append("◦  ") }
-            withStyle(SpanStyle(color = Color(0xFF334155))) { append(text) }
-        },
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 6.dp),
-        fontSize = 13.sp,
-        lineHeight = 18.sp,
-        textAlign = TextAlign.Center
-    )
 }
 
 @Composable
