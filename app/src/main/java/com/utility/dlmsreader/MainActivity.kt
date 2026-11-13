@@ -1440,8 +1440,8 @@ private fun SavedReadingsHistoryDialog(
 }
 
 /**
- * Release-notes dialog for a newer GitHub build. The APK is downloaded on tap
- * and handed to the system package installer, which asks for confirmation.
+ * Notice for a newer GitHub build. The APK is downloaded on tap and handed to
+ * the system package installer, which asks for confirmation.
  */
 @Composable
 private fun UpdateAvailableDialog(
@@ -1489,18 +1489,6 @@ private fun UpdateAvailableDialog(
         )
         ResultRow("Latest release", release.tagName)
         ResultRow("Installed build", installedVersion)
-        HorizontalDivider(color = Hairline)
-        Text(
-            "Release notes",
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-            color = Ink
-        )
-        Text(
-            release.notes.ifBlank { "No release notes were provided for this version." },
-            fontSize = 12.sp,
-            color = Muted
-        )
         error?.let {
             Text(it, fontSize = 12.sp, color = Color(0xFFB91C1C))
         }
