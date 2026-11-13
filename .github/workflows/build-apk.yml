@@ -50,11 +50,15 @@ jobs:
           tag_name: v1.0.${{ github.run_number }}
           name: "MeterLink v1.0.${{ github.run_number }} APK"
           body: |
-            ### MeterLink v1.0.${{ github.run_number }} APK is live!
-            Commit `${{ github.sha }}`.
+            ### MeterLink v1.0.${{ github.run_number }} is ready
 
-            **How to use:**
-            Grab the APK under Assets below.
+            **Download the MeterLink app below.**
+
+            1. Open the app file under **Assets**.
+            2. Allow installation if Android asks.
+            3. Connect your optical cable and tap **Scan USB**.
+
+            MeterLink keeps your readings on your phone and works without the internet.
           files: "MeterLink-v1.0.${{ github.run_number }}.apk"
 
 
