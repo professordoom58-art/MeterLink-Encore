@@ -16,7 +16,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
@@ -36,6 +35,7 @@ import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import com.utility.dlmsreader.dlms.ConnectionParams
@@ -71,6 +71,9 @@ private val SoftBlue = Color(0xFFEFF6FF)
 private val SoftBlueBorder = Color(0xFFBFDBFE)
 private val TileFill = Color(0xFFF8FAFC)
 private val Hairline = Color(0xFFE2E8F0)
+
+/** Landing-screen feature flag for the live hex console; collection/export stay active. */
+private const val SHOW_LIVE_PROTOCOL_TRACE = false
 
 class MainActivity : ComponentActivity() {
 
@@ -710,65 +713,82 @@ fun MeterReaderScreen(
                 )
             }
 
-            // 3. Live Hex Trace Console
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    "Live Protocol Trace (latest ${minOf(traceLogs.size, 150)} of ${traceLogs.size})",
-                    modifier = Modifier.weight(1f).padding(end = 8.dp),
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+            // 3. Live Hex Trace Console (kept for field diagnostics; off by default).
+            if (SHOW_LIVE_PROTOCOL_TRACE) {
+                LiveProtocolTraceSection(
+                    traceLogs = traceLogs,
+                    onExportHex = ::exportHexLog
                 )
-                TextButton(
-                    onClick = ::exportHexLog,
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
-                ) {
-                    Text("Export Hex Log", fontSize = 12.sp)
-                }
             }
-            Spacer(Modifier.height(8.dp))
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(200.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFF0F172A))
-                    .padding(10.dp)
-            ) {
-                val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.US) }
-                val visibleTraceLogs = traceLogs.take(150)
-                if (traceLogs.isEmpty()) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text("Awaiting optical connection...", color = Color.Gray, fontSize = 11.sp)
-                    }
-                } else {
-                    LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        items(visibleTraceLogs) { item ->
-                            val color = when (item.direction) {
-                                TraceDirection.TX -> Color(0xFF60A5FA)
-                                TraceDirection.RX -> Color(0xFF4ADE80)
-                                TraceDirection.INFO -> Color(0xFFFACC15)
-                                TraceDirection.ERROR -> Color(0xFFF87171)
-                            }
-                            Text(
-                                text = "${timeFormat.format(Date(item.timestampMs))} [${item.direction}] ${item.hexOrMessage}",
-                                color = color,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 10.sp
-                            )
-                        }
-                    }
-                }
-            }
-            Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+/**
+ * Collapsible diagnostics console. Trace collection and [exportHexLog] remain
+ * always active; only this rendering is gated by [SHOW_LIVE_PROTOCOL_TRACE].
+ */
+@Composable
+private fun LiveProtocolTraceSection(
+    traceLogs: List<TraceLog>,
+    onExportHex: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "Live Protocol Trace (latest ${minOf(traceLogs.size, 150)} of ${traceLogs.size})",
+            modifier = Modifier.weight(1f).padding(end = 8.dp),
+            fontWeight = FontWeight.Bold,
+            fontSize = 14.sp,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        TextButton(
+            onClick = onExportHex,
+            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+        ) {
+            Text("Export Hex Log", fontSize = 12.sp)
+        }
+    }
+    Spacer(Modifier.height(8.dp))
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(200.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color(0xFF0F172A))
+            .padding(10.dp)
+    ) {
+        val timeFormat = remember { SimpleDateFormat("HH:mm:ss.SSS", Locale.US) }
+        val visibleTraceLogs = traceLogs.take(150)
+        if (traceLogs.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("Awaiting optical connection...", color = Color.Gray, fontSize = 11.sp)
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                items(visibleTraceLogs) { item ->
+                    val color = when (item.direction) {
+                        TraceDirection.TX -> Color(0xFF60A5FA)
+                        TraceDirection.RX -> Color(0xFF4ADE80)
+                        TraceDirection.INFO -> Color(0xFFFACC15)
+                        TraceDirection.ERROR -> Color(0xFFF87171)
+                    }
+                    Text(
+                        text = "${timeFormat.format(Date(item.timestampMs))} [${item.direction}] ${item.hexOrMessage}",
+                        color = color,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.sp
+                    )
+                }
+            }
+        }
+    }
+    Spacer(Modifier.height(24.dp))
 }
 
 @Composable
@@ -949,8 +969,8 @@ private fun HeaderOverflowMenu(
 }
 
 /**
- * Shared Material 3 card dialog shell: rounded elevated surface, icon + bold
- * title header with a dismiss button, padded scrollable body and tonal actions.
+ * Shared Material 3 card dialog shell: wide rounded surface, icon + bold title
+ * header, padded scrollable body, and a single tonal close action.
  */
 @Composable
 private fun MeterLinkDialog(
@@ -960,26 +980,29 @@ private fun MeterLinkDialog(
     dismissEnabled: Boolean = true,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Dialog(onDismissRequest = { if (dismissEnabled) onDismiss() }) {
+    Dialog(
+        onDismissRequest = { if (dismissEnabled) onDismiss() },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
         Card(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
+                .fillMaxWidth(0.92f)
+                .padding(vertical = 16.dp),
             shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(start = 20.dp, end = 8.dp, top = 12.dp),
+                        .padding(start = 20.dp, end = 20.dp, top = 16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
                         imageVector = icon,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
+                        tint = Cobalt,
                         modifier = Modifier.size(20.dp)
                     )
                     Spacer(Modifier.width(8.dp))
@@ -987,19 +1010,11 @@ private fun MeterLinkDialog(
                         text = title,
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        maxLines = 2,
+                        color = Ink,
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
-                    IconButton(onClick = onDismiss, enabled = dismissEnabled) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
                 }
                 Column(
                     modifier = Modifier
@@ -1019,9 +1034,13 @@ private fun MeterLinkDialog(
                     FilledTonalButton(
                         onClick = onDismiss,
                         enabled = dismissEnabled,
-                        shape = RoundedCornerShape(10.dp)
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = SoftBlue,
+                            contentColor = Cobalt
+                        )
                     ) {
-                        Text("Close", fontSize = 13.sp)
+                        Text("Close", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -1093,13 +1112,14 @@ private fun AboutAppDialog(onDismiss: () -> Unit) {
         Text(
             "MeterLink DLMS meter reader (beta)",
             fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold
+            fontWeight = FontWeight.SemiBold,
+            color = Ink
         )
         Text(
             "Supported capabilities",
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.primary
+            color = Cobalt
         )
         CapabilityBullet("Supported meter companies: L&T / Schneider, Genus, Secure, HPL, Avon")
         CapabilityBullet("Saved meter readings with instant offline PDF & Excel re-export")
@@ -1114,9 +1134,25 @@ private fun AboutAppDialog(onDismiss: () -> Unit) {
 
 @Composable
 private fun CapabilityBullet(text: String) {
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("•", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
-        Text(text, fontSize = 12.sp, modifier = Modifier.weight(1f))
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            "•",
+            modifier = Modifier.width(14.dp),
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+            fontWeight = FontWeight.Bold,
+            color = Cobalt
+        )
+        Text(
+            text,
+            modifier = Modifier.weight(1f),
+            fontSize = 13.sp,
+            lineHeight = 18.sp,
+            color = Color(0xFF334155)
+        )
     }
 }
 
@@ -1127,9 +1163,9 @@ private fun AboutBlock(label: String, value: String) {
             label,
             fontSize = 11.sp,
             fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.primary
+            color = Cobalt
         )
-        Text(value, fontSize = 12.sp)
+        Text(value, fontSize = 12.sp, color = Ink)
     }
 }
 
