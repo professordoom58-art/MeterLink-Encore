@@ -41,9 +41,13 @@ object MeterLinkUpdater {
     private const val CONNECT_TIMEOUT_MS = 15_000
     private const val READ_TIMEOUT_MS = 30_000
 
-    /** Installed build label, e.g. `v1.0.58`, derived from the version code. */
+    /** Installed build label, e.g. `v1.0.58`. */
     fun installedVersion(context: Context): String {
         val info = context.packageManager.getPackageInfo(context.packageName, 0)
+        // Builds from 1.0.58 on carry the release line as versionName; older
+        // installs used a static name, so their build number comes from the code.
+        val named = info.versionName?.trim()?.removePrefix("v").orEmpty()
+        if (named.isNotBlank() && versionParts(named) != null) return "v$named"
         @Suppress("DEPRECATION")
         val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             info.longVersionCode.toInt()
