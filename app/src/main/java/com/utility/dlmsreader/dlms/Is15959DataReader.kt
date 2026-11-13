@@ -14,6 +14,8 @@ import gurux.dlms.objects.GXDLMSExtendedRegister
 import gurux.dlms.objects.GXDLMSObject
 import gurux.dlms.objects.GXDLMSProfileGeneric
 import gurux.dlms.objects.GXDLMSRegister
+import java.time.Instant
+import java.time.ZoneId
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
@@ -118,7 +120,7 @@ internal fun profileRowTimestamp(raw: Any?): Long? = when (raw) {
 /** Canonical `yyyy-MM-dd` day key for a raw profile timestamp cell. */
 internal fun profileRowDay(raw: Any?): String? = when (raw) {
     is GXDateTime -> runCatching { dayKey(MeterTime.wallClock(raw)) }.getOrNull()
-    is Date -> dayKey(Calendar.getInstance().apply { timeInMillis = raw.time })
+    is Date -> dayKey(raw.time)
     is ByteArray -> if (raw.size == 12) {
         runCatching {
             (GXDLMSClient.changeType(raw, DataType.DATETIME, false) as? GXDateTime)
@@ -130,16 +132,14 @@ internal fun profileRowDay(raw: Any?): String? = when (raw) {
 }
 
 /** Canonical `yyyy-MM-dd` day key for an epoch-millis timestamp. */
-internal fun profileDayKey(timestampMs: Long): String =
-    dayKey(Calendar.getInstance().apply { timeInMillis = timestampMs })
+internal fun profileDayKey(timestampMs: Long): String = dayKey(timestampMs)
 
-private fun dayKey(calendar: Calendar): String = String.format(
-    Locale.US,
-    "%04d-%02d-%02d",
-    calendar.get(Calendar.YEAR),
-    calendar.get(Calendar.MONTH) + 1,
-    calendar.get(Calendar.DAY_OF_MONTH)
-)
+private val IST_ZONE: ZoneId = ZoneId.of("Asia/Kolkata")
+
+private fun dayKey(timestampMs: Long): String =
+    Instant.ofEpochMilli(timestampMs).atZone(IST_ZONE).toLocalDate().toString()
+
+private fun dayKey(calendar: Calendar): String = dayKey(calendar.timeInMillis)
 
 internal fun canonicalDay(value: String): String? {
     ISO_DAY_PREFIX.find(value)?.let { match ->

@@ -9,6 +9,7 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import com.utility.dlmsreader.dlms.ConnectionDiagnostics
+import com.utility.dlmsreader.dlms.hdlcFcs16
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import kotlinx.coroutines.Dispatchers
@@ -56,7 +57,7 @@ class OpticalUsbTransport(private val context: Context) {
 
     private val _traceFlow = MutableSharedFlow<TraceLog>(extraBufferCapacity = 5000)
     val traceFlow: SharedFlow<TraceLog> = _traceFlow
-    private val connectionDiagnostics = ConnectionDiagnostics()
+    private val connectionDiagnostics = ConnectionDiagnostics
     private val txCounter = AtomicLong()
     private val rxCounter = AtomicLong()
     private val infoCounter = AtomicLong()
@@ -354,7 +355,7 @@ class OpticalUsbTransport(private val context: Context) {
         }
         val trace = TraceLog(direction = direction, hexOrMessage = message)
         synchronized(traceLock) {
-            if (exportTraceLogs.size >= 100_000) {
+            if (exportTraceLogs.size >= 10_000) {
                 exportTraceLogs.removeFirst()
                 droppedTraceLines++
             }
@@ -489,7 +490,7 @@ private fun isHdlcUaFrame(bytes: ByteArray, from: Int, closingFlag: Int): Boolea
     // The FCS covers every octet between the flags except the FCS itself, so it
     // must include the information field: a UA carrying an I-frame payload has
     // its checksum computed over that payload too.
-    val expectedFcs = hdlcFcs(bytes, from, closingFlag - 2)
+    val expectedFcs = hdlcFcs16(bytes, from, closingFlag - 2 - from)
     val actualFcs = (bytes[closingFlag - 2].toInt() and 0xFF) or
         ((bytes[closingFlag - 1].toInt() and 0xFF) shl 8)
     return expectedFcs == actualFcs
@@ -507,18 +508,6 @@ private fun skipHdlcAddress(bytes: ByteArray, start: Int, endExclusive: Int): In
         if (count >= 4) return null
     }
     return null
-}
-
-/** CRC-16/X-25 FCS used by IEC 62056-46 HDLC. */
-private fun hdlcFcs(bytes: ByteArray, from: Int, toExclusive: Int): Int {
-    var crc = 0xFFFF
-    for (index in from until toExclusive) {
-        crc = crc xor (bytes[index].toInt() and 0xFF)
-        repeat(8) {
-            crc = if ((crc and 0x01) != 0) (crc ushr 1) xor 0x8408 else crc ushr 1
-        }
-    }
-    return crc xor 0xFFFF
 }
 
 private const val HDLC_FLAG: Byte = 0x7E

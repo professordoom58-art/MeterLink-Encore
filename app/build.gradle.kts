@@ -14,6 +14,35 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0-poc"
+
+        ndk {
+            abiFilters += listOf("armeabi-v7a", "arm64-v8a")
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
+
+    packaging {
+        resources {
+            excludes += listOf(
+                "OBISCodes.txt",
+                "SaudiArabia.txt",
+                "Italy.txt",
+                "Spain.txt",
+                "India.txt",
+                "**/*.kotlin_builtins"
+            )
+        }
     }
 
     compileOptions {
@@ -35,7 +64,6 @@ dependencies {
     testImplementation("org.json:json:20240303")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation(platform("androidx.compose:compose-bom:2024.11.00"))
     implementation("androidx.compose.ui:ui")
