@@ -1,13 +1,11 @@
 package com.utility.dlmsreader
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -41,7 +40,6 @@ import com.utility.dlmsreader.dlms.DlmsMeterEngine
 import com.utility.dlmsreader.dlms.LoadSurveySelection
 import com.utility.dlmsreader.dlms.MeterDataModule
 import com.utility.dlmsreader.dlms.MeterDataReport
-import com.utility.dlmsreader.dlms.MeterReadSnapshot
 import com.utility.dlmsreader.dlms.MeterLinkExcelExporter
 import com.utility.dlmsreader.dlms.MeterLinkPdfExporter
 import com.utility.dlmsreader.dlms.VendorPasswordCatalog
@@ -146,13 +144,10 @@ fun MeterReaderScreen(
         else -> Color.Gray
     }
 
-    var useMeterReaderAuth by remember { mutableStateOf(true) }
     var selectedVendor by remember { mutableStateOf(VendorPasswordCatalog.VENDORS.first()) }
     var llsPassword by remember { mutableStateOf(selectedVendor.defaultPrimaryPassword) }
     var vendorMenuExpanded by remember { mutableStateOf(false) }
-    var useModeE by remember { mutableStateOf(false) }
     var isReading by remember { mutableStateOf(false) }
-    var snapshot by remember { mutableStateOf<MeterReadSnapshot?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var meterReport by remember { mutableStateOf(MeterDataReport()) }
     var progressText by remember { mutableStateOf<String?>(null) }
@@ -190,13 +185,13 @@ fun MeterReaderScreen(
         traceLogs.clear()
         scope.launch {
             val params = ConnectionParams(
-                clientAddress = if (useMeterReaderAuth) 0x20 else 0x10,
-                authentication = if (useMeterReaderAuth) Authentication.LOW else Authentication.NONE,
+                clientAddress = 0x20,
+                authentication = Authentication.LOW,
                 password = llsPassword,
                 passwordCandidates = selectedVendor.defaultPasswords,
                 autoTryAlternatePasswords = autoTryAlternatePasswords,
                 vendorName = selectedVendor.displayName,
-                useModeE = useModeE,
+                useModeE = false,
                 loadSurveySelection = loadSurveySelection
             )
             engine.readMeterModule(params, module) { progressText = it }
@@ -410,7 +405,7 @@ fun MeterReaderScreen(
     LaunchedEffect(Unit) {
         transport.traceFlow.collect { log ->
             traceLogs.add(0, log)
-            if (traceLogs.size > 5000) traceLogs.removeLast()
+            if (traceLogs.size > 150) traceLogs.removeLast()
         }
     }
 
@@ -419,7 +414,9 @@ fun MeterReaderScreen(
             TopAppBar(
                 title = {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(end = 8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -503,128 +500,60 @@ fun MeterReaderScreen(
                 ) {
                     Text("DLMS Meter Vendor", fontWeight = FontWeight.Bold, fontSize = 14.sp)
 
-                    // Client Selection Row
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ExposedDropdownMenuBox(
+                        expanded = vendorMenuExpanded,
+                        onExpandedChange = { vendorMenuExpanded = !vendorMenuExpanded }
                     ) {
-                        OutlinedButton(
-                            onClick = { useMeterReaderAuth = false },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = if (!useMeterReaderAuth) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else Color.Transparent
-                            )
+                        OutlinedTextField(
+                            value = selectedVendor.displayName,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Meter Manufacturer / Vendor") },
+                            trailingIcon = {
+                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = vendorMenuExpanded)
+                            },
+                            modifier = Modifier
+                                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                                .fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        ExposedDropdownMenu(
+                            expanded = vendorMenuExpanded,
+                            onDismissRequest = { vendorMenuExpanded = false }
                         ) {
-                            Text("Public (16)", fontSize = 12.sp, maxLines = 1)
-                        }
-                        OutlinedButton(
-                            onClick = { useMeterReaderAuth = true },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                containerColor = if (useMeterReaderAuth) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else Color.Transparent
-                            )
-                        ) {
-                            Text("Meter Reader (32)", fontSize = 12.sp, maxLines = 1)
+                            VendorPasswordCatalog.VENDORS.forEach { vendor ->
+                                DropdownMenuItem(
+                                    text = { Text(vendor.displayName) },
+                                    onClick = {
+                                        selectedVendor = vendor
+                                        llsPassword = vendor.defaultPrimaryPassword
+                                        vendorMenuExpanded = false
+                                    }
+                                )
+                            }
                         }
                     }
 
-                    if (useMeterReaderAuth) {
-                        ExposedDropdownMenuBox(
-                            expanded = vendorMenuExpanded,
-                            onExpandedChange = { vendorMenuExpanded = !vendorMenuExpanded }
-                        ) {
-                            OutlinedTextField(
-                                value = selectedVendor.displayName,
-                                onValueChange = {},
-                                readOnly = true,
-                                label = { Text("Meter Manufacturer / Vendor") },
-                                trailingIcon = {
-                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = vendorMenuExpanded)
-                                },
-                                modifier = Modifier
-                                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                                    .fillMaxWidth(),
-                                shape = RoundedCornerShape(8.dp)
-                            )
-                            ExposedDropdownMenu(
-                                expanded = vendorMenuExpanded,
-                                onDismissRequest = { vendorMenuExpanded = false }
-                            ) {
-                                VendorPasswordCatalog.VENDORS.forEach { vendor ->
-                                    DropdownMenuItem(
-                                        text = { Text(vendor.displayName) },
-                                        onClick = {
-                                            selectedVendor = vendor
-                                            llsPassword = vendor.defaultPrimaryPassword
-                                            vendorMenuExpanded = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
-                        if (selectedVendor.defaultPasswords.isEmpty()) {
-                            OutlinedTextField(
-                                value = llsPassword,
-                                onValueChange = { llsPassword = it },
-                                label = { Text("Custom LLS Password") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(8.dp)
-                            )
-                        } else {
-                            Text(
-                                text = "Primary LLS password is used exclusively unless alternate-password retries are enabled.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.Gray
-                            )
-                        }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Checkbox(
-                                checked = autoTryAlternatePasswords,
-                                onCheckedChange = { autoTryAlternatePasswords = it }
-                            )
-                            Text("Auto-try alternate vendor passwords", fontSize = 12.sp)
-                        }
+                    if (selectedVendor.defaultPasswords.isEmpty()) {
+                        OutlinedTextField(
+                            value = llsPassword,
+                            onValueChange = { llsPassword = it },
+                            label = { Text("Custom LLS Password") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp)
+                        )
                     }
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Checkbox(checked = useModeE, onCheckedChange = { useModeE = it })
-                        Text("IEC 62056-21 Mode E Handshake (300 7E1)", fontSize = 12.sp)
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            isReading = true
-                            errorMessage = null
-                            snapshot = null
-                            traceLogs.clear()
-                            scope.launch {
-                                val openResult = transport.openPort(baudRate = 9600, useModeE = false)
-                                if (openResult.isSuccess) {
-                                    val directSuccess = transport.testDirectHdlcConnection()
-                                    if (!directSuccess) {
-                                        errorMessage = "Direct 9600 HDLC test failed. See the trace for raw RX bytes."
-                                    }
-                                    transport.closePort(preserveStatus = true)
-                                } else {
-                                    errorMessage = openResult.exceptionOrNull()?.message ?: "Unable to open direct HDLC port."
-                                }
-                                isReading = false
-                            }
-                        },
-                        enabled = !isReading,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text("Test Direct 9600 HDLC")
+                        Checkbox(
+                            checked = autoTryAlternatePasswords,
+                            onCheckedChange = { autoTryAlternatePasswords = it }
+                        )
+                        Text("Auto-try alternate vendor passwords", fontSize = 12.sp)
                     }
 
                     errorMessage?.let {
@@ -763,34 +692,7 @@ fun MeterReaderScreen(
                 )
             }
 
-            // 3. Parsed Meter Results Card
-            snapshot?.let { data ->
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text("Meter Reading Results", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        HorizontalDivider()
-                        ResultRow("Serial Number", data.serialNumber)
-                        ResultRow("Logical Device Name", data.logicalDeviceName)
-                        ResultRow("Manufacturer", data.manufacturerName)
-                        ResultRow("Firmware Version", data.firmwareVersion)
-                        ResultRow("Meter RTC Time", data.meterClock)
-                        HorizontalDivider(Modifier.padding(vertical = 4.dp))
-                        ResultRow("Cumulative Energy", data.activeEnergyKwh)
-                        ResultRow("Phase Voltage", data.instantaneousVoltage)
-                        ResultRow("Phase Current", data.instantaneousCurrent)
-                        ResultRow("Power Factor", data.powerFactor)
-                    }
-                }
-            }
-
-            // 4. Live Hex Trace Console
+            // 3. Live Hex Trace Console
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -804,16 +706,6 @@ fun MeterReaderScreen(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                TextButton(
-                    onClick = {
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        val text = traceLogs.reversed().joinToString("\n") { "[${it.direction}] ${it.hexOrMessage}" }
-                        clipboard.setPrimaryClip(ClipData.newPlainText("DLMS Trace", text))
-                    },
-                    contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
-                ) {
-                    Text("Copy", fontSize = 12.sp)
-                }
                 TextButton(
                     onClick = ::exportHexLog,
                     contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
@@ -904,7 +796,11 @@ private fun HeaderOverflowMenu(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            offset = DpOffset(x = (-16).dp, y = 4.dp)
+        ) {
             DropdownMenuItem(
                 text = {
                     Text(
@@ -1081,20 +977,13 @@ private fun AboutAppDialog(onDismiss: () -> Unit) {
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.primary
         )
+        CapabilityBullet("Supported meter companies: L&T / Schneider, Genus, Secure, HPL, Avon")
+        CapabilityBullet("Saved meter readings with instant offline PDF & Excel re-export")
         CapabilityBullet(
-            "Supported meter manufacturers: L&T / Schneider, Genus, Secure, HPL, " +
-                "Avon, and compatible IS 15959 utility meters"
+            "All kinds of readings supported: Identity, Cumulative Energy & MD, " +
+                "Instantaneous, Billing History, Block Load, Daily Load, and Tamper Logs"
         )
-        CapabilityBullet("Saved meter readings & offline local SQLite history playback")
-        CapabilityBullet(
-            "Complete data extractions: Identity & Nameplate, Cumulative Energy & " +
-                "Maximum Demand, Instantaneous Profile, Billing History Profiles, " +
-                "Block & Daily Load Surveys, and Tamper Event Logs"
-        )
-        CapabilityBullet(
-            "Optical USB probe communication & A4 PDF / Multi-sheet Excel (.xlsx) " +
-                "report exports"
-        )
+        CapabilityBullet("Optical USB probe")
         AboutBlock("Builder", "Made by Mihir")
     }
 }
@@ -1120,7 +1009,6 @@ private fun AboutBlock(label: String, value: String) {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun LoadSurveyRangeChips(
     selected: LoadSurveySelection,
@@ -1129,10 +1017,12 @@ private fun LoadSurveyRangeChips(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text("Load Survey Range", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-        FlowRow(
-            modifier = Modifier.fillMaxWidth(),
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalAlignment = Alignment.CenterVertically
         ) {
             LoadSurveySelection.entries.forEach { option ->
                 FilterChip(

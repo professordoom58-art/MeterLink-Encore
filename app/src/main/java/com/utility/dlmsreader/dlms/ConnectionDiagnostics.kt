@@ -4,7 +4,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class ConnectionDiagnostics {
+object ConnectionDiagnostics {
 
     data class DiagnosticReport(
         val timestamp: String,
