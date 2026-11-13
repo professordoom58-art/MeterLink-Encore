@@ -3,6 +3,7 @@ package com.utility.dlmsreader
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -28,6 +30,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.dp
@@ -46,8 +49,6 @@ import com.utility.dlmsreader.dlms.VendorPasswordCatalog
 import com.utility.dlmsreader.dlms.applyLoadSurveySelectionToReport
 import com.utility.dlmsreader.storage.MeterReadingDatabase
 import com.utility.dlmsreader.storage.SavedReadingSummary
-import com.utility.dlmsreader.storage.cumulativeKvahReading
-import com.utility.dlmsreader.storage.cumulativeKwhReading
 import com.utility.dlmsreader.storage.identityValue
 import com.utility.dlmsreader.storage.instantaneousParameterCount
 import com.utility.dlmsreader.storage.nameplateFieldCount
@@ -62,6 +63,14 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.io.File
+
+private val Ink = Color(0xFF0F172A)
+private val Muted = Color(0xFF64748B)
+private val Cobalt = Color(0xFF1D4ED8)
+private val SoftBlue = Color(0xFFEFF6FF)
+private val SoftBlueBorder = Color(0xFFBFDBFE)
+private val TileFill = Color(0xFFF8FAFC)
+private val Hairline = Color(0xFFE2E8F0)
 
 class MainActivity : ComponentActivity() {
 
@@ -78,7 +87,7 @@ class MainActivity : ComponentActivity() {
         // battery. The Scaffold/TopAppBar insets already keep the content clear
         // of the status bar, so no extra padding is applied here.
         WindowCompat.setDecorFitsSystemWindows(window, true)
-        window.statusBarColor = android.graphics.Color.WHITE
+        window.statusBarColor = android.graphics.Color.parseColor("#F8FAFC")
         WindowCompat.getInsetsController(window, window.decorView).apply {
             show(WindowInsetsCompat.Type.statusBars())
             isAppearanceLightStatusBars = true
@@ -92,11 +101,18 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(
                 colorScheme = lightColorScheme(
-                    primary = Color(0xFF1565C0),
-                    secondary = Color(0xFF00ACC1),
-                    background = Color(0xFFF4F6F9),
-                    surface = Color(0xFFFFFFFF),
-                    onSurface = Color(0xFF1E293B)
+                    primary = Cobalt,
+                    onPrimary = Color.White,
+                    secondary = Color(0xFF3B82F6),
+                    onSecondary = Color.White,
+                    background = Color(0xFFF8FAFC),
+                    onBackground = Ink,
+                    surface = Color.White,
+                    onSurface = Ink,
+                    surfaceVariant = SoftBlue,
+                    onSurfaceVariant = Muted,
+                    outline = Hairline,
+                    error = Color(0xFFEF4444)
                 )
             ) {
                 Surface(
@@ -137,12 +153,6 @@ fun MeterReaderScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val probeStatus by transport.probeStatus.collectAsState()
-    val probeStatusColor = when (probeStatus) {
-        OpticalUsbTransport.STATUS_METER_LINK_ESTABLISHED -> Color(0xFF15803D)
-        OpticalUsbTransport.STATUS_NO_METER_RESPONSE -> Color(0xFFB91C1C)
-        OpticalUsbTransport.STATUS_USB_CABLE_WAITING -> Color(0xFFB45309)
-        else -> Color.Gray
-    }
 
     var selectedVendor by remember { mutableStateOf(VendorPasswordCatalog.VENDORS.first()) }
     var llsPassword by remember { mutableStateOf(selectedVendor.defaultPrimaryPassword) }
@@ -411,38 +421,12 @@ fun MeterReaderScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(end = 8.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "MeterLink",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp
-                            )
-                            Text(
-                                text = "DLMS Meter Reader",
-                                fontSize = 11.sp,
-                                color = Color.Gray
-                            )
-                        }
-                        Spacer(Modifier.width(8.dp))
-                        HeaderOverflowMenu(
-                            historyCount = savedReadings.size,
-                            onHistory = { showHistoryDialog = true },
-                            onAbout = { showAboutDialog = true }
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface
-                )
+            LandingHeader(
+                probeStatus = probeStatus,
+                historyCount = savedReadings.size,
+                onScanUsb = onRefreshUsb,
+                onHistory = { showHistoryDialog = true },
+                onAbout = { showAboutDialog = true }
             )
         }
     ) { innerPadding ->
@@ -454,52 +438,20 @@ fun MeterReaderScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(2.dp))
 
-            // 1. USB Probe Status Card
+            // 1. Ultra-compact vendor & authentication card.
             Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("USB Status", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.Gray)
-                        Spacer(Modifier.height(2.dp))
-                        Surface(
-                            color = probeStatusColor.copy(alpha = 0.12f),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Text(
-                                probeStatus,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = probeStatusColor
-                            )
-                        }
-                    }
-                    FilledTonalButton(onClick = onRefreshUsb) {
-                        Text("Scan USB")
-                    }
-                }
-            }
-
-            // 2. Association Configuration Card
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, Hairline),
+                shape = RoundedCornerShape(16.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text("DLMS Meter Vendor", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-
                     ExposedDropdownMenuBox(
                         expanded = vendorMenuExpanded,
                         onExpandedChange = { vendorMenuExpanded = !vendorMenuExpanded }
@@ -515,7 +467,7 @@ fun MeterReaderScreen(
                             modifier = Modifier
                                 .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                                 .fillMaxWidth(),
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(12.dp)
                         )
                         ExposedDropdownMenu(
                             expanded = vendorMenuExpanded,
@@ -541,19 +493,33 @@ fun MeterReaderScreen(
                             label = { Text("Custom LLS Password") },
                             singleLine = true,
                             modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(12.dp)
                         )
                     }
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Checkbox(
+                        Switch(
                             checked = autoTryAlternatePasswords,
-                            onCheckedChange = { autoTryAlternatePasswords = it }
+                            onCheckedChange = { autoTryAlternatePasswords = it },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = Cobalt,
+                                checkedBorderColor = Cobalt,
+                                uncheckedThumbColor = Color.White,
+                                uncheckedTrackColor = Color(0xFFE2E8F0),
+                                uncheckedBorderColor = Color(0xFFCBD5E1)
+                            )
                         )
-                        Text("Auto-try alternate vendor passwords", fontSize = 12.sp)
+                        Text(
+                            "Auto-try alternate vendor passwords",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = Ink
+                        )
                     }
 
                     errorMessage?.let {
@@ -562,27 +528,78 @@ fun MeterReaderScreen(
                 }
             }
 
+            // 2. Extraction command center.
             Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                border = BorderStroke(1.dp, Hairline),
+                shape = RoundedCornerShape(16.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                    modifier = Modifier.padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text("IS 15959 Data Extraction", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    progressText?.let { Text(it, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp) }
-                    reportStatusText?.let {
-                        Text(it, color = Color(0xFF15803D), fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                    val bannerLines = listOfNotNull(progressText, reportStatusText)
+                    if (isReading || bannerLines.isNotEmpty()) {
+                        Surface(
+                            color = SoftBlue,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, SoftBlueBorder)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    bannerLines.joinToString("\n").ifBlank { "Reading meter..." },
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = Cobalt,
+                                    maxLines = 3,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                val barShape = Modifier
+                                    .fillMaxWidth()
+                                    .height(3.dp)
+                                    .clip(RoundedCornerShape(50))
+                                if (isReading) {
+                                    // Indeterminate sweep while a module is streaming.
+                                    LinearProgressIndicator(
+                                        modifier = barShape,
+                                        color = Cobalt,
+                                        trackColor = Color(0xFFDBEAFE)
+                                    )
+                                } else {
+                                    // Completed run: full tonal bar under the status line.
+                                    LinearProgressIndicator(
+                                        progress = { 1f },
+                                        modifier = barShape,
+                                        color = Cobalt,
+                                        trackColor = Color(0xFFDBEAFE)
+                                    )
+                                }
+                            }
+                        }
                     }
                     Button(
                         onClick = { runModule(MeterDataModule.ALL) },
                         enabled = !isReading,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(8.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Cobalt,
+                            contentColor = Color.White
+                        ),
+                        contentPadding = PaddingValues(horizontal = 12.dp)
                     ) {
-                        Text("Read All (Full Meter Dump)")
+                        Text(
+                            "Read All (Full Meter Dump)",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                     ExtractionButtonRow(
                         first = "Read Identity" to MeterDataModule.IDENTITY,
@@ -621,10 +638,19 @@ fun MeterReaderScreen(
                     OutlinedButton(
                         onClick = { runModule(MeterDataModule.TAMPER) },
                         enabled = !isReading,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(8.dp)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(42.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, Color(0xFF3B82F6)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Cobalt),
+                        contentPadding = PaddingValues(horizontal = 12.dp)
                     ) {
-                        Text("Read Tamper Logs")
+                        Text(
+                            "Read Tamper Logs",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
@@ -632,20 +658,8 @@ fun MeterReaderScreen(
             if (meterReport.hasData) {
                 MeterReadingSummaryCard(
                     report = meterReport,
-                    selectedRange = loadSurveySelection,
                     busy = isReading,
                     lastHexLogName = lastHexLogFile?.name,
-                    onSelectRange = { selection ->
-                        loadSurveySelection = selection
-                        // Re-filter any cached full buffer instantly instead of
-                        // forcing another multi-minute optical read.
-                        if (!isReading) {
-                            meterReport = applyLoadSurveySelectionToReport(
-                                meterReport,
-                                selection
-                            )
-                        }
-                    },
                     onExportPdf = ::exportReport,
                     onExportExcel = ::exportExcel,
                     onExportHex = ::exportHexLog
@@ -780,7 +794,98 @@ private fun savedReadingSubtitle(reading: SavedReadingSummary): String =
         .filter { it.isNotEmpty() && !it.equals("N/A", ignoreCase = true) }
         .joinToString(" • ")
 
-/** Plain 3-dot overflow button pinned to the right of the app header. */
+/** Unified landing header: wordmark, beta pill, USB scan status, and overflow. */
+@Composable
+private fun LandingHeader(
+    probeStatus: String,
+    historyCount: Int,
+    onScanUsb: () -> Unit,
+    onHistory: () -> Unit,
+    onAbout: () -> Unit
+) {
+    val dotColor = when {
+        probeStatus.contains("No Meter", ignoreCase = true) ||
+            probeStatus.contains("No Optical", ignoreCase = true) ||
+            probeStatus.contains("Disconnected", ignoreCase = true) -> Color(0xFFEF4444)
+        probeStatus.contains("Ready", ignoreCase = true) ||
+            probeStatus.contains("Link", ignoreCase = true) ||
+            probeStatus.contains("Connected", ignoreCase = true) -> Color(0xFF10B981)
+        probeStatus.contains("Detected", ignoreCase = true) ||
+            probeStatus.contains("USB", ignoreCase = true) -> Color(0xFFF59E0B)
+        else -> Color(0xFFEF4444)
+    }
+
+    Surface(color = Color(0xFFF8FAFC)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "MeterLink",
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Ink
+                )
+                Surface(
+                    color = SoftBlue,
+                    shape = RoundedCornerShape(6.dp)
+                ) {
+                    Text(
+                        "BETA",
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Cobalt
+                    )
+                }
+            }
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    onClick = onScanUsb,
+                    modifier = Modifier.height(34.dp),
+                    shape = RoundedCornerShape(percent = 50),
+                    color = Color.White,
+                    border = BorderStroke(1.dp, Hairline)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier
+                                .size(8.dp)
+                                .background(dotColor, CircleShape)
+                        )
+                        Text(
+                            "SCAN USB",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Ink
+                        )
+                    }
+                }
+                HeaderOverflowMenu(
+                    historyCount = historyCount,
+                    onHistory = onHistory,
+                    onAbout = onAbout
+                )
+            }
+        }
+    }
+}
+
+/** Borderless 3-dot overflow button pinned to the right of the landing header. */
 @Composable
 private fun HeaderOverflowMenu(
     historyCount: Int,
@@ -1015,8 +1120,13 @@ private fun LoadSurveyRangeChips(
     enabled: Boolean,
     onSelect: (LoadSurveySelection) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text("Load Survey Range", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            "Load Survey Range",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Color(0xFF475569)
+        )
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1025,12 +1135,38 @@ private fun LoadSurveyRangeChips(
             verticalAlignment = Alignment.CenterVertically
         ) {
             LoadSurveySelection.entries.forEach { option ->
-                FilterChip(
-                    selected = selected == option,
+                val isSelected = selected == option
+                val labelColor = when {
+                    !enabled -> Muted.copy(alpha = 0.5f)
+                    isSelected -> Cobalt
+                    else -> Color(0xFF334155)
+                }
+                Surface(
                     onClick = { onSelect(option) },
                     enabled = enabled,
-                    label = { Text(option.label, fontSize = 11.sp, maxLines = 1) }
-                )
+                    shape = RoundedCornerShape(percent = 50),
+                    color = if (isSelected) SoftBlue else Color.White,
+                    border = BorderStroke(
+                        1.dp,
+                        if (isSelected) Color(0xFF93C5FD) else Hairline
+                    ),
+                    contentColor = labelColor
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .height(32.dp)
+                            .padding(horizontal = 12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            option.label,
+                            fontSize = 11.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                            color = labelColor,
+                            maxLines = 1
+                        )
+                    }
+                }
             }
         }
     }
@@ -1047,48 +1183,83 @@ private fun ExtractionButtonRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        OutlinedButton(
+        ExtractionModuleButton(
+            label = first.first,
+            enabled = enabled,
             onClick = { onRead(first.second) },
+            modifier = Modifier.weight(1f)
+        )
+        ExtractionModuleButton(
+            label = second.first,
             enabled = enabled,
-            modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(8.dp),
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
-        ) {
-            Text(first.first, fontSize = 13.sp, maxLines = 1)
-        }
-        OutlinedButton(
             onClick = { onRead(second.second) },
-            enabled = enabled,
-            modifier = Modifier.weight(1f),
-            shape = RoundedCornerShape(8.dp),
-            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
-        ) {
-            Text(second.first, fontSize = 13.sp, maxLines = 1)
-        }
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+private fun ExtractionModuleButton(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(42.dp),
+        shape = RoundedCornerShape(10.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = TileFill,
+            contentColor = Ink,
+            disabledContainerColor = TileFill,
+            disabledContentColor = Muted
+        ),
+        border = BorderStroke(1.dp, Hairline),
+        elevation = ButtonDefaults.buttonElevation(
+            defaultElevation = 0.dp,
+            pressedElevation = 0.dp,
+            focusedElevation = 0.dp,
+            hoveredElevation = 0.dp,
+            disabledElevation = 0.dp
+        ),
+        contentPadding = PaddingValues(horizontal = 6.dp)
+    ) {
+        Text(
+            label,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
 @Composable
 private fun MeterReadingSummaryCard(
     report: MeterDataReport,
-    selectedRange: LoadSurveySelection,
     busy: Boolean,
     lastHexLogName: String?,
-    onSelectRange: (LoadSurveySelection) -> Unit,
     onExportPdf: () -> Unit,
     onExportExcel: () -> Unit,
     onExportHex: () -> Unit
 ) {
-    // Nameplate fields and instantaneous parameters are the columns of a
-    // single snapshot row, not its row count.
-    val nameplateCount = report.nameplateFieldCount()
-    val sectionCounts = listOf(
-        "Nameplate" to "$nameplateCount fields",
-        "Instantaneous" to "${report.instantaneousParameterCount()} params",
-        "Billing History" to "${report.billing?.totalRows ?: 0} entries",
-        "Daily Load" to "${report.dailyLoad?.totalRows ?: 0} entries",
-        "Block Load" to "${report.blockLoad?.totalRows ?: 0} entries",
-        "Tamper Events" to "${report.tamperEvents.size} entries"
+    val serial = report.identityValue("0.0.96.1.0.255").ifBlank { "UNKNOWN" }
+    val ldn = report.identityValue("0.0.42.0.0.255")
+    val manufacturerTag = manufacturerTag(report.identityValue("0.0.96.1.1.255"))
+    val activeEnergy = report.energyReading("1.0.1.8.0.255")
+    val apparentEnergy = report.energyReading("1.0.9.8.0.255")
+
+    val instParamCount = report.instantaneousParameterCount()
+    val nameplate = report.nameplateFieldCount()
+    val billing = report.billing?.rows?.size ?: 0
+    val daily = report.dailyLoad?.rows?.size ?: 0
+    val block = report.blockLoad?.rows?.size ?: 0
+    val tamper = report.tamperEvents.size
+    val sectionRows = listOf(
+        listOf("Nameplate" to nameplate, "Instantaneous" to instParamCount, "Billing" to billing),
+        listOf("Daily" to daily, "Block" to block, "Tamper" to tamper)
     )
     val windowNotes = listOfNotNull(
         report.blockLoad?.takeIf { it.windowNote.isNotBlank() }?.let { "Block: ${it.windowNote}" },
@@ -1096,76 +1267,111 @@ private fun MeterReadingSummaryCard(
     )
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = BorderStroke(1.dp, Hairline),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(
-                "Current Reading Summary",
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
-                fontSize = 14.sp
-            )
-            HorizontalDivider()
-            report.identityValue("0.0.96.1.0.255")
-                .takeIf { it.isNotBlank() }
-                ?.let { ResultRow("Serial Number", it) }
-            report.identityValue("0.0.42.0.0.255")
-                .takeIf { it.isNotBlank() }
-                ?.let { ResultRow("Logical Device Name", it) }
-            report.identityValue("0.0.96.1.1.255")
-                .takeIf { it.isNotBlank() }
-                ?.let { ResultRow("Manufacturer", it) }
-            report.identityValue("0.0.96.1.4.255")
-                .takeIf { it.isNotBlank() }
-                ?.let { ResultRow("Firmware Version", it) }
-            report.identityValue("0.0.1.0.0.255")
-                .takeIf { it.isNotBlank() }
-                ?.let { ResultRow("Meter RTC", it) }
-            HorizontalDivider(Modifier.padding(vertical = 2.dp))
-            report.cumulativeKwhReading()
-                .takeIf { it != "N/A" && it.isNotBlank() }
-                ?.let { ResultRow("Cumulative kWh", it) }
-            report.cumulativeKvahReading()
-                .takeIf { it != "N/A" && it.isNotBlank() }
-                ?.let { ResultRow("Cumulative kVAh", it) }
-
-            HorizontalDivider(Modifier.padding(vertical = 2.dp))
-            Text("Section Row Counts", fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-            sectionCounts.forEach { (label, count) ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "#$serial",
+                    modifier = Modifier.weight(1f),
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontFamily = FontFamily.Monospace,
+                    color = Ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    modifier = Modifier.weight(1.2f),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(label, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                    Text(
-                        count,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Surface(
+                        color = SoftBlue,
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            manufacturerTag,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Cobalt,
+                            maxLines = 1
+                        )
+                    }
+                    if (ldn.isNotBlank()) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            ldn,
+                            modifier = Modifier.weight(1f),
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = Muted,
+                            textAlign = TextAlign.End,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                EnergyReadout(
+                    label = "ACTIVE ENERGY",
+                    value = activeEnergy,
+                    unit = "kWh",
+                    modifier = Modifier.weight(1f)
+                )
+                EnergyReadout(
+                    label = "APPARENT ENERGY",
+                    value = apparentEnergy,
+                    unit = "kVAh",
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                sectionRows.forEach { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        row.forEach { (label, count) ->
+                            SectionCountBadge(
+                                label = label,
+                                count = count,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+
             if (windowNotes.isNotEmpty()) {
                 Text(
                     windowNotes.joinToString("\n"),
                     fontSize = 10.sp,
-                    color = Color.Gray
+                    color = Muted
                 )
             }
             report.errors.take(3).forEach {
                 Text(it, color = Color(0xFFB45309), fontSize = 10.sp)
             }
 
-            Spacer(Modifier.height(2.dp))
-            LoadSurveyRangeChips(
-                selected = selectedRange,
-                enabled = !busy,
-                onSelect = onSelectRange
-            )
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -1173,32 +1379,166 @@ private fun MeterReadingSummaryCard(
                 Button(
                     onClick = onExportPdf,
                     enabled = !busy,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(8.dp)
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(42.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Cobalt,
+                        contentColor = Color.White
+                    ),
+                    contentPadding = PaddingValues(horizontal = 4.dp)
                 ) {
-                    Text("Export PDF", fontSize = 11.sp)
+                    Text(
+                        "↓ Export PDF",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
                 }
-                OutlinedButton(
-                    onClick = onExportHex,
+                Button(
+                    onClick = onExportExcel,
                     enabled = !busy,
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(8.dp)
+                    modifier = Modifier
+                        .weight(1.3f)
+                        .height(42.dp),
+                    shape = RoundedCornerShape(10.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Cobalt,
+                        contentColor = Color.White
+                    ),
+                    contentPadding = PaddingValues(horizontal = 4.dp)
                 ) {
-                    Text("Export Hex (.txt)", fontSize = 11.sp)
+                    Text(
+                        "↓ Export Excel (.xlsx)",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
                 }
             }
-            Button(
-                onClick = onExportExcel,
+            OutlinedButton(
+                onClick = onExportHex,
                 enabled = !busy,
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(8.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(40.dp),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Ink),
+                contentPadding = PaddingValues(horizontal = 12.dp)
             ) {
-                Text("Export Excel (.xlsx)", fontSize = 11.sp)
+                Text(
+                    "Export Hex (.txt)",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
             }
             lastHexLogName?.let {
-                Text("Hex log ready: $it", fontSize = 10.sp, color = Color.Gray)
+                Text("Hex log ready: $it", fontSize = 10.sp, color = Muted)
             }
         }
+    }
+}
+
+@Composable
+private fun EnergyReadout(
+    label: String,
+    value: String,
+    unit: String,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        color = Color(0xFFF0F7FF),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, Color(0xFFDBEAFE))
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Text(
+                label,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = Muted,
+                maxLines = 1
+            )
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(
+                    value,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    color = Ink,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                Text(
+                    " $unit",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Cobalt,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionCountBadge(
+    label: String,
+    count: Int,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        color = TileFill,
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(1.dp, Hairline)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                label,
+                modifier = Modifier.weight(1f),
+                fontSize = 11.sp,
+                color = Muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                count.toString(),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = Ink
+            )
+        }
+    }
+}
+
+private fun MeterDataReport.energyReading(obis: String): String =
+    cumulativeEnergies.firstOrNull { it.obisCode == obis }
+        ?.reading
+        ?.trim()
+        .orEmpty()
+        .ifBlank { "—" }
+
+private fun manufacturerTag(manufacturer: String): String {
+    val upper = manufacturer.uppercase(Locale.US)
+    return when {
+        "LARSEN" in upper || "L&T" in upper || "LNT" in upper -> "L&T"
+        manufacturer.isBlank() -> "METER"
+        else -> manufacturer.trim().substringBefore(' ').take(10).uppercase(Locale.US)
     }
 }
 
@@ -1209,30 +1549,32 @@ private fun SavedReadingsCard(
     onSelect: (SavedReadingSummary) -> Unit
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        border = BorderStroke(1.dp, Hairline),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
                 "Saved Meter Readings",
                 fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
+                color = Ink,
                 fontSize = 14.sp
             )
             if (readings.isEmpty()) {
                 Text(
                     "No saved readings yet. Every completed read is stored on this device automatically.",
-                    color = Color.Gray,
+                    color = Muted,
                     fontSize = 11.sp
                 )
             } else {
                 Text(
                     "${readings.size} reading(s) stored locally — newest first",
-                    color = Color.Gray,
+                    color = Muted,
                     fontSize = 11.sp
                 )
                 Column(
@@ -1241,8 +1583,9 @@ private fun SavedReadingsCard(
                 ) {
                     readings.forEach { reading ->
                         Surface(
-                            color = Color(0xFFF8FAFC),
+                            color = TileFill,
                             shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, Hairline),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable(enabled = !busy) { onSelect(reading) }
