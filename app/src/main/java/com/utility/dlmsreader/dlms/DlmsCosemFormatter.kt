@@ -35,7 +35,7 @@ data class ObisDescriptor(
     val category: ObisCategory = ObisCategory.UNKNOWN
 )
 
-object Is15959Formatter {
+object DlmsCosemFormatter {
     private val METER_TIME_ZONE: TimeZone = TimeZone.getTimeZone("Asia/Kolkata")
     private val UNIT_SYMBOL_PATTERN =
         Regex("\\b(kva(?:rh|r|h)?|kw(?:h)?)\\b", RegexOption.IGNORE_CASE)
@@ -139,7 +139,7 @@ object Is15959Formatter {
         runtimeMetadata: Map<String, ObisMetadata> = emptyMap(),
         meterMake: String? = null
     ): ObisDescriptor {
-        Is15959Catalog.metadataFor(obis, runtimeMetadata, meterMake)?.let { metadata ->
+        DlmsCosemCatalog.metadataFor(obis, runtimeMetadata, meterMake)?.let { metadata ->
             return ObisDescriptor(
                 normalizeUnitSymbols(metadata.label),
                 normalizeUnitSymbols(metadata.unit),
@@ -232,7 +232,7 @@ object Is15959Formatter {
         meterMake: String?
     ): String {
         val metadataUnit = obis?.let {
-            Is15959Catalog.metadataFor(it, runtimeMetadata, meterMake)?.unit
+            DlmsCosemCatalog.metadataFor(it, runtimeMetadata, meterMake)?.unit
         }.orEmpty()
         return when {
         isEnergyOrPower(unit, obis) -> decimalFormat("#,##0.000").format(value)
@@ -254,7 +254,7 @@ object Is15959Formatter {
         meterMake: String?
     ): String = normalizeUnitSymbols(
         unitSymbol(unit).ifEmpty {
-            Is15959Catalog.metadataFor(obis.orEmpty(), runtimeMetadata, meterMake)?.unit
+            DlmsCosemCatalog.metadataFor(obis.orEmpty(), runtimeMetadata, meterMake)?.unit
                 ?.takeIf { it.isNotEmpty() }
                 ?: obisUnitSymbol(obis)
         }

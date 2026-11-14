@@ -27,7 +27,7 @@ data class ProfilePair(
     val category: ObisCategory = ObisCategory.UNKNOWN
 )
 
-object Is15959Catalog {
+object DlmsCosemCatalog {
     const val OBIS_INVOCATION_COUNTER_MR = "0.0.43.1.2.255"
     const val OBIS_INVOCATION_COUNTER_US = "0.0.43.1.3.255"
 
@@ -194,7 +194,7 @@ object Is15959Catalog {
         "1.0.2.6.0.255" to ObisMetadata("MD Active Export - Cumulative (kW)", "kW", category = ObisCategory.BILLING),
         "1.0.10.6.0.255" to ObisMetadata("MD Apparent Export - Cumulative (kVA)", "kVA", category = ObisCategory.BILLING),
         "1.0.91.27.0.255" to ObisMetadata("Avg Neutral Current (A)", "A", category = ObisCategory.INSTANTANEOUS),
-        // IS 15959 defines no dedicated standard label/unit for this Secure-meter
+        // DLMS / COSEM (IEC 62056) defines no dedicated standard label/unit for this Secure-meter
         // word; keep a neutral name rather than asserting an unverified meaning.
         "1.0.149.4.0.255" to ObisMetadata("Block Status / Supply Word", "", category = ObisCategory.LOAD_SURVEY),
         "1.0.5.29.0.255" to ObisMetadata("Block Reactive Energy Q1 (kVArh)", "kVArh", category = ObisCategory.LOAD_SURVEY),
@@ -248,7 +248,7 @@ object Is15959Catalog {
         "1.0.11.27.0.255" to ObisMetadata("Load Survey Object", category = ObisCategory.LOAD_SURVEY),
         "1.0.1.29.0.255" to ObisMetadata("Block Energy - Active Import (kWh)", "kWh", ObisCategory.LOAD_SURVEY),
         "1.0.9.29.0.255" to ObisMetadata("Block Energy - Apparent Import (kVAh)", "kVAh", ObisCategory.LOAD_SURVEY),
-        // Manufacturer-specific register; no standard IS 15959 label exists for
+        // Manufacturer-specific register; no standard DLMS / COSEM (IEC 62056) label exists for
         // this L&T object, so use a short header that never wraps to four-plus
         // lines in the PDF report.
         "1.0.128.8.98.255" to ObisMetadata(
@@ -369,11 +369,11 @@ object Is15959Catalog {
 
     fun profileByName(name: String): ProfilePair =
         PROFILES.firstOrNull { it.name == name }
-            ?: error("Unknown IS 15959 profile: $name")
+            ?: error("Unknown DLMS / COSEM (IEC 62056) profile: $name")
 
     fun profileByDataObis(obis: String): ProfilePair =
         PROFILES.firstOrNull { it.dataObis == obis }
-            ?: error("No IS 15959 profile mapping for $obis")
+            ?: error("No DLMS / COSEM (IEC 62056) profile mapping for $obis")
 
     fun parseKeyOrSystemTitle(input: String): ByteArray {
         val clean = input.trim()

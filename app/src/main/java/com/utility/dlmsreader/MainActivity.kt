@@ -2,6 +2,7 @@ package com.utility.dlmsreader
 
 import android.content.Intent
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -56,6 +57,7 @@ import com.utility.dlmsreader.dlms.ExtractionProgress
 import com.utility.dlmsreader.dlms.LoadSurveySelection
 import com.utility.dlmsreader.dlms.MeterDataModule
 import com.utility.dlmsreader.dlms.MeterDataReport
+import com.utility.dlmsreader.dlms.MeterFileImportRouter
 import com.utility.dlmsreader.dlms.MeterLinkExcelExporter
 import com.utility.dlmsreader.dlms.MeterLinkPdfExporter
 import com.utility.dlmsreader.dlms.ProfileSection
@@ -248,6 +250,66 @@ fun MeterReaderScreen(
                 }
                 .onFailure { errorMessage = it.message ?: "Folder restore failed" }
             refreshingSavedReadings = false
+        }
+    }
+
+    /**
+     * Import from Storage. Read access is enough: the router sniffs JSON,
+     * tagged OBIS CSV and framed binary dumps from the raw bytes, so the
+     * picker can offer JSON plus CSV, text, DAT and BIN files, or any file type.
+     * Imported reports use the same GZIP SQLite row and Documents/MeterLink
+     * JSON backup as a live optical read.
+     */
+    val importFilePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        isReading = true
+        errorMessage = null
+        progressText = "Importing meter file…"
+        reportStatusText = null
+        scope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    val displayName = runCatching {
+                        context.contentResolver.query(
+                            uri,
+                            arrayOf(OpenableColumns.DISPLAY_NAME),
+                            null,
+                            null,
+                            null
+                        )?.use { cursor ->
+                            if (cursor.moveToFirst()) cursor.getString(0) else null
+                        }
+                    }.getOrNull() ?: uri.lastPathSegment ?: "Meter file"
+                    val bytes = context.contentResolver.openInputStream(uri)?.use {
+                        it.readBytes()
+                    } ?: error("The selected file could not be opened.")
+                    val import = MeterFileImportRouter.route(
+                        bytes,
+                        displayName,
+                        context.contentResolver.getType(uri)
+                    )
+                    val saved = readingDatabase.insertReport(
+                        report = import.report,
+                        readType = "Imported File"
+                    )
+                    Triple(displayName, import.report, saved) to readingDatabase.listSummaries()
+                }
+            }
+            result
+                .onSuccess { (imported, list) ->
+                    val (name, report, savedRow) = imported
+                    meterReport = applyLoadSurveySelectionToReport(report, loadSurveySelection)
+                    savedReadings = list
+                    selectedSavedReading = list.firstOrNull { it.id == savedRow }
+                    reportStatusText = "✓ Imported $name and saved it to Documents/MeterLink."
+                }
+                .onFailure {
+                    errorMessage = it.message ?: "Meter file import failed"
+                }
+            isReading = false
+            progressText = null
         }
     }
 
@@ -937,6 +999,17 @@ fun MeterReaderScreen(
                 busy = isReading,
                 refreshing = refreshingSavedReadings,
                 onRefresh = ::refreshSavedReadings,
+                onImport = {
+                    importFilePicker.launch(
+                        arrayOf(
+                            "application/json",
+                            "text/csv",
+                            "text/plain",
+                            "application/octet-stream",
+                            "*/*"
+                        )
+                    )
+                },
                 onSelect = {
                     errorMessage = null
                     selectedSavedReading = it
@@ -1539,7 +1612,7 @@ private fun AboutAppDialog(version: String, onDismiss: () -> Unit) {
                 )
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "DLMS / IS 15959 Optical Meter Reader",
+                    "DLMS / COSEM (IEC 62056) Optical Meter Reader",
                     fontSize = 12.sp,
                     color = Muted,
                     textAlign = TextAlign.Center
@@ -2180,6 +2253,7 @@ private fun SavedReadingsCard(
     busy: Boolean,
     refreshing: Boolean,
     onRefresh: () -> Unit,
+    onImport: () -> Unit,
     onSelect: (SavedReadingSummary) -> Unit,
     onSectionClick: (SavedReadingSummary, PreviewSection) -> Unit
 ) {
@@ -2226,6 +2300,28 @@ private fun SavedReadingsCard(
                     }
                 }
             }
+            OutlinedButton(
+                onClick = onImport,
+                enabled = !busy,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(38.dp),
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, Color(0xFF3B82F6)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = Cobalt),
+                contentPadding = PaddingValues(horizontal = 12.dp)
+            ) {
+                Text(
+                    "Import from Storage",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+            Text(
+                "JSON, tagged OBIS CSV or framed binary meter files — saved with GZIP SQLite storage.",
+                fontSize = 10.sp,
+                color = Muted
+            )
             if (readings.isEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(

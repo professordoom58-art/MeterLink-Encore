@@ -16,12 +16,12 @@ class CosemDateTimePatchTest {
     )
 
     @Test
-    fun `selector 1 datetimes match IS 15959 wildcard format`() {
+    fun `selector 1 datetimes match DLMS COSEM IEC 62056 wildcard format`() {
         val patched = patchProfileRangeDatetimes(arrayOf(liveRangeApdu)).single()
         val first = firstDateTimeOffset(patched)
         val second = nextDateTimeOffset(patched, first + 12)
 
-        // IS 15959 COSEM wildcard format: FF day-of-week, 00 hundredths, 80 00
+        // DLMS / COSEM (IEC 62056) COSEM wildcard format: FF day-of-week, 00 hundredths, 80 00
         // unspecified deviation, FF clock status.
         assertArrayEquals(
             hex("07 E7 0C 1A FF 00 00 00 00 80 00 FF"),

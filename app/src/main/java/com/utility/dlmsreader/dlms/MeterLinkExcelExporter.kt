@@ -89,6 +89,7 @@ object MeterLinkXlsxWriter {
         ZipOutputStream(out).use { zip ->
             put(zip, "[Content_Types].xml", contentTypes())
             put(zip, "_rels/.rels", rootRels())
+            put(zip, "docProps/core.xml", corePropertiesXml())
             put(zip, "xl/workbook.xml", workbookXml())
             put(zip, "xl/_rels/workbook.xml.rels", workbookRels())
             put(zip, "xl/styles.xml", stylesXml())
@@ -113,6 +114,7 @@ object MeterLinkXlsxWriter {
         append("""<Default Extension="xml" ContentType="application/xml"/>""")
         append("""<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>""")
         append("""<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>""")
+        append("""<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>""")
         SHEET_NAMES.indices.forEach { index ->
             append("""<Override PartName="/xl/worksheets/sheet${index + 1}.xml" """)
             append("""ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>""")
@@ -126,7 +128,25 @@ object MeterLinkXlsxWriter {
         append("""<Relationship Id="rId1" """)
         append("""Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" """)
         append("""Target="xl/workbook.xml"/>""")
+        append("""<Relationship Id="rId2" """)
+        append("""Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" """)
+        append("""Target="docProps/core.xml"/>""")
         append("</Relationships>")
+    }
+
+    private fun corePropertiesXml(): String = buildString {
+        append("""<?xml version="1.0" encoding="UTF-8" standalone="yes"?>""")
+        append("""<cp:coreProperties """)
+        append("""xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" """)
+        append("""xmlns:dc="http://purl.org/dc/elements/1.1/" """)
+        append("""xmlns:dcterms="http://purl.org/dc/terms/" """)
+        append("""xmlns:dcmitype="http://purl.org/dc/dcmitype/" """)
+        append("""xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">""")
+        append("""<dc:title>MeterLink — DLMS / COSEM (IEC 62056) Meter Reading Report</dc:title>""")
+        append("""<dc:creator>MeterLink</dc:creator>""")
+        append("""<cp:lastModifiedBy>MeterLink</cp:lastModifiedBy>""")
+        append("""<dc:description>Generated &amp; Verified by MeterLink</dc:description>""")
+        append("</cp:coreProperties>")
     }
 
     private fun workbookXml(): String = buildString {
@@ -316,16 +336,29 @@ object MeterLinkXlsxWriter {
             dailyLoadSheet(report),
             blockLoadSheet(report),
             tamperSheet(report)
-        )
+        ).onEach { signatureBlock(it, report) }
+    }
+
+    /**
+     * Official MeterLink verification mark. Every worksheet carries the same
+     * signature and a vendor-neutral source label so an imported file cannot be
+     * mistaken for a live optical extraction.
+     */
+    private fun signatureBlock(sheet: XlsxSheet, report: MeterDataReport) {
+        sheet.blank()
+        sheet.text("Generated & Verified by MeterLink")
+        sheet.text("Source: ${report.sourceLabel}")
+        sheet.text("Protocol: DLMS / COSEM (IEC 62056)")
     }
 
     private fun identitySheet(report: MeterDataReport, generated: String): XlsxSheet {
         val sheet = XlsxSheet(SHEET_IDENTITY)
-        titleRow(sheet, "MeterLink — IS 15959 DLMS Meter Reading Report")
+        titleRow(sheet, "MeterLink — DLMS / COSEM (IEC 62056) Meter Reading Report")
         sheet.rows += listOf(headerCell("Generated (phone time)"), cell(generated))
         sheet.rows += listOf(headerCell("Serial Number"), cell(identityValue(report, "0.0.96.1.0.255")))
         sheet.rows += listOf(headerCell("Logical Device Name"), cell(identityValue(report, "0.0.42.0.0.255")))
         sheet.rows += listOf(headerCell("Manufacturer"), cell(identityValue(report, "0.0.96.1.1.255")))
+        sheet.rows += listOf(headerCell("Source"), cell(report.sourceLabel))
         sheet.blank()
 
         val identity = report.identity

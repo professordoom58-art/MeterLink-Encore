@@ -62,7 +62,8 @@ class MeterLinkPdfExporter(private val context: Context) {
             generated = generated,
             serial = serial,
             logicalDevice = identityValue(report, "0.0.42.0.0.255"),
-            manufacturer = identityValue(report, "0.0.96.1.1.255")
+            manufacturer = identityValue(report, "0.0.96.1.1.255"),
+            source = report.sourceLabel
         )
         buildReport(layout, report, traceLogs, counters, droppedLineCount)
 
@@ -204,6 +205,14 @@ class MeterLinkPdfExporter(private val context: Context) {
         }
         layout.section("Section 8: Diagnostic Protocol & Execution Log (Summary)")
         layout.table(listOf("Category", "Details"), diagnosticRows(traceLogs, counters, droppedLineCount))
+        layout.section("Report Verification")
+        layout.table(
+            listOf("Field", "Details"),
+            listOf(
+                listOf("Signature", "Generated & Verified by MeterLink"),
+                listOf("Source", report.sourceLabel)
+            )
+        )
     }
 
     private fun drawProfile(layout: ReportLayout, section: ProfileSection) {
@@ -403,7 +412,8 @@ class MeterLinkPdfExporter(private val context: Context) {
         private val generated: String,
         private val serial: String,
         private val logicalDevice: String,
-        private val manufacturer: String
+        private val manufacturer: String,
+        private val source: String
     ) {
         private sealed class Op {
             data class Text(
@@ -520,7 +530,14 @@ class MeterLinkPdfExporter(private val context: Context) {
                 }
                 paint.color = Color.DKGRAY
                 paint.textSize = 8f
-                canvas.drawText("MeterLink  |  Page ${index + 1} of ${pages.size}", LEFT, 818f, paint)
+                paint.textAlign = Paint.Align.LEFT
+                canvas.drawText("Generated & Verified by MeterLink", LEFT, 818f, paint)
+                paint.textAlign = Paint.Align.RIGHT
+                canvas.drawText("Page ${index + 1} of ${pages.size}", RIGHT, 818f, paint)
+                paint.textAlign = Paint.Align.LEFT
+                paint.color = Color.GRAY
+                paint.textSize = 7f
+                canvas.drawText("Source: $source", LEFT, 830f, paint)
                 document.finishPage(page)
             }
         }
@@ -586,11 +603,11 @@ class MeterLinkPdfExporter(private val context: Context) {
             paint.color = Color.WHITE
             paint.textSize = 14f
             paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            canvas.drawText("MeterLink — IS 15959 DLMS Meter Reading Report", LEFT, 29f, paint)
+            canvas.drawText("MeterLink — DLMS / COSEM (IEC 62056) Meter Reading Report", LEFT, 29f, paint)
             paint.color = Color.rgb(51, 65, 85)
             paint.textSize = 8f
             paint.typeface = Typeface.DEFAULT
-            canvas.drawText("Generated (phone time): $generated    Serial: $serial    LDN: $logicalDevice    Manufacturer: $manufacturer", LEFT, 65f, paint)
+            canvas.drawText("Generated (phone time): $generated    Serial: $serial    LDN: $logicalDevice    Manufacturer: $manufacturer    Source: $source", LEFT, 65f, paint)
             paint.color = BORDER
             canvas.drawLine(LEFT, 76f, RIGHT, 76f, paint)
         }

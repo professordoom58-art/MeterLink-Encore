@@ -244,7 +244,7 @@ class GuruxPacketExecutor(
         bytesPerEntry: Double = DEFAULT_BYTES_PER_ENTRY
     ): Array<Array<Any?>> {
         val generated = client.readRowsByRange(profile, start, end)
-        // Some IS 15959 meters require the IS 15959 / IEC 62056-6-2 COSEM
+        // Some DLMS / COSEM (IEC 62056) meters require the DLMS / COSEM (IEC 62056-6-2) COSEM
         // wildcard datetime encoding rather than Gurux's computed timestamps.
         val data = patchProfileRangeDatetimes(
             generated,
@@ -336,7 +336,7 @@ internal suspend fun readDlmsPacket(
  */
 enum class Selector1DateTimeFormat {
     /**
-     * IS 15959 / IEC 62056-6-2 COSEM wildcard datetime encoding:
+     * DLMS / COSEM (IEC 62056-6-2) wildcard datetime encoding:
      * day-of-week `0xFF`, hundredths `0x00`, unspecified deviation `0x8000`,
      * clock status `0xFF`.
      */
@@ -353,7 +353,7 @@ enum class Selector1DateTimeFormat {
  * Patches the two Selector 1 COSEM datetime octet strings in a generated
  * `readRowsByRange` request before transmission.
  *
- * IS 15959 / IEC 62056-6-2 COSEM wildcard datetime encoding builds the range
+ * DLMS / COSEM (IEC 62056-6-2) wildcard datetime encoding builds the range
  * descriptor with a wildcard day-of-week (`0xFF`), hundredths `0x00`, an
  * unspecified COSEM deviation (`0x8000`) and clock status `0xFF`. Gurux instead
  * serializes a calculated day-of-week, inverted deviation (`0xFEB6` for -330)
@@ -387,7 +387,7 @@ internal fun patchProfileRangeDatetimes(
                 encodeDeviationMinutes(nativeDeviationMinutes ?: 0)
         }
         frame[dateTime + 8] = when (format) {
-            // IS 15959 wildcard uses 00 hundredths; the native-format retry uses FF.
+            // DLMS / COSEM (IEC 62056) wildcard uses 00 hundredths; the native-format retry uses FF.
             Selector1DateTimeFormat.COSEM_WILDCARD -> 0x00
             Selector1DateTimeFormat.NATIVE_RTC -> 0xFF.toByte()
         }

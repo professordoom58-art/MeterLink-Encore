@@ -14,52 +14,52 @@ class TamperAndReactiveMappingTest {
 
     @Test
     fun `earth loading codes are not shifted`() {
-        assertEquals("Earth Loading - Occurrence", Is15959Formatter.decodeTamperEvent(69))
-        assertEquals("Earth Loading - Restoration", Is15959Formatter.decodeTamperEvent(70))
+        assertEquals("Earth Loading - Occurrence", DlmsCosemFormatter.decodeTamperEvent(69))
+        assertEquals("Earth Loading - Restoration", DlmsCosemFormatter.decodeTamperEvent(70))
     }
 
     @Test
     fun `power failure codes are unchanged`() {
-        assertEquals("Power Failure - Occurrence", Is15959Formatter.decodeTamperEvent(101))
-        assertEquals("Power Failure - Restoration", Is15959Formatter.decodeTamperEvent(102))
+        assertEquals("Power Failure - Occurrence", DlmsCosemFormatter.decodeTamperEvent(101))
+        assertEquals("Power Failure - Restoration", DlmsCosemFormatter.decodeTamperEvent(102))
     }
 
     @Test
     fun `current compartment codes follow the reference current table`() {
-        assertEquals("Load Imbalance - Occurrence", Is15959Formatter.decodeTamperEvent(63))
-        assertEquals("Load Imbalance - Restoration", Is15959Formatter.decodeTamperEvent(64))
-        assertEquals("CT Short - Occurrence", Is15959Formatter.decodeTamperEvent(65))
-        assertEquals("CT Short - Restoration", Is15959Formatter.decodeTamperEvent(66))
-        assertEquals("Overload (Current) - Occurrence", Is15959Formatter.decodeTamperEvent(67))
-        assertEquals("Overload (Current) - Restoration", Is15959Formatter.decodeTamperEvent(68))
+        assertEquals("Load Imbalance - Occurrence", DlmsCosemFormatter.decodeTamperEvent(63))
+        assertEquals("Load Imbalance - Restoration", DlmsCosemFormatter.decodeTamperEvent(64))
+        assertEquals("CT Short - Occurrence", DlmsCosemFormatter.decodeTamperEvent(65))
+        assertEquals("CT Short - Restoration", DlmsCosemFormatter.decodeTamperEvent(66))
+        assertEquals("Overload (Current) - Occurrence", DlmsCosemFormatter.decodeTamperEvent(67))
+        assertEquals("Overload (Current) - Restoration", DlmsCosemFormatter.decodeTamperEvent(68))
     }
 
     @Test
     fun `ct reversed and ct open keep their codes`() {
-        assertEquals("R-Phase CT Reverse - Occurrence", Is15959Formatter.decodeTamperEvent(51))
-        assertEquals("B-Phase CT Reverse - Restoration", Is15959Formatter.decodeTamperEvent(56))
-        assertEquals("R-Phase CT Open - Occurrence", Is15959Formatter.decodeTamperEvent(57))
-        assertEquals("B-Phase CT Open - Restoration", Is15959Formatter.decodeTamperEvent(62))
+        assertEquals("R-Phase CT Reverse - Occurrence", DlmsCosemFormatter.decodeTamperEvent(51))
+        assertEquals("B-Phase CT Reverse - Restoration", DlmsCosemFormatter.decodeTamperEvent(56))
+        assertEquals("R-Phase CT Open - Occurrence", DlmsCosemFormatter.decodeTamperEvent(57))
+        assertEquals("B-Phase CT Open - Restoration", DlmsCosemFormatter.decodeTamperEvent(62))
     }
 
     @Test
     fun `single wire operation codes are present`() {
         assertEquals(
             "Single Wire Operation (Neutral Missing) - Occurrence",
-            Is15959Formatter.decodeTamperEvent(207)
+            DlmsCosemFormatter.decodeTamperEvent(207)
         )
         assertEquals(
             "Single Wire Operation (Neutral Missing) - Restoration",
-            Is15959Formatter.decodeTamperEvent(208)
+            DlmsCosemFormatter.decodeTamperEvent(208)
         )
     }
 
     @Test
     fun `reactive energy quadrants are labelled distinctly`() {
-        val q1 = Is15959Formatter.getObisLabelAndUnit("1.0.5.8.0.255")
-        val q2 = Is15959Formatter.getObisLabelAndUnit("1.0.6.8.0.255")
-        val q3 = Is15959Formatter.getObisLabelAndUnit("1.0.7.8.0.255")
-        val q4 = Is15959Formatter.getObisLabelAndUnit("1.0.8.8.0.255")
+        val q1 = DlmsCosemFormatter.getObisLabelAndUnit("1.0.5.8.0.255")
+        val q2 = DlmsCosemFormatter.getObisLabelAndUnit("1.0.6.8.0.255")
+        val q3 = DlmsCosemFormatter.getObisLabelAndUnit("1.0.7.8.0.255")
+        val q4 = DlmsCosemFormatter.getObisLabelAndUnit("1.0.8.8.0.255")
 
         assertEquals("Reactive Energy Q1 - Inductive Import (kVArh)", q1.label)
         assertEquals("Reactive Energy Q2 - Capacitive Import (kVArh)", q2.label)
@@ -74,10 +74,10 @@ class TamperAndReactiveMappingTest {
 
     @Test
     fun `block load reactive energy quadrants match billing wording`() {
-        val q1 = Is15959Formatter.getObisLabelAndUnit("1.0.5.29.0.255")
-        val q2 = Is15959Formatter.getObisLabelAndUnit("1.0.6.29.0.255")
-        val q3 = Is15959Formatter.getObisLabelAndUnit("1.0.7.29.0.255")
-        val q4 = Is15959Formatter.getObisLabelAndUnit("1.0.8.29.0.255")
+        val q1 = DlmsCosemFormatter.getObisLabelAndUnit("1.0.5.29.0.255")
+        val q2 = DlmsCosemFormatter.getObisLabelAndUnit("1.0.6.29.0.255")
+        val q3 = DlmsCosemFormatter.getObisLabelAndUnit("1.0.7.29.0.255")
+        val q4 = DlmsCosemFormatter.getObisLabelAndUnit("1.0.8.29.0.255")
 
         assertEquals("Block Reactive Energy Q1 (kVArh)", q1.label)
         assertEquals("Block Reactive Energy Q2 (kVArh)", q2.label)
@@ -91,11 +91,11 @@ class TamperAndReactiveMappingTest {
 
     @Test
     fun `vendor block load header stays concise`() {
-        val vendor = Is15959Formatter.getObisLabelAndUnit("1.0.128.8.98.255")
+        val vendor = DlmsCosemFormatter.getObisLabelAndUnit("1.0.128.8.98.255")
         assertEquals("Meter Temp / L&T Status", vendor.label)
         assertFalse(vendor.label.contains("unverified"))
         // Secure-meter supply word keeps a neutral header, not a raw OBIS dump.
-        val supply = Is15959Formatter.getObisLabelAndUnit("1.0.149.4.0.255")
+        val supply = DlmsCosemFormatter.getObisLabelAndUnit("1.0.149.4.0.255")
         assertEquals("Block Status / Supply Word", supply.label)
         assertFalse(supply.label.startsWith("OBIS "))
     }
@@ -103,20 +103,20 @@ class TamperAndReactiveMappingTest {
     @Test
     fun `legacy lag and lead codes survive as fallback labels only`() {
         assertTrue(
-            Is15959Formatter.getObisLabelAndUnit("1.0.3.8.0.255").label.contains("fallback")
+            DlmsCosemFormatter.getObisLabelAndUnit("1.0.3.8.0.255").label.contains("fallback")
         )
         assertTrue(
-            Is15959Formatter.getObisLabelAndUnit("1.0.4.8.0.255").label.contains("fallback")
+            DlmsCosemFormatter.getObisLabelAndUnit("1.0.4.8.0.255").label.contains("fallback")
         )
     }
 
     @Test
     fun `tod zones 1 through 8 resolve for import and export`() {
         (1..8).forEach { zone ->
-            val import = Is15959Formatter.getObisLabelAndUnit("1.0.1.8.$zone.255")
-            val export = Is15959Formatter.getObisLabelAndUnit("1.0.2.8.$zone.255")
-            val kvahImport = Is15959Formatter.getObisLabelAndUnit("1.0.9.8.$zone.255")
-            val kvahExport = Is15959Formatter.getObisLabelAndUnit("1.0.10.8.$zone.255")
+            val import = DlmsCosemFormatter.getObisLabelAndUnit("1.0.1.8.$zone.255")
+            val export = DlmsCosemFormatter.getObisLabelAndUnit("1.0.2.8.$zone.255")
+            val kvahImport = DlmsCosemFormatter.getObisLabelAndUnit("1.0.9.8.$zone.255")
+            val kvahExport = DlmsCosemFormatter.getObisLabelAndUnit("1.0.10.8.$zone.255")
 
             assertEquals("kWh ToD Zone $zone - Import", import.label)
             assertEquals("kWh ToD Zone $zone - Export", export.label)
@@ -127,13 +127,13 @@ class TamperAndReactiveMappingTest {
 
     @Test
     fun `export side maximum demand is labelled`() {
-        assertEquals("kW", Is15959Formatter.getObisLabelAndUnit("1.0.2.6.0.255").unit)
-        assertEquals("kVA", Is15959Formatter.getObisLabelAndUnit("1.0.10.6.0.255").unit)
+        assertEquals("kW", DlmsCosemFormatter.getObisLabelAndUnit("1.0.2.6.0.255").unit)
+        assertEquals("kVA", DlmsCosemFormatter.getObisLabelAndUnit("1.0.10.6.0.255").unit)
         assertFalse(
-            Is15959Formatter.getObisLabelAndUnit("1.0.1.6.5.255").label.startsWith("OBIS ")
+            DlmsCosemFormatter.getObisLabelAndUnit("1.0.1.6.5.255").label.startsWith("OBIS ")
         )
         assertFalse(
-            Is15959Formatter.getObisLabelAndUnit("1.0.9.6.8.255").label.startsWith("OBIS ")
+            DlmsCosemFormatter.getObisLabelAndUnit("1.0.9.6.8.255").label.startsWith("OBIS ")
         )
     }
 
@@ -146,14 +146,14 @@ class TamperAndReactiveMappingTest {
                 ObisCategory.INSTANTANEOUS
             )
         )
-        val demandDescriptor = Is15959Formatter.getObisLabelAndUnit("1.0.9.6.0.255", demand)
+        val demandDescriptor = DlmsCosemFormatter.getObisLabelAndUnit("1.0.9.6.0.255", demand)
         assertEquals("Maximum Demand - Apparent (kVA)", demandDescriptor.label)
         assertEquals("kVA", demandDescriptor.unit)
 
         val energy = mapOf(
             "1.0.9.8.0.255" to ObisMetadata("Apparent Energy (KVAH)", "KVAH")
         )
-        val energyDescriptor = Is15959Formatter.getObisLabelAndUnit("1.0.9.8.0.255", energy)
+        val energyDescriptor = DlmsCosemFormatter.getObisLabelAndUnit("1.0.9.8.0.255", energy)
         assertEquals("Apparent Energy (kVAh)", energyDescriptor.label)
         assertEquals("kVAh", energyDescriptor.unit)
     }

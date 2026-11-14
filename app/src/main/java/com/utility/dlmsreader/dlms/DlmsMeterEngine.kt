@@ -139,7 +139,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                         throw e
                     }
                     linked = true
-                    val reader = Is15959DataReader(
+                    val reader = DlmsCosemDataReader(
                         transport = transport,
                         client = client,
                         packetTimeoutMs = params.responseTimeoutMs,
@@ -232,7 +232,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
     ): GXDLMSSecureClient {
         if (params.securitySuite0) {
             require(params.secureClientAddress == 32 || params.secureClientAddress == 48) {
-                "IS 15959 Suite 0 client address must be 32 or 48."
+                "DLMS / COSEM (IEC 62056) Suite 0 client address must be 32 or 48."
             }
         }
         val clientAddress = if (params.securitySuite0) params.secureClientAddress else params.clientAddress
@@ -251,7 +251,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
 
         if (params.securitySuite0) {
             val counter = requireNotNull(invocationCounter) {
-                "Public Client 16 did not return ${Is15959Catalog.OBIS_INVOCATION_COUNTER_MR}."
+                "Public Client 16 did not return ${DlmsCosemCatalog.OBIS_INVOCATION_COUNTER_MR}."
             }
             require(params.securitySystemTitle.isNotBlank()) {
                 "Security Suite 0 requires an 8-byte system title."
@@ -260,15 +260,15 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
             ciphering.security = Security.AUTHENTICATION_ENCRYPTION
             ciphering.securitySuite = SecuritySuite.SUITE_0
             ciphering.invocationCounter = counter
-            ciphering.systemTitle = Is15959Catalog.requireSystemTitle(params.securitySystemTitle)
-            ciphering.authenticationKey = Is15959Catalog.requireKey(params.authenticationKey, "Authentication key")
-            ciphering.blockCipherKey = Is15959Catalog.requireKey(params.blockCipherKey, "Block cipher key")
+            ciphering.systemTitle = DlmsCosemCatalog.requireSystemTitle(params.securitySystemTitle)
+            ciphering.authenticationKey = DlmsCosemCatalog.requireKey(params.authenticationKey, "Authentication key")
+            ciphering.blockCipherKey = DlmsCosemCatalog.requireKey(params.blockCipherKey, "Block cipher key")
             ciphering.dedicatedKey = params.dedicatedKey
-                ?.let { Is15959Catalog.requireKey(it, "Dedicated key") }
-                ?: Is15959Catalog.DEFAULT_DEDICATED_KEY.copyOf()
+                ?.let { DlmsCosemCatalog.requireKey(it, "Dedicated key") }
+                ?: DlmsCosemCatalog.DEFAULT_DEDICATED_KEY.copyOf()
             transport.log(
                 TraceDirection.INFO,
-                "Configured IS 15959 Security Suite 0 AES-GCM-128 for Client=$clientAddress, invocation counter=$counter."
+                "Configured DLMS / COSEM (IEC 62056) Security Suite 0 AES-GCM-128 for Client=$clientAddress, invocation counter=$counter."
             )
         }
         return client
@@ -292,17 +292,17 @@ private fun PublicClientDiscovery.MeterIdentity.toIdentitySection(): IdentitySec
     IdentitySection(
         rows = listOf(
             ParameterRow(
-                parameterName = Is15959Formatter.getObisLabelAndUnit("0.0.42.0.0.255").label,
+                parameterName = DlmsCosemFormatter.getObisLabelAndUnit("0.0.42.0.0.255").label,
                 obisCode = "0.0.42.0.0.255",
                 formattedValue = logicalDeviceName
             ),
             ParameterRow(
-                parameterName = Is15959Formatter.getObisLabelAndUnit("0.0.96.1.0.255").label,
+                parameterName = DlmsCosemFormatter.getObisLabelAndUnit("0.0.96.1.0.255").label,
                 obisCode = "0.0.96.1.0.255",
                 formattedValue = serialNumber
             ),
             ParameterRow(
-                parameterName = Is15959Formatter.getObisLabelAndUnit("0.0.1.0.0.255").label,
+                parameterName = DlmsCosemFormatter.getObisLabelAndUnit("0.0.1.0.0.255").label,
                 obisCode = "0.0.1.0.0.255",
                 formattedValue = clockTime
             )

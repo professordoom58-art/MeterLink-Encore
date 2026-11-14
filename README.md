@@ -31,13 +31,39 @@ Works on Android 8.0 or newer with a phone that supports a USB cable connection.
 ## What MeterLink does
 
 - Finds your optical cable automatically.
-- Reads your meter's identity, energy, billing, load and tamper records.
-- Shows every reading clearly on your phone.
-- Saves each reading on your phone for later.
-- Exports a PDF or Excel report you can share.
+- Reads your meter's identity, energy, billing, load and tamper records over the
+  universal **DLMS / COSEM (IEC 62056)** optical interface.
+- Imports meter files from phone storage in several formats: MeterLink JSON
+  reports, tagged OBIS CSV exports, and framed binary dumps with an `S$S`
+  header.
+- Shows every reading clearly on your phone, whether it came from the meter or
+  from an imported file.
+- Saves each reading on your phone for later, with GZIP-compressed SQLite
+  storage and a readable JSON backup in `Documents/MeterLink`.
+- Exports a signed PDF or Excel report you can share. Both include the
+  **Generated & Verified by MeterLink** signature block and a clear source
+  label (`Optical DLMS / COSEM` or `Imported File`).
 - Keeps your saved readings safe even if you delete the app.
 
-MeterLink works with meters from L&T/Schneider, Genus, Secure, HPL and Avon. If your meter brand is not listed, you can enter its password yourself.
+MeterLink works with meters from L&T/Schneider, Genus, Secure, HPL and Avon, and
+with any meter or file export that follows the common DLMS / COSEM (IEC 62056)
+OBIS conventions. If your meter brand is not listed, you can enter its password
+yourself.
+
+### Importing a meter file
+
+1. Open the **Saved Meter Readings** card.
+2. Tap **Import from Storage**.
+3. Choose a `.json`, `.csv`, `.txt`, `.dat` or `.bin` file. The picker accepts
+   any file type and MeterLink identifies the format from the file's content.
+4. The reading is parsed, displayed, and saved in `Documents/MeterLink` just
+   like a live optical read.
+
+Tagged CSV files may contain `Name plate details`, `Programmable datas`,
+instantaneous, billing, daily-load and block-load OBIS/value/scalar sections
+ending in `,END`. Twelve-character hexadecimal OBIS codes are converted to
+canonical dotted notation, and `<exponent>|<unit>` scalars are applied while
+timestamp columns keep their original text.
 
 ---
 

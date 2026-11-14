@@ -12,7 +12,7 @@ import org.junit.Test
  *  - OBIS 1.0.9.8.0.255: 0x0001629A = 90,778 * 10^2 VAh = 9,077.800 kVAh
  *
  * Gurux applies attribute 3's scaler (10^2) while reading attribute 2, so the
- * reader hands [Is15959Formatter.formatValue] the already-scaled value with
+ * reader hands [DlmsCosemFormatter.formatValue] the already-scaled value with
  * scaler = 1.0; the formatter then converts Wh/VAh to kWh/kVAh.
  */
 class CumulativeEnergyConversionTest {
@@ -32,7 +32,7 @@ class CumulativeEnergyConversionTest {
     fun `active energy renders as 7443 kWh`() {
         assertEquals(
             "7,443.000",
-            Is15959Formatter.formatValue(
+            DlmsCosemFormatter.formatValue(
                 raw = 7_443_000.0,
                 scaler = 1.0,
                 unit = DlmsUnit.ACTIVE_ENERGY,
@@ -40,14 +40,14 @@ class CumulativeEnergyConversionTest {
                 includeUnit = false
             )
         )
-        assertEquals("kWh", Is15959Formatter.unitSymbol(DlmsUnit.ACTIVE_ENERGY))
+        assertEquals("kWh", DlmsCosemFormatter.unitSymbol(DlmsUnit.ACTIVE_ENERGY))
     }
 
     @Test
     fun `apparent energy renders as 9077 point 8 kVAh`() {
         assertEquals(
             "9,077.800",
-            Is15959Formatter.formatValue(
+            DlmsCosemFormatter.formatValue(
                 raw = 9_077_800.0,
                 scaler = 1.0,
                 unit = DlmsUnit.APPARENT_ENERGY,
@@ -55,6 +55,6 @@ class CumulativeEnergyConversionTest {
                 includeUnit = false
             )
         )
-        assertEquals("kVAh", Is15959Formatter.unitSymbol(DlmsUnit.APPARENT_ENERGY))
+        assertEquals("kVAh", DlmsCosemFormatter.unitSymbol(DlmsUnit.APPARENT_ENERGY))
     }
 }

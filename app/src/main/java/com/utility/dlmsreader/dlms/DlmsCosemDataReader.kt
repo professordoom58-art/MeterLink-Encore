@@ -26,7 +26,7 @@ const val BLOCK_LOAD_MAX_ENTRIES = 48
 
 /**
  * Load-survey range selection. Every day-window option uses 96 intervals per
- * day, which is the IS 15959 15-minute block cadence. [RECENT] keeps its
+ * day, which is the DLMS / COSEM (IEC 62056) 15-minute block cadence. [RECENT] keeps its
  * historical name for callers but now represents the explicit "2 Days" chip.
  * [FULL_BUFFER] has no day window and bypasses selective range access.
  */
@@ -453,8 +453,18 @@ data class MeterDataReport(
     val dailyLoad: ProfileSection? = null,
     val tamperEvents: List<TamperEventRow> = emptyList(),
     val eventLogStatus: List<Pair<String, String>> = emptyList(),
-    val errors: List<String> = emptyList()
+    val errors: List<String> = emptyList(),
+    /** Where the report came from: an optical read or an imported meter file. */
+    val sourceLabel: String = SOURCE_OPTICAL
 ) {
+    companion object {
+        /** Vendor-neutral label for a live DLMS / COSEM optical extraction. */
+        const val SOURCE_OPTICAL = "Optical DLMS / COSEM"
+
+        /** Vendor-neutral label for JSON, tagged OBIS CSV and binary imports. */
+        const val SOURCE_IMPORTED = "Imported File"
+    }
+
     val hasData: Boolean
         get() = identity != null || cumulativeEnergies.isNotEmpty() ||
             instantaneous != null || billing != null || blockLoad != null ||
@@ -473,11 +483,18 @@ data class MeterDataReport(
         dailyLoad = other.dailyLoad ?: dailyLoad,
         tamperEvents = if (other.tamperEvents.isNotEmpty()) other.tamperEvents else tamperEvents,
         eventLogStatus = eventLogStatus + other.eventLogStatus,
-        errors = errors + other.errors
+        errors = errors + other.errors,
+        // A live session always keeps the optical label; only imports carry
+        // their own vendor-neutral "Imported File" marker.
+        sourceLabel = if (other.isImported) other.sourceLabel else sourceLabel
     )
+
+    /** True when this report was reconstructed from a file rather than a read. */
+    val isImported: Boolean
+        get() = sourceLabel.equals(SOURCE_IMPORTED, ignoreCase = true)
 }
 
-class Is15959DataReader(
+class DlmsCosemDataReader(
     private val transport: OpticalUsbTransport,
     private val client: gurux.dlms.secure.GXDLMSSecureClient,
     packetTimeoutMs: Long = 3000L,
@@ -552,7 +569,7 @@ class Is15959DataReader(
         }
         tick()
         val nameplate = runCatching {
-            val profile = Is15959Catalog.profileByName("Nameplate Profile")
+            val profile = DlmsCosemCatalog.profileByName("Nameplate Profile")
             loadProfile(profile.dataObis, profile.name)
         }.getOrNull()
         tick()
@@ -604,7 +621,7 @@ class Is15959DataReader(
     }
 
     suspend fun readInstantaneousProfile(): ProfileSection {
-        val profile = Is15959Catalog.profileByName("Instantaneous Profile")
+        val profile = DlmsCosemCatalog.profileByName("Instantaneous Profile")
         return loadProfile(
             profile.dataObis,
             "Instantaneous Parameters Snapshot",
@@ -614,7 +631,7 @@ class Is15959DataReader(
     }
 
     suspend fun readBillingProfile(): ProfileSection {
-        val profile = Is15959Catalog.profileByName("Billing Profile")
+        val profile = DlmsCosemCatalog.profileByName("Billing Profile")
         return loadProfile(
             profile.dataObis,
             "Billing History Profile",
@@ -628,7 +645,7 @@ class Is15959DataReader(
         maxEntries: Int = BLOCK_LOAD_MAX_ENTRIES,
         selection: LoadSurveySelection = loadSurveySelection
     ): ProfileSection {
-        val profile = Is15959Catalog.profileByName("Block Load Profile")
+        val profile = DlmsCosemCatalog.profileByName("Block Load Profile")
         return loadRecentProfile(
             profile.dataObis,
             "Block Load Survey",
@@ -643,7 +660,7 @@ class Is15959DataReader(
         maxEntries: Int = DAILY_LOAD_MAX_ENTRIES,
         selection: LoadSurveySelection = loadSurveySelection
     ): ProfileSection {
-        val profile = Is15959Catalog.profileByName("Daily Load Profile")
+        val profile = DlmsCosemCatalog.profileByName("Daily Load Profile")
         return loadRecentProfile(
             profile.dataObis,
             "Daily Load Survey",
@@ -656,7 +673,7 @@ class Is15959DataReader(
 
     suspend fun readTamperEventLogs(): List<TamperEventRow> {
         val statuses = mutableListOf<Pair<String, String>>()
-        val compartments = Is15959Catalog.PROFILES
+        val compartments = DlmsCosemCatalog.PROFILES
             .filter { it.dataObis.startsWith("0.0.99.98.") }
         emitPercent(ExtractionProgress.TAMPER, 0)
         val rows = compartments.flatMapIndexed { index, profile ->
@@ -765,7 +782,7 @@ class Is15959DataReader(
             runCatching { executor.readObject(register, 5) }
         }
         val descriptor = descriptor(obis)
-        val formatted = Is15959Formatter.formatValue(
+        val formatted = DlmsCosemFormatter.formatValue(
             raw,
             scaler = 1.0,
             unit = register.unit,
@@ -775,13 +792,13 @@ class Is15959DataReader(
             meterMake = meterMake
         )
         val capture = if (register is GXDLMSExtendedRegister) {
-            if (isZeroValue(raw)) "—" else Is15959Formatter.formatValue(register.captureTime)
+            if (isZeroValue(raw)) "—" else DlmsCosemFormatter.formatValue(register.captureTime)
         } else ""
         return RegisterReading(
             parameterName = descriptor.label,
             obisCode = obis,
             reading = formatted,
-            unit = descriptor.unit.ifEmpty { Is15959Formatter.unitSymbol(register.unit) },
+            unit = descriptor.unit.ifEmpty { DlmsCosemFormatter.unitSymbol(register.unit) },
             captureTimestamp = capture
         )
     }
@@ -799,7 +816,7 @@ class Is15959DataReader(
             executor.readObject(profile, 3)
             configureRangeRestrictingObject(profile)
             progress("Profile $obis captureObjects count=${profile.captureObjects.size}, scaler=$scalerObis")
-            val scalers = loadCompanionScalers(scalerObis ?: Is15959Catalog.profileByDataObis(obis).scalerObis)
+            val scalers = loadCompanionScalers(scalerObis ?: DlmsCosemCatalog.profileByDataObis(obis).scalerObis)
             if (scalers.isEmpty()) loadCaptureScalers(profile)
             progressSection?.let { emitPercent(it, 50) }
             val expectedEntries = if (entriesBasedProgress) {
@@ -1066,7 +1083,7 @@ class Is15959DataReader(
                 }
             }
 
-            // IS 15959 meters do not use Selector 2 and L&T rejects it with denied(3), so
+            // DLMS / COSEM (IEC 62056) meters do not use Selector 2 and L&T rejects it with denied(3), so
             // this is a last-resort path only after both range and full-buffer
             // reads failed to return any rows.
             if (!loaded && !entryTierDeniedProfiles.contains(obis)) {
@@ -1189,7 +1206,7 @@ class Is15959DataReader(
 
     /**
      * Selector 2 column bounds vary by meter. Gurux's 3-argument overload sends
-     * `to_selected_value = 0`, which several IS 15959 meters reject with
+     * `to_selected_value = 0`, which several DLMS / COSEM (IEC 62056) meters reject with
      * `denied(3)`. Retry once with `from=1, to=captureObjects.size`.
      */
     private suspend fun readRowsByEntryWithBounds(
@@ -1370,9 +1387,9 @@ class Is15959DataReader(
                 parameterName = label,
                 obisCode = obis,
                 unit = if (attributeIndex == 5) "" else descriptor.unit.ifEmpty {
-                    profileScaler?.unit?.let { Is15959Formatter.unitSymbol(it) }
-                        ?: (obj as? GXDLMSRegister)?.let { Is15959Formatter.unitSymbol(it.unit) }
-                        ?: (obj as? GXDLMSDemandRegister)?.let { Is15959Formatter.unitSymbol(it.unit) }
+                    profileScaler?.unit?.let { DlmsCosemFormatter.unitSymbol(it) }
+                        ?: (obj as? GXDLMSRegister)?.let { DlmsCosemFormatter.unitSymbol(it.unit) }
+                        ?: (obj as? GXDLMSDemandRegister)?.let { DlmsCosemFormatter.unitSymbol(it.unit) }
                         ?: ""
                 },
                 attributeIndex = attributeIndex
@@ -1401,7 +1418,7 @@ class Is15959DataReader(
     private suspend fun readTamperProfile(compartment: String, obis: String): List<TamperEventRow> {
         val profile = GXDLMSProfileGeneric(obis)
         executor.readObject(profile, 3)
-        val scalers = loadCompanionScalers(Is15959Catalog.profileByDataObis(obis).scalerObis)
+        val scalers = loadCompanionScalers(DlmsCosemCatalog.profileByDataObis(obis).scalerObis)
         if (scalers.isEmpty()) loadCaptureScalers(profile)
         executor.readObject(profile, 2)
         val formatted = formatProfile(profile, "$compartment Tamper Events", scalers)
@@ -1432,7 +1449,7 @@ class Is15959DataReader(
                 compartment = compartment,
                 dateTime = values.valueAt(dateIndex),
                 eventCode = code?.toString() ?: values.valueAt(eventIndex),
-                eventDescription = code?.let { Is15959Formatter.decodeTamperEvent(it) } ?: "Unknown Event",
+                eventDescription = code?.let { DlmsCosemFormatter.decodeTamperEvent(it) } ?: "Unknown Event",
                 voltage = values.valueAt(voltageIndex),
                 current = values.valueAt(currentIndex),
                 powerFactor = values.valueAt(pfIndex),
@@ -1451,12 +1468,12 @@ class Is15959DataReader(
     ): String {
         if (zeroSentinel) return "—"
         if (raw is GXDateTime || raw is Date || (raw is ByteArray && raw.size == 12)) {
-            return Is15959Formatter.formatCompactDateTime(raw)
+            return DlmsCosemFormatter.formatCompactDateTime(raw)
         }
         val register = obj as? GXDLMSRegister
         val demandRegister = obj as? GXDLMSDemandRegister
         val unit = profileScaler?.unit ?: register?.unit ?: demandRegister?.unit
-        val value = Is15959Formatter.formatValue(
+        val value = DlmsCosemFormatter.formatValue(
             raw,
             scaler = profileScaler?.multiplier ?: 1.0,
             unit = unit,
@@ -1479,7 +1496,7 @@ class Is15959DataReader(
         rows += ParameterRow(
             descriptor.label,
             obis,
-            Is15959Formatter.formatValue(
+            DlmsCosemFormatter.formatValue(
                 raw,
                 obis = obis,
                 includeUnit = false,
@@ -1491,7 +1508,7 @@ class Is15959DataReader(
     }
 
     private fun descriptor(obis: String): ObisDescriptor =
-        Is15959Formatter.getObisLabelAndUnit(obis, runtimeMetadata, meterMake)
+        DlmsCosemFormatter.getObisLabelAndUnit(obis, runtimeMetadata, meterMake)
 
     /**
      * Technical diagnostic for the optical trace log only. User-facing

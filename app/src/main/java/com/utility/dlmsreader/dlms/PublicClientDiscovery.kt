@@ -51,7 +51,7 @@ object PublicClientDiscovery {
 
         // Suite 0 clients need the invocation counter before the secure AARQ.
         val invocationCounter = runCatching {
-            val counter = GXDLMSData(Is15959Catalog.OBIS_INVOCATION_COUNTER_MR)
+            val counter = GXDLMSData(DlmsCosemCatalog.OBIS_INVOCATION_COUNTER_MR)
             (executor.readObject(counter, 2) as? Number)?.toLong()
         }.getOrNull()
 

@@ -57,6 +57,7 @@ object MeterReportSerializer {
             }
         })
         put("errors", JSONArray().apply { report.errors.forEach { put(it) } })
+        put("sourceLabel", report.sourceLabel)
     }
 
     fun fromJson(json: JSONObject): MeterDataReport = MeterDataReport(
@@ -74,7 +75,11 @@ object MeterReportSerializer {
                 pair.optString(0) to pair.optString(1)
             }
         },
-        errors = json.optJSONArray("errors").strings()
+        errors = json.optJSONArray("errors").strings(),
+        sourceLabel = json.optString(
+            "sourceLabel",
+            MeterDataReport.SOURCE_OPTICAL
+        )
     )
 
     private fun identityToJson(identity: IdentitySection): JSONObject = JSONObject().apply {
