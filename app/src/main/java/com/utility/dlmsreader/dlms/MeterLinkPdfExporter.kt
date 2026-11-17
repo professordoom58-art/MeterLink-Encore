@@ -103,6 +103,26 @@ class MeterLinkPdfExporter(private val context: Context) {
         shareFile(file, "application/pdf", "Share MeterLink PDF Report")
     }
 
+    /**
+     * Opens the generated PDF in the device's viewer instead of routing the
+     * technician through the share sheet.
+     */
+    fun viewPdf(file: File) {
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/pdf")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        context.startActivity(Intent.createChooser(intent, "Open PDF Report").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        })
+    }
+
     fun shareText(file: File) {
         shareFile(file, "text/plain", "Share MeterLink Hex Log")
     }
@@ -133,9 +153,14 @@ class MeterLinkPdfExporter(private val context: Context) {
     ) {
         report.identity?.let { identity ->
             layout.section("Section 1: Meter Identity & Nameplate Summary")
+            val labels = PdfReportLabels.allocate(
+                identity.rows.map { PdfReportLabels.resolve(it.parameterName, it.obisCode, it.unit) }
+            )
             layout.table(
                 listOf("Parameter", "Value", "Unit"),
-                identity.rows.map { listOf(it.parameterName, it.formattedValue, it.unit) }
+                identity.rows.mapIndexed { index, row ->
+                    listOf(labels[index], row.formattedValue, row.unit)
+                }
             )
             identity.nameplate?.let {
                 drawProfile(layout, it, identity.rows.map { row -> row.obisCode }.toSet())
@@ -145,12 +170,17 @@ class MeterLinkPdfExporter(private val context: Context) {
         if (report.cumulativeEnergies.isNotEmpty()) {
             layout.section("Section 2: Cumulative Energy & Maximum Demand Registers")
             // No OBIS column: the reclaimed width goes to Parameter, Reading,
-            // Unit and Capture Timestamp. Unmapped registers still carry their
-            // code as the parameter name, so the string appears once only.
+            // Unit and Capture Timestamp. Unmapped registers are labelled with
+            // the quantity their unit describes instead of their address.
+            val labels = PdfReportLabels.allocate(
+                report.cumulativeEnergies.map {
+                    PdfReportLabels.resolve(it.parameterName, it.obisCode, it.unit)
+                }
+            )
             layout.table(
                 listOf("Parameter", "Reading", "Unit", "Capture Timestamp"),
-                report.cumulativeEnergies.map {
-                    listOf(it.parameterName, it.reading, it.unit, it.captureTimestamp)
+                report.cumulativeEnergies.mapIndexed { index, register ->
+                    listOf(labels[index], register.reading, register.unit, register.captureTimestamp)
                 }
             )
         }
@@ -229,10 +259,19 @@ class MeterLinkPdfExporter(private val context: Context) {
         } else {
             included
         }
+        val labels = PdfReportLabels.allocate(
+            ordered.map {
+                PdfReportLabels.resolve(
+                    it.value.parameterName,
+                    it.value.obisCode,
+                    it.value.unit
+                )
+            }
+        )
         val rows = section.rows.flatMap { row ->
-            ordered.map { indexed ->
+            ordered.mapIndexed { position, indexed ->
                 val column = indexed.value
-                listOf(column.parameterName, row.getOrNull(indexed.index) ?: "N/A", column.unit)
+                listOf(labels[position], row.getOrNull(indexed.index) ?: "N/A", column.unit)
             }
         }
         if (rows.isNotEmpty()) layout.table(listOf("Parameter", "Value", "Unit"), rows)
@@ -245,7 +284,10 @@ class MeterLinkPdfExporter(private val context: Context) {
     private fun drawWideProfile(layout: ReportLayout, section: ProfileSection) {
         val headers = section.columns.map { it.parameterName }
         if (headers.isEmpty()) {
-            layout.table(listOf("Profile", "Status"), listOf(listOf(section.profileObis, "No rows returned")))
+            layout.table(
+                listOf("Profile", "Status"),
+                listOf(listOf(section.title.ifBlank { "Meter Profile" }, "No rows returned"))
+            )
         } else {
             drawProfileChunks(layout, section, section.columns.indices.toList(), section.title)
             if (section.windowNote.isNotBlank()) {
@@ -262,7 +304,10 @@ class MeterLinkPdfExporter(private val context: Context) {
 
     private fun drawBillingProfile(layout: ReportLayout, section: ProfileSection) {
         if (section.columns.isEmpty()) {
-            layout.table(listOf("Profile", "Status"), listOf(listOf(section.profileObis, "No rows returned")))
+            layout.table(
+                listOf("Profile", "Status"),
+                listOf(listOf(section.title.ifBlank { "Billing History Profile" }, "No rows returned"))
+            )
         } else {
             val display = section.copy(rows = PdfReportOrdering.sortBillingRowsDescending(section))
             drawProfileChunks(layout, display, display.columns.indices.toList(), "Billing History Profile", billing = true)
@@ -301,9 +346,9 @@ class MeterLinkPdfExporter(private val context: Context) {
             }
         }
 
-        // Six columns per part keeps every cell wide enough that OBIS codes and
-        // "dd-MM-yy HH:mm" timestamps stay on one line instead of being split
-        // mid-token or squeezed horizontally.
+        // Six columns per part keep every cell wide enough that value columns
+        // and "dd-MM-yy HH:mm" timestamps stay on one line instead of being
+        // split mid-token or squeezed horizontally.
         val maxColumnsPerPart = 6
         val chunks = mutableListOf<MutableList<Int>>()
         var current = mutableListOf<Int>()
@@ -351,6 +396,7 @@ class MeterLinkPdfExporter(private val context: Context) {
         chunks.forEachIndexed { chunkIndex, chunk ->
             val chunkTitle = if (chunks.size == 1) title else "$title (Part ${chunkIndex + 1} of ${chunks.size})"
             layout.subsection(chunkTitle)
+            val allocator = PdfReportLabels.Allocator()
             val selected = chunk.mapIndexed { position, index ->
                 val column = section.columns[index]
                 val previous = chunk.getOrNull(position - 1)?.let { section.columns[it] }
@@ -366,7 +412,9 @@ class MeterLinkPdfExporter(private val context: Context) {
                         "Timestamp"
                     else -> column.parameterName
                 }
-                index to label
+                index to allocator.allocate(
+                    PdfReportLabels.resolve(label, column.obisCode, column.unit)
+                )
             }
             drawSelectedProfile(layout, section, selected)
         }
@@ -398,8 +446,10 @@ class MeterLinkPdfExporter(private val context: Context) {
         traceLogs.asReversed()
             .filter { it.direction == TraceDirection.ERROR }
             .take(80)
-            .forEach { rows += listOf("Error / OBIS", it.hexOrMessage) }
-        return rows
+            .forEach { rows += listOf("Error / Detail", it.hexOrMessage) }
+        // Trace messages can quote the object they failed on. Show the readable
+        // label instead of the raw address, exactly as the tables do.
+        return rows.map { row -> row.map(PdfReportLabels::scrub) }
     }
 
     private fun writeHexLog(
@@ -571,15 +621,15 @@ class MeterLinkPdfExporter(private val context: Context) {
                 paint.textAlign = Paint.Align.LEFT
                 paint.color = Color.GRAY
                 paint.textSize = 7f
-                canvas.drawText("Source: $source", LEFT, 830f, paint)
+                canvas.drawText(PdfReportLabels.scrub("Source: $source"), LEFT, 830f, paint)
                 document.finishPage(page)
             }
         }
 
         private fun tableHeader(headers: List<String>, widths: List<Float>) {
-            // Shrink a header just enough that its longest word (often an OBIS
-            // code such as "1.0.2.6.1.255") stays on one line instead of being
-            // cut mid-token by the character-level fallback in wrapText.
+            // Shrink a header just enough that its longest word stays on one
+            // line instead of being cut mid-token by the character-level
+            // fallback in wrapText.
             val prepared = headers.mapIndexed { index, header ->
                 val available = widths[index] - 8f
                 val words = header.split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -629,9 +679,9 @@ class MeterLinkPdfExporter(private val context: Context) {
                         // "dd-MM-yy HH:mm" never breaks across lines.
                         index == 0 && ("date" in header || "time" in header) -> 1.9f
                         "date" in header || "time" in header -> 1.6f
-                        // OBIS codes are 13 characters wide ("1.0.128.8.62.255");
-                        // this weight keeps them whole on a single header line.
-                        "obis" in header || "code" in header || "unit" in header -> 1.0f
+                        // Short headers keep a compact cell; long descriptive
+                        // parameter names get the default weight and wrap.
+                        "code" in header || "unit" in header -> 1.0f
                         header in setOf("v", "i", "pf") -> 0.8f
                         header in setOf("kwh", "kvah", "kvarh", "neutral i") -> 0.85f
                         "description" in header -> 1.3f
@@ -676,11 +726,18 @@ class MeterLinkPdfExporter(private val context: Context) {
             paint.color = Color.WHITE
             paint.textSize = 14f
             paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-            canvas.drawText("MeterLink — DLMS / COSEM (IEC 62056) Meter Reading Report", LEFT, 29f, paint)
+            canvas.drawText("MeterLink - by Mihir", LEFT, 29f, paint)
             paint.color = Color.rgb(51, 65, 85)
             paint.textSize = 8f
             paint.typeface = Typeface.DEFAULT
-            canvas.drawText("Generated (phone time): $generated    Serial: $serial    LDN: $logicalDevice    Manufacturer: $manufacturer    Source: $source", LEFT, 65f, paint)
+            canvas.drawText(
+                PdfReportLabels.scrub(
+                    "Generated (phone time): $generated    Serial: $serial    LDN: $logicalDevice    Manufacturer: $manufacturer    Source: $source"
+                ),
+                LEFT,
+                65f,
+                paint
+            )
             paint.color = BORDER
             canvas.drawLine(LEFT, 76f, RIGHT, 76f, paint)
         }
@@ -690,7 +747,7 @@ class MeterLinkPdfExporter(private val context: Context) {
             paint.textSize = op.size
             paint.typeface = if (op.bold) Typeface.create(Typeface.DEFAULT, Typeface.BOLD) else Typeface.DEFAULT
             paint.textAlign = op.align
-            canvas.drawText(op.value, op.x, op.baseline, paint)
+            canvas.drawText(PdfReportLabels.scrub(op.value), op.x, op.baseline, paint)
             paint.textAlign = Paint.Align.LEFT
         }
 

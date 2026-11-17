@@ -1,6 +1,7 @@
 package com.utility.dlmsreader
 
 import androidx.compose.ui.graphics.Color
+import com.utility.dlmsreader.ui.components.scanUsbDotColor
 import org.junit.Assert.assertEquals
 import org.junit.Test
 

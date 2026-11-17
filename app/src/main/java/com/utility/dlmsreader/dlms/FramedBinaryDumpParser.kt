@@ -74,6 +74,7 @@ object FramedBinaryDumpParser {
     )
     private val HEX_OBIS = Regex("""(?i)([0-9a-f]{12})""")
     private val NUMERIC = Regex("""^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$""")
+    private val ENERGY_UNITS = setOf("kWh", "kVAh", "kVArh", "kW", "kVA", "kVAr")
 
     private data class NameField(val label: String, val obis: String, val unit: String = "")
 
@@ -477,10 +478,24 @@ object FramedBinaryDumpParser {
         }
         is String -> value.trim()
         is Boolean -> if (value) "1" else "0"
-        is Long -> scaleLong(value, scaler)
-        is Int -> scaleLong(value.toLong(), scaler)
-        is Double -> scaleDouble(value, scaler)
+        is Long -> normalizeProfileEnergy(scaleLong(value, scaler), column.unit)
+        is Int -> normalizeProfileEnergy(scaleLong(value.toLong(), scaler), column.unit)
+        is Double -> normalizeProfileEnergy(scaleDouble(value, scaler), column.unit)
         else -> value.toString()
+    }
+
+    /**
+     * COSEM transmits energy in Wh/VAh/VArh and power in W/VA/VAr, while the
+     * profile columns are labelled kWh/kVAh/kVArh/kW/kVA/kVAr. Live reads
+     * already apply this factor in [DlmsCosemFormatter.formatValue]; binary
+     * dumps must apply it too, otherwise imported energy is 1000x too large.
+     */
+    private fun normalizeProfileEnergy(reading: String, unit: String): String {
+        if (unit !in ENERGY_UNITS) return reading
+        val amount = reading.toBigDecimalOrNull() ?: return reading
+        return runCatching {
+            clampDecimal(amount.scaleByPowerOfTen(-3))
+        }.getOrDefault(reading)
     }
 
     private fun scaleLong(value: Long, scaler: Scaler?): String {
@@ -609,6 +624,7 @@ object FramedBinaryDumpParser {
                 0x10 -> readUInt16().toShort().toInt().toLong()
                 0x11 -> readByte().toLong()
                 0x12 -> readUInt16()
+                0x14, 0x15 -> readUInt64()
                 0x16 -> readByte().toLong()
                 0x17 -> Float.fromBits(readUInt32().toInt()).toDouble()
                 0x18 -> Double.fromBits(readUInt64())

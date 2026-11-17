@@ -3,6 +3,9 @@
 
     <uses-feature android:name="android.hardware.usb.host" android:required="true" />
 
+    <!-- Tactile success/error feedback for field use. Normal permission, no dialog. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <!-- Update check against the GitHub Releases API and APK download. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Lets the downloaded APK be handed to the system package installer. -->

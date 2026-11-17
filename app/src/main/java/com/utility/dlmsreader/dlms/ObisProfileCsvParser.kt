@@ -123,6 +123,34 @@ object ObisProfileCsvParser {
     private val DOTTED_OBIS = Regex("""^\d{1,3}(?:\.\d{1,3}){5}$""")
     private val HEX_OBIS = Regex("""^(?:[0-9A-Fa-f]{2}){6}$""")
 
+    /**
+     * Logical device names such as `LNTB2XXXXXXXC5`, `AMEERIS106_10`,
+     * `GOESPHWCN-S`, and `LGZ-LGC110E150`. Vendors use underscores and hyphens
+     * inside the LDN, so separators are accepted as long as the value starts
+     * with letters and is at least eight characters long.
+     */
+    private val POSITIONAL_LDN = Regex("""^(?=.{8,}$)[A-Za-z]{2,}[A-Za-z0-9._-]*$""")
+
+    /** `28/12/2023 23:25:47`-style meter clock written without a label. */
+    private val PROGRAMMABLE_TIMESTAMP = Regex(
+        """^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\s+\d{1,2}:\d{2}(?::\d{2})?$"""
+    )
+
+    private const val POSITIONAL_NAMEPLATE_MIN_CELLS = 10
+
+    /**
+     * Columns of the unlabelled L&T nameplate record, in file order:
+     * LDN, serial, manufacturer, firmware, …, current rating, year.
+     */
+    private val POSITIONAL_NAMEPLATE_FIELDS = listOf(
+        0 to "0.0.42.0.0.255",
+        1 to "0.0.96.1.0.255",
+        2 to "0.0.96.1.1.255",
+        3 to "1.0.0.2.0.255",
+        8 to "0.0.94.91.12.255",
+        9 to "0.0.96.1.4.255"
+    )
+
     private val UNIT_SYMBOLS = setOf(
         "kWh", "kVAh", "kVArh", "kW", "kVA", "kVAr", "Wh", "VAh", "VArh",
         "V", "A", "Hz", "%", "PF", "deg", "min", "s", "Wh", "var"
@@ -183,12 +211,11 @@ object ObisProfileCsvParser {
         val sections = readSections(text)
         if (sections.isEmpty()) return null
 
-        val nameplateRows = parseParameterRows(
-            sections["name plate details"]?.rows
-                ?: sections["nameplate details"]?.rows
-                ?: rowsOf(sections, SectionKind.NAME_PLATE)
-        )
-        val programmableRows = parseParameterRows(rowsOf(sections, SectionKind.PROGRAMMABLE))
+        val rawNameplateRows = sections["name plate details"]?.rows
+            ?: sections["nameplate details"]?.rows
+            ?: rowsOf(sections, SectionKind.NAME_PLATE)
+        val nameplateRows = parseNameplateRows(rawNameplateRows)
+        val programmableRows = parseProgrammableRows(rowsOf(sections, SectionKind.PROGRAMMABLE))
         val identityRows = mergeRows(nameplateRows + programmableRows)
 
         val instantaneous = buildProfile(
@@ -549,6 +576,89 @@ object ObisProfileCsvParser {
             obis.endsWith(".0.255") && obis.startsWith("0.0.1.")
 
     // -------------------------------------------------------------- nameplate
+
+    /**
+     * Parses the nameplate section, accepting both labelled rows and the
+     * unlabelled positional record written by L&T `.OUT` exports.
+     *
+     * Labelled rows keep priority; the positional record only contributes the
+     * fields that would otherwise be lost.
+     */
+    private fun parseNameplateRows(rows: List<List<String>>): List<ParameterRow> {
+        val labelled = parseParameterRows(rows)
+        val positional = positionalNameplateRows(rows)
+        if (positional.isEmpty()) return labelled
+        // parseParameterRows read the positional record's first value as a
+        // label, so only its resolved OBIS rows are worth keeping.
+        return mergeRows(positional + labelled.filter { it.obisCode.isNotBlank() })
+    }
+
+    /**
+     * Reads the L&T positional nameplate record:
+     *
+     * ```
+     * Name plate details,<LDN>,<serial>,<manufacturer>,<firmware>,5,0,0,C3,
+     * <current rating>,<year>,0,END
+     * ```
+     *
+     * The first cell is the LDN rather than a label, which is why the generic
+     * row parser cannot resolve any identity OBIS codes for this layout.
+     */
+    private fun positionalNameplateRows(rows: List<List<String>>): List<ParameterRow> {
+        val record = rows.firstOrNull(::isPositionalNameplate)?.map { it.trim() }
+            ?: return emptyList()
+        return POSITIONAL_NAMEPLATE_FIELDS.mapNotNull { (index, obis) ->
+            val value = record.getOrNull(index).orEmpty()
+            if (value.isEmpty()) return@mapNotNull null
+            val descriptor = descriptor(obis)
+            parameterRow(
+                label = descriptor.label,
+                obis = obis,
+                value = value,
+                unit = descriptor.unit
+            )
+        }
+    }
+
+    private fun isPositionalNameplate(row: List<String>): Boolean {
+        val cells = row.map { it.trim() }
+        return cells.size >= POSITIONAL_NAMEPLATE_MIN_CELLS &&
+            cells.none { normalizeObis(it) != null } &&
+            POSITIONAL_LDN.matches(cells[0]) &&
+            cells[2].any(Char::isLetter)
+    }
+
+    /**
+     * Parses programmable parameters, mapping the unlabelled meter clock that
+     * L&T exports write in the first cell (`28/12/2023 23:25:47,1800,1800`).
+     */
+    private fun parseProgrammableRows(rows: List<List<String>>): List<ParameterRow> {
+        val labelled = parseParameterRows(rows)
+        val timestamp = rows.firstOrNull()?.firstOrNull()?.trim().orEmpty()
+        val clock = programmableClockRow(timestamp) ?: return labelled
+        return mergeRows(
+            listOf(clock) + labelled.filterNot { it.parameterName == timestamp }
+        )
+    }
+
+    private fun programmableClockRow(timestamp: String): ParameterRow? {
+        val match = PROGRAMMABLE_TIMESTAMP.matchEntire(timestamp) ?: return null
+        val (day, month, year) = match.destructured
+        val dayNumber = day.toIntOrNull() ?: return null
+        val monthNumber = month.toIntOrNull() ?: return null
+        val yearNumber = year.toIntOrNull() ?: return null
+        // All-zero placeholders mean the clock was never set.
+        if (dayNumber !in 1..31 || monthNumber !in 1..12 || yearNumber <= 0) {
+            return null
+        }
+        val descriptor = descriptor("0.0.1.0.0.255")
+        return parameterRow(
+            label = descriptor.label,
+            obis = "0.0.1.0.0.255",
+            value = timestamp,
+            unit = descriptor.unit
+        )
+    }
 
     private fun parseParameterRows(rows: List<List<String>>): List<ParameterRow> {
         val parsed = mutableListOf<ParameterRow>()

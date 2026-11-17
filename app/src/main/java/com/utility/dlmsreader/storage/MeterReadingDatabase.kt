@@ -1,19 +1,12 @@
 package com.utility.dlmsreader.storage
 
-import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
-import android.media.MediaScannerConnection
 import android.net.Uri
-import android.os.Build
-import android.os.Environment
-import android.provider.DocumentsContract
-import android.provider.MediaStore
 import com.utility.dlmsreader.dlms.MeterDataReport
 import com.utility.dlmsreader.dlms.ProfileSection
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -220,6 +213,9 @@ class MeterReadingDatabase(
     private val restoreMutex = Mutex()
     private var externalRestoreDone = false
 
+    /** SAF/MediaStore side of persistence; this class keeps the SQLite side. */
+    private val externalStorage by lazy { ExternalStorageSync(appContext, this) }
+
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             """
@@ -319,7 +315,7 @@ class MeterReadingDatabase(
         // Persist a human-readable JSON copy in Documents/MeterLink so the
         // reading survives an uninstall (internal SQLite storage does not).
         // The file name carries the scan timestamp, not the changing row id.
-        val backupPath = writeBackup(merged, scannedAtEpochMs)
+        val backupPath = externalStorage.writeBackup(merged, scannedAtEpochMs)
         if (backupPath.isNotBlank()) {
             db.update(
                 TABLE,
@@ -394,7 +390,7 @@ class MeterReadingDatabase(
      * External backup files belonging to the dropped rows are removed too, so a
      * later startup scan cannot resurrect them.
      */
-    private fun pruneOldReadings(db: SQLiteDatabase) {
+    internal fun pruneOldReadings(db: SQLiteDatabase) {
         val keep = "SELECT $COL_ID FROM $TABLE " +
             "ORDER BY $COL_SCANNED_AT_EPOCH DESC, $COL_ID DESC LIMIT $MAX_SAVED_READINGS"
         val doomed = mutableListOf<BackupKey>()
@@ -413,7 +409,9 @@ class MeterReadingDatabase(
             }
         }
         db.execSQL("DELETE FROM $TABLE WHERE $COL_ID NOT IN ($keep)")
-        doomed.forEach { deleteBackup(it) }
+        doomed.forEach {
+            externalStorage.deleteBackup(it.serial, it.id, it.scannedAtEpochMs, it.path)
+        }
     }
 
     /** All saved readings, newest first, without touching the report BLOB. */
@@ -443,7 +441,7 @@ class MeterReadingDatabase(
      */
     suspend fun importFromTree(treeUri: Uri): Int = withContext(Dispatchers.IO) {
         restoreMutex.withLock {
-            val imported = runCatching { importTreeBlocking(treeUri) }.getOrDefault(0)
+            val imported = runCatching { externalStorage.importTreeBlocking(treeUri) }.getOrDefault(0)
             externalRestoreDone = true
             imported
         }
@@ -545,7 +543,7 @@ class MeterReadingDatabase(
         }
         val deleted = db.delete(TABLE, "$COL_ID = ?", arrayOf(id.toString()))
         if (deleted > 0) {
-            deleteBackup(BackupKey(id, serial, scannedAtEpochMs, backupPath))
+            externalStorage.deleteBackup(serial, id, scannedAtEpochMs, backupPath)
         }
         deleted
     }
@@ -568,15 +566,15 @@ class MeterReadingDatabase(
         val db = writableDatabase
         val knownFingerprints = loadKnownFingerprints(db)
         var imported = 0
-        listExternalBackups().forEach { backup ->
+        externalStorage.listExternalBackups().forEach { backup ->
             if (importBackup(db, knownFingerprints, backup)) imported++
         }
         if (imported > 0) pruneOldReadings(db)
         // Create Documents/MeterLink on first launch even when it is empty.
-        externalDirectory()
+        externalStorage.externalDirectory()
     }
 
-    private fun loadKnownFingerprints(db: SQLiteDatabase): MutableSet<String> {
+    internal fun loadKnownFingerprints(db: SQLiteDatabase): MutableSet<String> {
         val known = mutableSetOf<String>()
         db.query(TABLE, arrayOf(COL_FINGERPRINT), null, null, null, null, null)
             .use { cursor ->
@@ -593,10 +591,10 @@ class MeterReadingDatabase(
      * keep the original reading date and the backup is renamed from the legacy
      * `_<id>` form to `Meterlink-<serial>-<date>.json`.
      */
-    private fun importBackup(
+    internal fun importBackup(
         db: SQLiteDatabase,
         knownFingerprints: MutableSet<String>,
-        backup: ExternalBackupFile
+        backup: ExternalStorageSync.BackupFile
     ): Boolean {
         val text = backup.readText() ?: return false
         val report = ExternalReadingBackup.fromJson(text) ?: return false
@@ -612,7 +610,7 @@ class MeterReadingDatabase(
             null,
             readingValues(report, "Restored Backup", scannedAt)
         )
-        val newPath = writeBackup(report, scannedAt)
+        val newPath = externalStorage.writeBackup(report, scannedAt)
         if (newPath.isNotBlank()) {
             db.update(
                 TABLE,
@@ -629,85 +627,6 @@ class MeterReadingDatabase(
         return true
     }
 
-    /** Imports MeterLink JSONs exposed by a user-granted SAF folder tree. */
-    private fun importTreeBlocking(treeUri: Uri): Int {
-        val db = writableDatabase
-        val knownFingerprints = loadKnownFingerprints(db)
-        var imported = 0
-        listTreeBackups(treeUri).forEach { backup ->
-            if (importBackup(db, knownFingerprints, backup)) imported++
-        }
-        if (imported > 0) pruneOldReadings(db)
-        return imported
-    }
-
-    /**
-     * Lists MeterLink JSONs under a SAF tree. The user normally picks the
-     * `MeterLink` folder itself, but picking `Documents` also works because a
-     * direct child folder named `MeterLink` is descended into.
-     */
-    private fun listTreeBackups(treeUri: Uri): List<ExternalBackupFile> {
-        val resolver = appContext.contentResolver
-        val rootId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }
-            .getOrNull() ?: return emptyList()
-        val backups = mutableListOf<ExternalBackupFile>()
-
-        fun collect(parentId: String, depth: Int) {
-            if (depth > 2) return
-            val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId)
-            runCatching {
-                resolver.query(
-                    children,
-                    arrayOf(
-                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                        DocumentsContract.Document.COLUMN_MIME_TYPE,
-                        DocumentsContract.Document.COLUMN_LAST_MODIFIED
-                    ),
-                    null,
-                    null,
-                    null
-                )?.use { cursor ->
-                    while (cursor.moveToNext()) {
-                        val documentId = cursor.getString(0) ?: continue
-                        val name = cursor.getString(1) ?: continue
-                        val mimeType = cursor.getString(2).orEmpty()
-                        val modified = if (cursor.isNull(3)) 0L else cursor.getLong(3)
-                        if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
-                            if (name.equals(ExternalReadingBackup.FOLDER_NAME, ignoreCase = true)) {
-                                collect(documentId, depth + 1)
-                            }
-                        } else if (ExternalReadingBackup.isMeterLinkJsonFile(name)) {
-                            val documentUri = DocumentsContract.buildDocumentUriUsingTree(
-                                treeUri,
-                                documentId
-                            )
-                            backups += ExternalBackupFile(
-                                name = name,
-                                lastModifiedMs = modified,
-                                readText = {
-                                    runCatching {
-                                        resolver.openInputStream(documentUri)?.use { input ->
-                                            input.readBytes().toString(Charsets.UTF_8)
-                                        }
-                                    }.getOrNull()
-                                },
-                                delete = {
-                                    runCatching {
-                                        DocumentsContract.deleteDocument(resolver, documentUri)
-                                    }
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-        }
-
-        collect(rootId, 0)
-        return backups
-    }
-
     private data class BackupKey(
         val id: Long,
         val serial: String,
@@ -715,187 +634,4 @@ class MeterReadingDatabase(
         val path: String
     )
 
-    private data class ExternalBackupFile(
-        val name: String,
-        val lastModifiedMs: Long,
-        val readText: () -> String?,
-        val delete: () -> Unit
-    )
-
-    /** Enumerates backups through MediaStore (API 29+) and the direct folder. */
-    private fun listExternalBackups(): List<ExternalBackupFile> {
-        val backups = mutableListOf<ExternalBackupFile>()
-        val seenNames = mutableSetOf<String>()
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            runCatching {
-                val resolver = appContext.contentResolver
-                val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-                val relative = "${Environment.DIRECTORY_DOCUMENTS}/${ExternalReadingBackup.FOLDER_NAME}"
-                resolver.query(
-                    collection,
-                    arrayOf(
-                        MediaStore.Files.FileColumns._ID,
-                        MediaStore.Files.FileColumns.DISPLAY_NAME,
-                        MediaStore.Files.FileColumns.DATE_MODIFIED
-                    ),
-                    "(${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ? OR " +
-                        "${MediaStore.Files.FileColumns.DISPLAY_NAME} LIKE ?) AND " +
-                        "${MediaStore.Files.FileColumns.RELATIVE_PATH} LIKE ?",
-                    arrayOf(
-                        "${ExternalReadingBackup.FILE_PREFIX}%${ExternalReadingBackup.FILE_SUFFIX}",
-                        "${ExternalReadingBackup.LEGACY_FILE_PREFIX}%${ExternalReadingBackup.FILE_SUFFIX}",
-                        "$relative%"
-                    ),
-                    null
-                )?.use { cursor ->
-                    while (cursor.moveToNext()) {
-                        val id = cursor.getLong(0)
-                        val name = cursor.getString(1) ?: continue
-                        if (!seenNames.add(name)) continue
-                        val uri = ContentUris.withAppendedId(collection, id)
-                        backups += ExternalBackupFile(
-                            name = name,
-                            lastModifiedMs = cursor.getLong(2) * 1000L,
-                            readText = {
-                                runCatching {
-                                    resolver.openInputStream(uri)?.use { input ->
-                                        input.readBytes().toString(Charsets.UTF_8)
-                                    }
-                                }.getOrNull()
-                            },
-                            delete = { runCatching { resolver.delete(uri, null, null) } }
-                        )
-                    }
-                }
-            }
-        }
-
-        externalDirectory()?.let { directory ->
-            ExternalReadingBackup.scan(directory).forEach { file ->
-                if (!seenNames.add(file.name)) return@forEach
-                backups += ExternalBackupFile(
-                    name = file.name,
-                    lastModifiedMs = file.lastModified(),
-                    readText = { runCatching { file.readText(Charsets.UTF_8) }.getOrNull() },
-                    delete = { runCatching { file.delete() } }
-                )
-            }
-        }
-        return backups
-    }
-
-    /** Public Documents directory, or null when shared storage is unavailable. */
-    private fun externalDirectory(): File? = runCatching {
-        val directory = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-            ExternalReadingBackup.FOLDER_NAME
-        )
-        val created = !directory.exists()
-        if (created) directory.mkdirs()
-        if (created && directory.isDirectory) {
-            // Make the freshly created folder visible to file managers and to
-            // the MediaStore index immediately, not only after a device reboot.
-            runCatching {
-                MediaScannerConnection.scanFile(
-                    appContext,
-                    arrayOf(directory.absolutePath),
-                    null,
-                    null
-                )
-            }
-        }
-        directory.takeIf { it.isDirectory }
-    }.getOrNull()
-
-    /** Writes the JSON backup and returns a content URI or absolute path. */
-    private fun writeBackup(report: MeterDataReport, scanTimestampMillis: Long): String {
-        val serial = report.identityValue(SERIAL_OBIS)
-        val name = ExternalReadingBackup.buildMeterJsonFileName(serial, scanTimestampMillis)
-        val json = ExternalReadingBackup.toJson(report)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            writeBackupViaMediaStore(name, json)?.let { return it }
-        }
-        val directory = externalDirectory() ?: return ""
-        return runCatching {
-            ExternalReadingBackup.write(directory, report, scanTimestampMillis).absolutePath
-        }.getOrDefault("")
-    }
-
-    private fun writeBackupViaMediaStore(name: String, json: String): String? = runCatching {
-        val resolver = appContext.contentResolver
-        val collection = MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
-        val relative = "${Environment.DIRECTORY_DOCUMENTS}/${ExternalReadingBackup.FOLDER_NAME}"
-        val existing = resolver.query(
-            collection,
-            arrayOf(MediaStore.Files.FileColumns._ID),
-            "${MediaStore.Files.FileColumns.DISPLAY_NAME} = ? AND " +
-                "${MediaStore.Files.FileColumns.RELATIVE_PATH} = ?",
-            arrayOf(name, "$relative/"),
-            null
-        )?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                ContentUris.withAppendedId(collection, cursor.getLong(0))
-            } else {
-                null
-            }
-        }
-        val uri = existing ?: run {
-            val values = ContentValues().apply {
-                put(MediaStore.Files.FileColumns.DISPLAY_NAME, name)
-                put(MediaStore.Files.FileColumns.MIME_TYPE, "application/json")
-                put(MediaStore.Files.FileColumns.RELATIVE_PATH, relative)
-                put(MediaStore.Files.FileColumns.IS_PENDING, 1)
-            }
-            resolver.insert(collection, values) ?: return@runCatching null
-        }
-        val written = resolver.openOutputStream(uri, "wt")?.use { stream ->
-            stream.write(json.toByteArray(Charsets.UTF_8))
-            true
-        } ?: false
-        if (!written) return@runCatching null
-        if (existing == null) {
-            resolver.update(
-                uri,
-                ContentValues().apply { put(MediaStore.Files.FileColumns.IS_PENDING, 0) },
-                null,
-                null
-            )
-        }
-        uri.toString()
-    }.getOrNull()
-
-    /** Deletes the MediaStore entry and/or direct file backing one reading. */
-    private fun deleteBackup(backup: BackupKey) {
-        when {
-            backup.path.startsWith("content://") ->
-                runCatching { appContext.contentResolver.delete(Uri.parse(backup.path), null, null) }
-            backup.path.isNotBlank() -> runCatching { File(backup.path).delete() }
-        }
-        // Both the current timestamp name and the legacy `_<id>` name may exist
-        // for a row saved by an older build.
-        val names = listOf(
-            ExternalReadingBackup.buildMeterJsonFileName(
-                backup.serial,
-                backup.scannedAtEpochMs
-            ),
-            ExternalReadingBackup.legacyFileName(backup.serial, backup.id)
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            runCatching {
-                val relative = "${Environment.DIRECTORY_DOCUMENTS}/${ExternalReadingBackup.FOLDER_NAME}"
-                names.forEach { name ->
-                    appContext.contentResolver.delete(
-                        MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY),
-                        "${MediaStore.Files.FileColumns.DISPLAY_NAME} = ? AND " +
-                            "${MediaStore.Files.FileColumns.RELATIVE_PATH} = ?",
-                        arrayOf(name, "$relative/")
-                    )
-                }
-            }
-        }
-        externalDirectory()?.let { directory ->
-            names.forEach { name -> runCatching { File(directory, name).delete() } }
-        }
-    }
 }

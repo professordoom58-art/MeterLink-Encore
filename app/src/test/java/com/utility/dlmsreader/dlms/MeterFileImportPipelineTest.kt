@@ -150,6 +150,54 @@ class MeterFileImportPipelineTest {
     }
 
     @Test
+    fun `out extension is treated as tagged csv`() {
+        val csv = """
+            Name plate details
+            0.0.96.1.0.255,Meter Serial Number,123456
+            ,END
+        """.trimIndent()
+
+        assertEquals(
+            MeterFileFormat.TAGGED_OBIS_CSV,
+            MeterFileImportRouter.detectFormat("dump.OUT", null, csv.toByteArray())
+        )
+    }
+
+    @Test
+    fun `binary header is detected before text sampling on large dumps`() {
+        val header = byteArrayOf(0x7E, 0xA0.toByte())
+        val dump = header + ByteArray(200_000) + "obis".toByteArray()
+
+        assertEquals(
+            MeterFileFormat.FRAMED_BINARY,
+            MeterFileImportRouter.detectFormat("huge.out", null, dump)
+        )
+    }
+
+    @Test
+    fun `text sniffing only reads the first 64 KB`() {
+        // OBIS vocabulary past the sample window must not force a full decode;
+        // the unknown text extension falls through to its binary fallback.
+        val bytes = ("x".repeat(70_000) + "\nobis\n").toByteArray()
+
+        assertEquals(
+            MeterFileFormat.FRAMED_BINARY,
+            MeterFileImportRouter.detectFormat("export.bin", null, bytes)
+        )
+    }
+
+    @Test
+    fun `plain extensions map to their formats`() {
+        val plain = "value".toByteArray()
+
+        assertEquals(MeterFileFormat.JSON, MeterFileImportRouter.detectFormat("export.json", null, plain))
+        assertEquals(MeterFileFormat.TAGGED_OBIS_CSV, MeterFileImportRouter.detectFormat("export.csv", null, plain))
+        assertEquals(MeterFileFormat.TAGGED_OBIS_CSV, MeterFileImportRouter.detectFormat("export.txt", null, plain))
+        assertEquals(MeterFileFormat.TAGGED_OBIS_CSV, MeterFileImportRouter.detectFormat("export.out", null, plain))
+        assertEquals(MeterFileFormat.FRAMED_BINARY, MeterFileImportRouter.detectFormat("export.dat", null, plain))
+    }
+
+    @Test
     fun `router skips leading timestamp garbage before the frame marker`() {
         val prefix = "Exported 2026-01-01T00:00:00\n"
         val text = "S\$SModel=ML-3P,Serial=987654,Manufacturer=Example,Phase=3"
@@ -233,6 +281,73 @@ class MeterFileImportPipelineTest {
     }
 
     @Test
+    fun `lnt positional nameplate resolves identity and clock`() {
+        val csv = """
+            Name plate details,LNTB2XXXXXXXC5,        92717295,LARSEN AND TOUBRO LIMITED,TD00.02,5,0,0,C3,10-60A  ,2019,0,END
+            Programmable datas,28/12/2023 23:25:47,1800,1800,END
+            Instant data OBIS,0100010800FF,0100090800FF,END
+            Instant data value,7443000,9077800,END
+            Instant scalar OBIS,0100010800FF,0100090800FF,END
+            Instant scalar value,-3|kWh,-3|kVAh,END
+        """.trimIndent()
+
+        val report = ObisProfileCsvParser.parse(csv)
+        assertNotNull(report)
+
+        fun identity(obis: String) =
+            report!!.identity?.rows?.first { it.obisCode == obis }?.formattedValue
+
+        assertEquals("LNTB2XXXXXXXC5", identity("0.0.42.0.0.255"))
+        assertEquals("92717295", identity("0.0.96.1.0.255"))
+        assertEquals("LARSEN AND TOUBRO LIMITED", identity("0.0.96.1.1.255"))
+        assertEquals("TD00.02", identity("1.0.0.2.0.255"))
+        assertEquals("10-60A", identity("0.0.94.91.12.255"))
+        assertEquals("2019", identity("0.0.96.1.4.255"))
+        assertEquals("28/12/2023 23:25:47", identity("0.0.1.0.0.255"))
+        assertEquals(listOf("7443", "9077.8"), report!!.instantaneous?.rows?.single())
+    }
+
+    @Test
+    fun `vendor positional nameplates with separators keep identity`() {
+        val records = listOf(
+            "Name plate details,AMEERIS106_10,0722899,AVON METERS PVT LTD,AA1.00,5,1,1,C3,10-60A,2016,0,END"
+                to listOf("AMEERIS106_10", "0722899", "AVON METERS PVT LTD", "10-60A", "2016"),
+            "Name plate details,GOESPHWCN-S,     6799485,GENUS POWER INFRASTRUCTURES LTD,G36B7.160001,5,1,1,C3,10-60A,2017,0,END"
+                to listOf("GOESPHWCN-S", "6799485", "GENUS POWER INFRASTRUCTURES LTD", "10-60A", "2017"),
+            "Name plate details,LGZ-LGC110E150,  1234567,SCHNEIDER ELECTRIC INDIA PRIVATE LIMITED,TD00.02,5,1,1,C3,10-60A,2019,0,END"
+                to listOf("LGZ-LGC110E150", "1234567", "SCHNEIDER ELECTRIC INDIA PRIVATE LIMITED", "10-60A", "2019")
+        )
+
+        records.forEach { (line, expected) ->
+            val report = ObisProfileCsvParser.parse(line)
+            assertNotNull(report)
+            val rows = report!!.identity?.rows.orEmpty()
+            fun identity(obis: String) = rows.firstOrNull { it.obisCode == obis }?.formattedValue
+            val missing = rows.joinToString(" | ") { it.obisCode }
+            assertEquals("LDN for $line (rows: $missing)", expected[0], identity("0.0.42.0.0.255"))
+            assertEquals("serial for $line", expected[1], identity("0.0.96.1.0.255"))
+            assertEquals("manufacturer for $line", expected[2], identity("0.0.96.1.1.255"))
+            assertEquals("current rating for $line", expected[3], identity("0.0.94.91.12.255"))
+            assertEquals("year for $line", expected[4], identity("0.0.96.1.4.255"))
+        }
+    }
+
+    @Test
+    fun `unset positional meter clock is not recorded as a real time`() {
+        val csv = """
+            Name plate details,LNTB2XXXXXXXC5,        A5806062,LARSEN AND TOUBRO LIMITED,TD00.02,5,0,0,C3,10-60A  ,2023,0,END
+            Programmable datas,00/00/0000 00:00:04,1800,1800,END
+        """.trimIndent()
+
+        val report = ObisProfileCsvParser.parse(csv)
+        assertNotNull(report)
+        assertEquals("A5806062", report!!.identity?.rows?.first { it.obisCode == "0.0.96.1.0.255" }?.formattedValue)
+        assertTrue(
+            report.identity?.rows.orEmpty().none { it.obisCode == "0.0.1.0.0.255" }
+        )
+    }
+
+    @Test
     fun `record dump decodes identity, captures and register buffer`() {
         val serial = record(
             classId = 1,
@@ -279,9 +394,54 @@ class MeterFileImportPipelineTest {
             "123456",
             result.report.identity?.rows?.first { it.obisCode == "0.0.96.1.0.255" }?.formattedValue
         )
-        assertEquals("100", result.report.instantaneous?.rows?.single()?.last())
+        assertEquals("0.1", result.report.instantaneous?.rows?.single()?.last())
         assertEquals(
-            "100",
+            "0.1",
+            result.report.cumulativeEnergies.first { it.obisCode == "1.0.1.8.0.255" }.reading
+        )
+    }
+
+    @Test
+    fun `record dump decodes long64 billing energy counters`() {
+        val captureObjects = record(
+            classId = 7,
+            obis = intArrayOf(0x01, 0x00, 0x62, 0x01, 0x00, 0xFF),
+            attribute = 3,
+            payload = byteArrayOf(
+                0x01, 0x02,
+                0x02, 0x04, 0x12, 0x00, 0x00,
+                0x09, 0x06, 0x01, 0x00, 0x01, 0x08, 0x00, 0xFF.toByte(),
+                0x0F, 0x02, 0x12, 0x00, 0x00,
+                0x02, 0x04, 0x12, 0x00, 0x00,
+                0x09, 0x06, 0x01, 0x00, 0x09, 0x08, 0x00, 0xFF.toByte(),
+                0x0F, 0x02, 0x12, 0x00, 0x00
+            )
+        )
+        val buffer = record(
+            classId = 7,
+            obis = intArrayOf(0x01, 0x00, 0x62, 0x01, 0x00, 0xFF),
+            attribute = 2,
+            payload = byteArrayOf(
+                0x01, 0x01,
+                0x02, 0x02,
+                0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0xDC.toByte(), 0x8F.toByte(),
+                0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x8A.toByte(), 0x84.toByte(), 0x28
+            )
+        )
+
+        val result = MeterFileImportRouter.route(
+            captureObjects + buffer,
+            "record-dump.dat",
+            "application/octet-stream"
+        )
+
+        assertEquals(MeterFileFormat.FRAMED_BINARY, result.format)
+        val billing = result.report.billing
+        assertNotNull(billing)
+        assertEquals(2, billing!!.columns.size)
+        assertEquals(listOf("1236.111", "9077.8"), billing.rows.single())
+        assertEquals(
+            "1236.111",
             result.report.cumulativeEnergies.first { it.obisCode == "1.0.1.8.0.255" }.reading
         )
     }

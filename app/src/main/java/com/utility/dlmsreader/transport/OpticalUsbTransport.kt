@@ -8,7 +8,6 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
-import com.utility.dlmsreader.dlms.ConnectionDiagnostics
 import com.utility.dlmsreader.dlms.hdlcFcs16
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
@@ -21,7 +20,10 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import java.text.SimpleDateFormat
 import java.util.ArrayDeque
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.resume
 
@@ -355,7 +357,7 @@ class OpticalUsbTransport(private val context: Context) {
         }
         val trace = TraceLog(direction = direction, hexOrMessage = message)
         synchronized(traceLock) {
-            if (exportTraceLogs.size >= 10_000) {
+            if (exportTraceLogs.size >= 3_000) {
                 exportTraceLogs.removeFirst()
                 droppedTraceLines++
             }
@@ -514,3 +516,54 @@ private const val HDLC_FLAG: Byte = 0x7E
 
 fun ByteArray.toHexString(length: Int = this.size): String =
     take(length).joinToString(" ") { "%02X".format(it) }
+
+/**
+ * Builds a self-contained failure report from the bytes exchanged on the wire.
+ * Kept with the transport because every value it captures describes the
+ * physical optical link (baud rate, Mode E, raw frames).
+ */
+object ConnectionDiagnostics {
+
+    data class DiagnosticReport(
+        val timestamp: String,
+        val baudRateAttempted: Int,
+        val modeEChecked: Boolean,
+        val packetSentHex: String,
+        val rawResponseHex: String,
+        val failureReason: String,
+        val suggestion: String
+    )
+
+    fun generateReport(
+        modeEUsed: Boolean,
+        sentBytes: ByteArray?,
+        receivedBytes: ByteArray?,
+        errorMessage: String
+    ): DiagnosticReport {
+        val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        val sentHex = sentBytes?.toHexString() ?: "None"
+        val responseHex = receivedBytes
+            ?.takeIf { it.isNotEmpty() }
+            ?.toHexString()
+            ?: "0x00 (No Bytes Received - Timeout)"
+
+        val suggestion = if (receivedBytes == null || receivedBytes.isEmpty()) {
+            "Check physical alignment of the optical probe, ensure DTR/RTS lines are powered, and press the meter push-button to wake the LCD."
+        } else {
+            "Meter responded with raw data, but framing or baud rate switch failed. Verify parity and stop bits."
+        }
+
+        return DiagnosticReport(
+            timestamp = time,
+            baudRateAttempted = if (modeEUsed) 300 else 9600,
+            modeEChecked = modeEUsed,
+            packetSentHex = sentHex,
+            rawResponseHex = responseHex,
+            failureReason = errorMessage,
+            suggestion = suggestion
+        )
+    }
+
+    private fun ByteArray.toHexString(): String =
+        joinToString(" ") { "%02X".format(Locale.US, it.toInt() and 0xFF) }
+}

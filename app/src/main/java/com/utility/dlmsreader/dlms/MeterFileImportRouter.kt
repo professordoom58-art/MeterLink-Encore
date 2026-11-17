@@ -39,8 +39,11 @@ object MeterFileImportRouter {
     private val WRAPPER_HEADER = byteArrayOf(0x00, 0x01, 0x00)
 
     private val JSON_EXTENSIONS = setOf("json")
-    private val CSV_EXTENSIONS = setOf("csv", "txt")
+    private val CSV_EXTENSIONS = setOf("csv", "txt", "out")
     private val BINARY_EXTENSIONS = setOf("bin", "dat")
+
+    /** Max prefix decoded for text sniffing; keeps large binary dumps off-heap. */
+    private const val TEXT_SAMPLE_LIMIT = 64 * 1024
 
     fun route(
         bytes: ByteArray,
@@ -98,12 +101,23 @@ object MeterFileImportRouter {
         bytes: ByteArray
     ): MeterFileFormat {
         val extension = fileName.substringAfterLast('.', "").lowercase(Locale.US)
-        val text = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF").trimStart()
-        val lowerText = text.lowercase(Locale.US)
 
+        // Raw framing is checked before any text decoding so a 10-30 MB binary
+        // dump never becomes a (much larger) UTF-8 String on the heap.
         if (findBinaryHeader(bytes) >= 0) {
             return MeterFileFormat.FRAMED_BINARY
         }
+
+        // Header sniffing only needs the beginning of the file. Decode at most
+        // 64 KB instead of materialising the whole payload as text.
+        val sampleBytes = if (bytes.size > TEXT_SAMPLE_LIMIT) {
+            bytes.copyOf(TEXT_SAMPLE_LIMIT)
+        } else {
+            bytes
+        }
+        val text = sampleBytes.toString(Charsets.UTF_8).removePrefix("\uFEFF").trimStart()
+        val lowerText = text.lowercase(Locale.US)
+
         if (looksLikeJson(text) || extension in JSON_EXTENSIONS) {
             return MeterFileFormat.JSON
         }

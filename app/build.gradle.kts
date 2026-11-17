@@ -26,11 +26,16 @@ android {
     signingConfigs {
         // Permanent, committed key shared by local builds and GitHub Actions.
         // Every APK therefore has the same signature and installs in place.
+        // CI injects the real passwords through the environment; local builds
+        // fall back to the committed development password.
+        val releaseStorePassword = System.getenv("METERLINK_STORE_PASSWORD") ?: "meterlink123"
+        val releaseKeyPassword = System.getenv("METERLINK_KEY_PASSWORD") ?: "meterlink123"
+
         create("release") {
             storeFile = file("meterlink-release.jks")
-            storePassword = "meterlink123"
+            storePassword = releaseStorePassword
             keyAlias = "meterlink"
-            keyPassword = "meterlink123"
+            keyPassword = releaseKeyPassword
         }
     }
 
