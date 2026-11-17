@@ -134,8 +134,8 @@ class MeterLinkPdfExporter(private val context: Context) {
         report.identity?.let { identity ->
             layout.section("Section 1: Meter Identity & Nameplate Summary")
             layout.table(
-                listOf("Parameter", "OBIS Code", "Value", "Unit"),
-                identity.rows.map { listOf(it.parameterName, it.obisCode, it.formattedValue, it.unit) }
+                listOf("Parameter", "Value", "Unit"),
+                identity.rows.map { listOf(it.parameterName, it.formattedValue, it.unit) }
             )
             identity.nameplate?.let {
                 drawProfile(layout, it, identity.rows.map { row -> row.obisCode }.toSet())
@@ -144,10 +144,13 @@ class MeterLinkPdfExporter(private val context: Context) {
 
         if (report.cumulativeEnergies.isNotEmpty()) {
             layout.section("Section 2: Cumulative Energy & Maximum Demand Registers")
+            // No OBIS column: the reclaimed width goes to Parameter, Reading,
+            // Unit and Capture Timestamp. Unmapped registers still carry their
+            // code as the parameter name, so the string appears once only.
             layout.table(
-                listOf("Parameter", "OBIS Code", "Reading", "Unit", "Capture Timestamp"),
+                listOf("Parameter", "Reading", "Unit", "Capture Timestamp"),
                 report.cumulativeEnergies.map {
-                    listOf(it.parameterName, it.obisCode, it.reading, it.unit, it.captureTimestamp)
+                    listOf(it.parameterName, it.reading, it.unit, it.captureTimestamp)
                 }
             )
         }
@@ -221,14 +224,23 @@ class MeterLinkPdfExporter(private val context: Context) {
 
     private fun drawProfile(layout: ReportLayout, section: ProfileSection, excludedObis: Set<String>) {
         val included = section.columns.withIndex().filter { it.value.obisCode !in excludedObis }
+        val ordered = if (isInstantaneous(section)) {
+            PdfReportOrdering.groupPhaseColumns(included)
+        } else {
+            included
+        }
         val rows = section.rows.flatMap { row ->
-            included.map { indexed ->
+            ordered.map { indexed ->
                 val column = indexed.value
-                listOf(column.parameterName, column.obisCode, row.getOrNull(indexed.index) ?: "N/A", column.unit)
+                listOf(column.parameterName, row.getOrNull(indexed.index) ?: "N/A", column.unit)
             }
         }
-        if (rows.isNotEmpty()) layout.table(listOf("Parameter", "OBIS Code", "Value", "Unit"), rows)
+        if (rows.isNotEmpty()) layout.table(listOf("Parameter", "Value", "Unit"), rows)
     }
+
+    private fun isInstantaneous(section: ProfileSection): Boolean =
+        section.profileObis == DlmsCosemCatalog.OBIS_INSTANTANEOUS_PROFILE ||
+            section.title.contains("Instantaneous", ignoreCase = true)
 
     private fun drawWideProfile(layout: ReportLayout, section: ProfileSection) {
         val headers = section.columns.map { it.parameterName }
@@ -252,7 +264,8 @@ class MeterLinkPdfExporter(private val context: Context) {
         if (section.columns.isEmpty()) {
             layout.table(listOf("Profile", "Status"), listOf(listOf(section.profileObis, "No rows returned")))
         } else {
-            drawProfileChunks(layout, section, section.columns.indices.toList(), "Billing History Profile", billing = true)
+            val display = section.copy(rows = PdfReportOrdering.sortBillingRowsDescending(section))
+            drawProfileChunks(layout, display, display.columns.indices.toList(), "Billing History Profile", billing = true)
         }
     }
 
@@ -288,10 +301,14 @@ class MeterLinkPdfExporter(private val context: Context) {
             }
         }
 
+        // Six columns per part keeps every cell wide enough that OBIS codes and
+        // "dd-MM-yy HH:mm" timestamps stay on one line instead of being split
+        // mid-token or squeezed horizontally.
+        val maxColumnsPerPart = 6
         val chunks = mutableListOf<MutableList<Int>>()
         var current = mutableListOf<Int>()
         units.forEach { unit ->
-            if (current.isNotEmpty() && current.size + unit.size > 7) {
+            if (current.isNotEmpty() && current.size + unit.size > maxColumnsPerPart) {
                 chunks += current
                 current = mutableListOf()
             }
@@ -334,12 +351,21 @@ class MeterLinkPdfExporter(private val context: Context) {
         chunks.forEachIndexed { chunkIndex, chunk ->
             val chunkTitle = if (chunks.size == 1) title else "$title (Part ${chunkIndex + 1} of ${chunks.size})"
             layout.subsection(chunkTitle)
-            val selected = chunk.map { index ->
+            val selected = chunk.mapIndexed { position, index ->
                 val column = section.columns[index]
+                val previous = chunk.getOrNull(position - 1)?.let { section.columns[it] }
                 // TODO: confirm code 65 against L&T manual; reset values remain unchanged.
-                val label = if (billing && column.obisCode == "0.0.94.91.14.255" && column.attributeIndex == 2) {
-                    "Power-On Duration in Period (min)"
-                } else column.parameterName
+                val label = when {
+                    billing && column.obisCode == "0.0.94.91.14.255" && column.attributeIndex == 2 ->
+                        "Power-On Duration in Period (min)"
+                    // The capture timestamp that follows a value column shares its
+                    // name; label it "Timestamp" so two identical headers never
+                    // appear side by side.
+                    column.attributeIndex == 5 && previous != null &&
+                        previous.attributeIndex == 2 && previous.obisCode == column.obisCode ->
+                        "Timestamp"
+                    else -> column.parameterName
+                }
                 index to label
             }
             drawSelectedProfile(layout, section, selected)
@@ -439,18 +465,23 @@ class MeterLinkPdfExporter(private val context: Context) {
         }
 
         fun section(title: String) {
+            flushPendingTitle()
             ensure(34f)
             add(Op.Text(title, LEFT, y + 18f, 13f, NAVY, true))
             y += 32f
         }
 
+        /**
+         * Subsection titles are drawn lazily so a part heading can never be
+         * stranded at the bottom of a page without its table.
+         */
         fun subsection(title: String) {
-            ensure(26f)
-            add(Op.Text(title, LEFT, y + 14f, 10f, NAVY, true))
-            y += 22f
+            flushPendingTitle()
+            pendingTitle = title
         }
 
         fun note(text: String) {
+            flushPendingTitle()
             ensure(22f)
             add(Op.Text(text, LEFT, y + 12f, 8f, Color.DKGRAY, false))
             y += 18f
@@ -462,11 +493,14 @@ class MeterLinkPdfExporter(private val context: Context) {
             val widths = widths(headers.size)
             tableHeader(headers, widths)
             rows.forEachIndexed { rowIndex, row ->
+                val cells = headers.indices.map { index ->
+                    PdfReportOrdering.clampNumericText(row.getOrNull(index) ?: "")
+                }
                 val numeric = headers.indices.map { index ->
-                    (row.getOrNull(index) ?: "").matches(Regex("[-+]?([0-9][0-9,]*)(\\.[0-9]+)?(.*)"))
+                    cells[index].matches(Regex("[-+]?([0-9][0-9,]*)(\\.[0-9]+)?(.*)"))
                 }
                 val fitted = headers.indices.map { index ->
-                    val value = row.getOrNull(index) ?: ""
+                    val value = cells[index]
                     when {
                         // Check timestamps before numeric: the numeric regex also
                         // accepts "12-12-23 00:00" because of its trailing (.*).
@@ -478,7 +512,7 @@ class MeterLinkPdfExporter(private val context: Context) {
                 }
                 val wrapped = headers.indices.map { index ->
                     fitted[index]?.let { listOf(it.first) }
-                        ?: wrapText(row.getOrNull(index) ?: "", widths[index] - 8f, 8f)
+                        ?: wrapText(cells[index], widths[index] - 8f, 8f)
                 }
                 val rowHeight = maxOf(20f, (wrapped.maxOfOrNull { it.size } ?: 1) * 10f + 8f)
                 if (y + rowHeight > BOTTOM) {
@@ -489,7 +523,6 @@ class MeterLinkPdfExporter(private val context: Context) {
                 add(Op.Rect(LEFT, top, RIGHT, top + rowHeight, if (rowIndex % 2 == 0) LIGHT_ROW else Color.WHITE, true))
                 var x = LEFT
                 headers.forEachIndexed { index, _ ->
-                    val value = row.getOrNull(index) ?: ""
                     val align = if (numeric[index] && index > 0) Paint.Align.RIGHT else Paint.Align.LEFT
                     val textSize = fitted[index]?.second ?: 8f
                     wrapped[index].forEachIndexed { lineIndex, line ->
@@ -505,6 +538,7 @@ class MeterLinkPdfExporter(private val context: Context) {
         }
 
         fun render(document: PdfDocument) {
+            flushPendingTitle()
             pages.forEachIndexed { index, ops ->
                 val pageInfo = PdfDocument.PageInfo.Builder(PAGE_WIDTH, PAGE_HEIGHT, index + 1).create()
                 val page = document.startPage(pageInfo)
@@ -543,15 +577,30 @@ class MeterLinkPdfExporter(private val context: Context) {
         }
 
         private fun tableHeader(headers: List<String>, widths: List<Float>) {
-            val wrapped = headers.mapIndexed { index, header -> wrapText(header, widths[index] - 8f, 8f, bold = true) }
-            val height = maxOf(22f, (wrapped.maxOfOrNull { it.size } ?: 1) * 10f + 8f)
-            ensure(height)
+            // Shrink a header just enough that its longest word (often an OBIS
+            // code such as "1.0.2.6.1.255") stays on one line instead of being
+            // cut mid-token by the character-level fallback in wrapText.
+            val prepared = headers.mapIndexed { index, header ->
+                val available = widths[index] - 8f
+                val words = header.split(Regex("\\s+")).filter { it.isNotEmpty() }
+                var size = 8f
+                while (size > 6f && words.any { measureText(it, size, true) > available }) {
+                    size -= 0.5f
+                }
+                size to wrapText(header, available, size, bold = true)
+            }
+            val height = maxOf(22f, (prepared.maxOfOrNull { it.second.size } ?: 1) * 10f + 8f)
+            // Keep the header with at least one data row (and with any deferred
+            // subsection title) instead of stranding it at the page bottom.
+            ensure(height + 50f)
+            flushPendingTitle()
             val top = y
             add(Op.Rect(LEFT, top, RIGHT, top + height, NAVY, true))
             var x = LEFT
             headers.forEachIndexed { index, _ ->
-                wrapped[index].forEachIndexed { lineIndex, line ->
-                    add(Op.Text(line, x + 4f, top + 14f + lineIndex * 10f, 8f, Color.WHITE, true))
+                val (size, lines) = prepared[index]
+                lines.forEachIndexed { lineIndex, line ->
+                    add(Op.Text(line, x + 4f, top + 14f + lineIndex * 10f, size, Color.WHITE, true))
                 }
                 add(Op.Rect(x, top, x + widths[index], top + height, BORDER, false))
                 x += widths[index]
@@ -561,19 +610,34 @@ class MeterLinkPdfExporter(private val context: Context) {
 
         private fun widths(count: Int): List<Float> {
             if (count == 0) return emptyList()
-            val weights = List(count) { index ->
-                val header = currentTableHeaders[index].lowercase(Locale.ENGLISH)
-                when {
-                    // Column 0 holds the profile timestamp; give it extra room so
-                    // "dd-MM-yy HH:mm" never breaks across lines.
-                    index == 0 && ("date" in header || "time" in header) -> 2.2f
-                    "date" in header || "time" in header -> 1.6f
-                    "obis" in header || "code" in header || "unit" in header -> 0.6f
-                    header in setOf("v", "i", "pf") -> 0.6f
-                    header in setOf("kwh", "kvah", "kvarh", "neutral i") -> 0.85f
-                    "description" in header -> 1.3f
-                    "parameter" in header -> 1.35f
-                    else -> 1.0f
+            val normalizedHeaders = currentTableHeaders.map { it.lowercase(Locale.ENGLISH) }
+            // The identity, nameplate and instantaneous tables no longer carry
+            // an OBIS column. Give the reclaimed width to the three remaining
+            // columns so long labels and values stay on one line.
+            val weights = if (normalizedHeaders == listOf("parameter", "value", "unit")) {
+                listOf(2.0f, 1.7f, 0.8f)
+            } else if (normalizedHeaders == listOf("parameter", "reading", "unit", "capture timestamp")) {
+                // Section 2 without the OBIS column: widen the parameter label so
+                // long register names stay on one line and keep the timestamp
+                // whole.
+                listOf(2.2f, 1.2f, 0.7f, 1.7f)
+            } else {
+                List(count) { index ->
+                    val header = normalizedHeaders[index]
+                    when {
+                        // Column 0 holds the profile timestamp; give it extra room so
+                        // "dd-MM-yy HH:mm" never breaks across lines.
+                        index == 0 && ("date" in header || "time" in header) -> 1.9f
+                        "date" in header || "time" in header -> 1.6f
+                        // OBIS codes are 13 characters wide ("1.0.128.8.62.255");
+                        // this weight keeps them whole on a single header line.
+                        "obis" in header || "code" in header || "unit" in header -> 1.0f
+                        header in setOf("v", "i", "pf") -> 0.8f
+                        header in setOf("kwh", "kvah", "kvarh", "neutral i") -> 0.85f
+                        "description" in header -> 1.3f
+                        "parameter" in header -> 1.35f
+                        else -> 1.0f
+                    }
                 }
             }
             val unit = (RIGHT - LEFT) / weights.sum()
@@ -581,6 +645,15 @@ class MeterLinkPdfExporter(private val context: Context) {
         }
 
         private var currentTableHeaders: List<String> = emptyList()
+        private var pendingTitle: String? = null
+
+        private fun flushPendingTitle() {
+            val title = pendingTitle ?: return
+            pendingTitle = null
+            ensure(26f)
+            add(Op.Text(title, LEFT, y + 14f, 10f, NAVY, true))
+            y += 22f
+        }
 
         private fun ensure(height: Float) {
             if (y + height > BOTTOM) newPage()
