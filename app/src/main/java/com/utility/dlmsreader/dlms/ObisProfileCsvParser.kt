@@ -99,6 +99,15 @@ object ObisProfileCsvParser {
         )
     }
 
+    private val SECTION_NAMES: Map<SectionKind, List<String>> =
+        SECTION_ALIASES.entries.groupBy({ it.value }, { it.key })
+
+    /** Continuous token stream plus line-preserving rows for one section. */
+    private class SectionData {
+        val tokens: MutableList<String> = mutableListOf()
+        val rows: MutableList<List<String>> = mutableListOf()
+    }
+
     private val NUMERIC = Regex("""^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$""")
     private val TIMESTAMP = Regex(
         """^\d{1,4}(?:[-/.]\d{1,2}|[-/.]?[A-Za-z]{3})(?:[-/.]\d{1,4})?(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?$""",
@@ -167,48 +176,52 @@ object ObisProfileCsvParser {
         val sections = readSections(text)
         if (sections.isEmpty()) return null
 
-        val nameplateRows = parseParameterRows(sections[SectionKind.NAME_PLATE].orEmpty())
-        val programmableRows = parseParameterRows(sections[SectionKind.PROGRAMMABLE].orEmpty())
+        val nameplateRows = parseParameterRows(
+            sections["name plate details"]?.rows
+                ?: sections["nameplate details"]?.rows
+                ?: rowsOf(sections, SectionKind.NAME_PLATE)
+        )
+        val programmableRows = parseParameterRows(rowsOf(sections, SectionKind.PROGRAMMABLE))
         val identityRows = mergeRows(nameplateRows + programmableRows)
 
         val instantaneous = buildProfile(
             title = "Instantaneous Parameters Snapshot",
             profileObis = DlmsCosemCatalog.OBIS_INSTANTANEOUS_PROFILE,
-            obisRows = sections[SectionKind.INSTANT_OBIS].orEmpty(),
-            valueRows = sections[SectionKind.INSTANT_VALUE].orEmpty(),
-            scalarObisRows = sections[SectionKind.INSTANT_SCALAR_OBIS].orEmpty(),
-            scalarValueRows = sections[SectionKind.INSTANT_SCALAR_VALUE].orEmpty()
+            obisTokens = tokensOf(sections, SectionKind.INSTANT_OBIS),
+            valueTokens = tokensOf(sections, SectionKind.INSTANT_VALUE),
+            scalarObisTokens = tokensOf(sections, SectionKind.INSTANT_SCALAR_OBIS),
+            scalarValueTokens = tokensOf(sections, SectionKind.INSTANT_SCALAR_VALUE)
         )
         val billing = buildProfile(
             title = "Billing History Profile",
             profileObis = DlmsCosemCatalog.OBIS_BILLING_PROFILE,
-            obisRows = sections[SectionKind.BILLING_OBIS].orEmpty(),
-            valueRows = sections[SectionKind.BILLING_VALUE].orEmpty(),
-            scalarObisRows = sections[SectionKind.BILLING_SCALAR_OBIS].orEmpty(),
-            scalarValueRows = sections[SectionKind.BILLING_SCALAR_VALUE].orEmpty()
+            obisTokens = tokensOf(sections, SectionKind.BILLING_OBIS),
+            valueTokens = tokensOf(sections, SectionKind.BILLING_VALUE),
+            scalarObisTokens = tokensOf(sections, SectionKind.BILLING_SCALAR_OBIS),
+            scalarValueTokens = tokensOf(sections, SectionKind.BILLING_SCALAR_VALUE)
         )
         val dailyLoad = buildProfile(
             title = "Daily Load Survey Profile",
             profileObis = DlmsCosemCatalog.OBIS_DAILY_LOAD_PROFILE,
-            obisRows = sections[SectionKind.DAILY_OBIS].orEmpty(),
-            valueRows = sections[SectionKind.DAILY_VALUE].orEmpty(),
-            scalarObisRows = sections[SectionKind.DAILY_SCALAR_OBIS].orEmpty(),
-            scalarValueRows = sections[SectionKind.DAILY_SCALAR_VALUE].orEmpty()
+            obisTokens = tokensOf(sections, SectionKind.DAILY_OBIS),
+            valueTokens = tokensOf(sections, SectionKind.DAILY_VALUE),
+            scalarObisTokens = tokensOf(sections, SectionKind.DAILY_SCALAR_OBIS),
+            scalarValueTokens = tokensOf(sections, SectionKind.DAILY_SCALAR_VALUE)
         )
         val blockLoad = buildProfile(
             title = "Block Load Survey Profile",
             profileObis = DlmsCosemCatalog.OBIS_BLOCK_LOAD_PROFILE,
-            obisRows = sections[SectionKind.BLOCK_OBIS].orEmpty(),
-            valueRows = sections[SectionKind.BLOCK_VALUE].orEmpty(),
-            scalarObisRows = sections[SectionKind.BLOCK_SCALAR_OBIS].orEmpty(),
-            scalarValueRows = sections[SectionKind.BLOCK_SCALAR_VALUE].orEmpty()
+            obisTokens = tokensOf(sections, SectionKind.BLOCK_OBIS),
+            valueTokens = tokensOf(sections, SectionKind.BLOCK_VALUE),
+            scalarObisTokens = tokensOf(sections, SectionKind.BLOCK_SCALAR_OBIS),
+            scalarValueTokens = tokensOf(sections, SectionKind.BLOCK_SCALAR_VALUE)
         )
 
         val cumulativeEnergies = registersFrom(instantaneous)
             .ifEmpty { registersFrom(billing) }
             .distinctBy { it.obisCode }
 
-        val eventLogs = parseEventLogs(sections[SectionKind.EVENT_LOG].orEmpty())
+        val eventLogs = parseEventLogs(rowsOf(sections, SectionKind.EVENT_LOG))
         val nameplateProfile = nameplateRows.takeIf { it.isNotEmpty() }?.let { rows ->
             ProfileSection(
                 title = "Nameplate Profile",
@@ -239,47 +252,109 @@ object ObisProfileCsvParser {
 
     // ------------------------------------------------------------- tokenising
 
-    private fun readSections(text: String): Map<SectionKind, MutableList<List<String>>> {
-        val sections = linkedMapOf<SectionKind, MutableList<List<String>>>()
-        var current: SectionKind? = null
+    /**
+     * Reads tagged sections as a continuous token stream.
+     *
+     * Line breaks are deliberately not profile row boundaries: long profile
+     * pages are stitched back together and only an explicit `END` token closes
+     * the current section. A parallel line-preserving row list is kept for
+     * nameplate and event sections, where one record may span a physical line.
+     */
+    private fun readSections(text: String): Map<String, SectionData> {
+        val sections = linkedMapOf<String, SectionData>()
+        var current: String? = null
+        val pending = mutableListOf<String>()
+        val lineRow = mutableListOf<String>()
+
+        fun section(): SectionData? =
+            current?.let { key -> sections.getOrPut(key) { SectionData() } }
+
+        fun commitLine() {
+            val target = section()
+            if (target != null && lineRow.any { it.isNotBlank() }) {
+                target.rows += lineRow.toList()
+            }
+            lineRow.clear()
+        }
+
+        fun commitSection() {
+            val target = section()
+            if (target != null && pending.any { it.isNotBlank() }) {
+                target.tokens += pending.toList()
+            }
+            pending.clear()
+            commitLine()
+        }
+
+        fun append(cells: List<String>) {
+            val data = cells.dropLastWhile { it.isBlank() }
+            if (data.isEmpty()) return
+            pending += data
+            lineRow += data
+        }
+
         text.removePrefix("\uFEFF")
             .lineSequence()
             .forEach { rawLine ->
                 val cells = parseCsvLine(rawLine)
                 if (cells.isEmpty() || cells.all { it.isBlank() }) return@forEach
 
-                val header = sectionFor(cells)
-                if (header != null) {
-                    current = header
-                    sections.getOrPut(header) { mutableListOf() }
-                    val remainder = cells.drop(1)
+                val headerKey = sectionKeyFor(cells)
+                if (headerKey != null) {
+                    commitSection()
+                    current = headerKey
+                    sections.getOrPut(headerKey) { SectionData() }
+                    val headerIndex =
+                        if (normalizeHeader(cells.first()) == headerKey) 0 else 1
+                    val remainder = cells.drop(headerIndex + 1)
                     val end = remainder.indexOfFirst(::isEnd)
-                    val data = if (end >= 0) remainder.take(end) else remainder
-                    if (data.any { it.isNotBlank() }) sections.getValue(header) += data
-                    if (end >= 0) current = null
+                    append(if (end >= 0) remainder.take(end) else remainder)
+                    if (end >= 0) {
+                        commitSection()
+                        current = null
+                    } else {
+                        commitLine()
+                    }
                     return@forEach
                 }
 
-                val active = current ?: return@forEach
+                if (current == null) return@forEach
                 val end = cells.indexOfFirst(::isEnd)
-                val data = if (end >= 0) cells.take(end) else cells
-                if (data.any { it.isNotBlank() }) {
-                    sections.getOrPut(active) { mutableListOf() } += data
+                append(if (end >= 0) cells.take(end) else cells)
+                if (end >= 0) {
+                    commitSection()
+                    current = null
+                } else {
+                    commitLine()
                 }
-                if (end >= 0) current = null
             }
+        commitSection()
         return sections
     }
 
-    private fun sectionFor(cells: List<String>): SectionKind? {
-        val first = normalizeHeader(cells.first())
-        SECTION_ALIASES[first]?.let { return it }
+    /** Lowercased section key; vendor files differ only in header casing. */
+    private fun sectionKeyFor(cells: List<String>): String? {
+        val first = normalizeHeader(cells.first()).lowercase(Locale.US)
+        if (SECTION_ALIASES.containsKey(first)) return first
         // A few exporters prefix the section name with a row number.
         if (cells.size > 1 && cells.first().trim().toIntOrNull() != null) {
-            SECTION_ALIASES[normalizeHeader(cells[1])]?.let { return it }
+            val second = normalizeHeader(cells[1]).lowercase(Locale.US)
+            if (SECTION_ALIASES.containsKey(second)) return second
         }
         return null
     }
+
+    private fun rowsOf(
+        sections: Map<String, SectionData>,
+        kind: SectionKind
+    ): List<List<String>> =
+        SECTION_NAMES[kind].orEmpty().flatMap { sections[it]?.rows.orEmpty() }
+
+    private fun tokensOf(
+        sections: Map<String, SectionData>,
+        kind: SectionKind
+    ): List<String> =
+        SECTION_NAMES[kind].orEmpty().flatMap { sections[it]?.tokens.orEmpty() }
 
     private fun isEnd(cell: String): Boolean =
         cell.trim().trim('"').equals("END", ignoreCase = true)
@@ -322,17 +397,17 @@ object ObisProfileCsvParser {
     private fun buildProfile(
         title: String,
         profileObis: String,
-        obisRows: List<List<String>>,
-        valueRows: List<List<String>>,
-        scalarObisRows: List<List<String>>,
-        scalarValueRows: List<List<String>>
+        obisTokens: List<String>,
+        valueTokens: List<String>,
+        scalarObisTokens: List<String>,
+        scalarValueTokens: List<String>
     ): ProfileSection? {
-        val obisList = parseObisList(obisRows)
-        val values = valueRows.flatMap { it }
+        val obisList = parseObisTokens(obisTokens)
+        val values = valueTokens
         if (obisList.isEmpty() || values.isEmpty()) return null
 
-        val scalarObisList = parseObisList(scalarObisRows)
-        val scalars = scalarValueRows.flatMap { it }.map(::parseScalar)
+        val scalarObisList = parseObisTokens(scalarObisTokens)
+        val scalars = scalarValueTokens.map(::parseScalar)
         val scalarByObis = scalarObisList.zip(scalars)
             .mapNotNull { (obis, scalar) -> scalar?.let { obis to it } }
             .toMap()
@@ -348,13 +423,7 @@ object ObisProfileCsvParser {
             )
         }
 
-        val rows = values.chunked(obisList.size).map { chunk ->
-            columns.indices.map { index ->
-                val raw = chunk.getOrNull(index).orEmpty().trim()
-                val scalar = scalarByObis[columns[index].obisCode] ?: scalars.getOrNull(index)
-                applyScalar(raw, scalar)
-            }
-        }
+        val rows = parseMultiRowProfile(values, obisList, columns, scalars, scalarByObis)
 
         return ProfileSection(
             title = title,
@@ -364,6 +433,28 @@ object ObisProfileCsvParser {
             totalRows = rows.size
         )
     }
+
+    /**
+     * Rebuilds profile rows from the continuous token stream. A short trailing
+     * chunk is usually a comma artefact; dropping it keeps columns aligned.
+     */
+    private fun parseMultiRowProfile(
+        values: List<String>,
+        obisList: List<String>,
+        columns: List<ProfileColumn>,
+        scalars: List<ScalarValue?>,
+        scalarByObis: Map<String, ScalarValue>
+    ): List<List<String>> =
+        values.chunked(obisList.size)
+            .filter { it.size == obisList.size }
+            .map { chunk ->
+                columns.indices.map { index ->
+                    val raw = chunk[index].trim()
+                    val scalar = scalarByObis[columns[index].obisCode]
+                        ?: scalars.getOrNull(index)
+                    applyScalar(raw, scalar)
+                }
+            }
 
     /** Converts a 12-character hex or dotted decimal OBIS cell to canonical form. */
     fun normalizeObis(value: String): String? {
@@ -388,11 +479,9 @@ object ObisProfileCsvParser {
         return null
     }
 
-    private fun parseObisList(rows: List<List<String>>): List<String> =
-        rows.flatMap { row ->
-            row.flatMap { cell ->
-                cell.split(';', '|', ' ', '\t').ifEmpty { listOf(cell) }
-            }
+    private fun parseObisTokens(tokens: List<String>): List<String> =
+        tokens.flatMap { cell ->
+            cell.split(';', '|', ' ', '\t').ifEmpty { listOf(cell) }
         }.mapNotNull(::normalizeObis)
 
     private fun parseScalar(cell: String): ScalarValue? {
@@ -407,9 +496,13 @@ object ObisProfileCsvParser {
     private fun applyScalar(raw: String, scalar: ScalarValue?): String {
         if (raw.isBlank()) return ""
         if (TIMESTAMP.matches(raw)) return raw
+        // DLMS uses all-ones integers for null/error registers.
+        if (raw == "65535" || raw == "4294967295") return "-"
         if (scalar == null) return raw
         if (scalar.exponent == 0) return raw
         if (!NUMERIC.matches(raw)) return raw
+        val numeric = raw.toDoubleOrNull() ?: return raw
+        if (numeric == 0.0) return "0"
         return runCatching {
             BigDecimal(raw).scaleByPowerOfTen(scalar.exponent)
                 .stripTrailingZeros()

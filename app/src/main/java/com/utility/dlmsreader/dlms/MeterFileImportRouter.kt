@@ -29,6 +29,9 @@ data class MeterFileImportResult(
  */
 object MeterFileImportRouter {
 
+    /** Raw dumps may carry a timestamp or other header garbage before the frame marker. */
+    private const val HEADER_SCAN_LIMIT = 2048
+
     private val JSON_EXTENSIONS = setOf("json")
     private val CSV_EXTENSIONS = setOf("csv", "txt")
     private val BINARY_EXTENSIONS = setOf("bin", "dat")
@@ -42,7 +45,7 @@ object MeterFileImportRouter {
         val report = when (format) {
             MeterFileFormat.JSON -> parseJson(bytes)
             MeterFileFormat.TAGGED_OBIS_CSV -> ObisProfileCsvParser.parse(bytes)
-            MeterFileFormat.FRAMED_BINARY -> FramedBinaryDumpParser.parse(bytes)
+            MeterFileFormat.FRAMED_BINARY -> FramedBinaryDumpParser.parse(framePayload(bytes))
             MeterFileFormat.UNKNOWN -> null
         } ?: throw IllegalArgumentException(
             "The selected file is not a supported meter file. " +
@@ -90,17 +93,18 @@ object MeterFileImportRouter {
     ): MeterFileFormat {
         val extension = fileName.substringAfterLast('.', "").lowercase(Locale.US)
         val text = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF").trimStart()
+        val lowerText = text.lowercase(Locale.US)
 
-        if (FramedBinaryDumpParser.containsFrameHeader(bytes) ||
+        if (findFrameHeader(bytes) >= 0 ||
             (extension in BINARY_EXTENSIONS && !looksLikeJson(text) &&
-                !ObisProfileCsvParser.looksLikeTaggedCsv(text))
+                !looksLikeTaggedCsv(lowerText))
         ) {
             return MeterFileFormat.FRAMED_BINARY
         }
         if (looksLikeJson(text) || extension in JSON_EXTENSIONS) {
             return MeterFileFormat.JSON
         }
-        if (ObisProfileCsvParser.looksLikeTaggedCsv(text) || extension in CSV_EXTENSIONS) {
+        if (looksLikeTaggedCsv(lowerText) || extension in CSV_EXTENSIONS) {
             return MeterFileFormat.TAGGED_OBIS_CSV
         }
         val mime = mimeType?.lowercase(Locale.US).orEmpty()
@@ -121,6 +125,48 @@ object MeterFileImportRouter {
         }.getOrNull()
     }
 
+    /**
+     * Returns the dump beginning at the first frame marker. Files exported by
+     * meter vendors often prefix the binary payload with a timestamp or other
+     * ASCII metadata, so the marker is not guaranteed to be at offset zero.
+     */
+    private fun framePayload(bytes: ByteArray): ByteArray {
+        val match = findFrameHeader(bytes)
+        return if (match > 0) bytes.copyOfRange(match, bytes.size) else bytes
+    }
+
+    /** Index of the frame marker within the first 2048 bytes, or -1. */
+    private fun findFrameHeader(bytes: ByteArray): Int {
+        val probe = bytes.copyOfRange(0, minOf(bytes.size, HEADER_SCAN_LIMIT))
+        return findSequence(probe, FramedBinaryDumpParser.FRAME_HEADER)
+    }
+
+    /** First index of [inner] inside [outer], or -1 when there is no match. */
+    internal fun findSequence(outer: ByteArray, inner: ByteArray): Int {
+        if (inner.isEmpty() || outer.size < inner.size) return -1
+        val last = outer.size - inner.size
+        for (index in 0..last) {
+            var matched = true
+            for (offset in inner.indices) {
+                if (outer[index + offset] != inner[offset]) {
+                    matched = false
+                    break
+                }
+            }
+            if (matched) return index
+        }
+        return -1
+    }
+
     private fun looksLikeJson(text: String): Boolean =
         text.startsWith("{") || text.startsWith("[")
+
+    /**
+     * Tagged CSV files are identified by their section vocabulary rather than
+     * by line layout, which keeps the sniffer tolerant of mixed-case headers.
+     */
+    private fun looksLikeTaggedCsv(lowerText: String): Boolean =
+        lowerText.contains("name plate") ||
+            lowerText.contains("nameplate") ||
+            lowerText.contains("obis")
 }

@@ -125,6 +125,70 @@ class MeterFileImportPipelineTest {
         )
     }
 
+    @Test
+    fun `router skips leading timestamp garbage before the binary header`() {
+        val prefix = "Exported 2026-01-01T00:00:00\n"
+        val text = "S\$SModel=ML-3P,Serial=987654,Manufacturer=Example,Phase=3"
+        val dump = (prefix + text).toByteArray(Charsets.ISO_8859_1) + doubleBytes(77.5)
+
+        val result = MeterFileImportRouter.route(dump, "export.dat", "application/octet-stream")
+
+        assertEquals(MeterFileFormat.FRAMED_BINARY, result.format)
+        assertEquals(
+            "987654",
+            result.report.identity?.rows?.first { it.obisCode == "0.0.96.1.0.255" }?.formattedValue
+        )
+    }
+
+    @Test
+    fun `uppercase nameplate headers and multi line profiles are stitched together`() {
+        val csv = """
+            NAMEPLATE DETAILS
+            0.0.96.1.0.255,Meter Serial Number,555444
+            END
+            INSTANT DATA OBIS
+            0100010800FF,0100200700FF
+            END
+            INSTANT DATA VALUE
+            10,20,
+            30,40
+            END
+            INSTANT SCALAR VALUE
+            -1|kWh,-1|V
+            END
+        """.trimIndent()
+
+        val report = ObisProfileCsvParser.parse(csv)
+        assertNotNull(report)
+        assertEquals(
+            "555444",
+            report!!.identity?.rows?.first { it.obisCode == "0.0.96.1.0.255" }?.formattedValue
+        )
+        assertEquals(
+            listOf(listOf("1", "2"), listOf("3", "4")),
+            report.instantaneous?.rows
+        )
+    }
+
+    @Test
+    fun `scale engine keeps zero compact and maps null registers to dash`() {
+        val csv = """
+            Instant data OBIS
+            0100010800FF,0100200700FF,01001F0700FF
+            END
+            Instant data value
+            0,65535,4294967295
+            END
+            Instant scalar value
+            -3|kWh,-3|V,-3|A
+            END
+        """.trimIndent()
+
+        val report = ObisProfileCsvParser.parse(csv)
+        assertNotNull(report)
+        assertEquals(listOf("0", "-", "-"), report!!.instantaneous?.rows?.single())
+    }
+
     private fun doubleBytes(value: Double): ByteArray =
         ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putDouble(value).array()
 }
