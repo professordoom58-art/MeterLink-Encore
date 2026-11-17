@@ -2,6 +2,7 @@ package com.utility.dlmsreader.dlms
 
 import java.io.InputStream
 import java.math.BigDecimal
+import java.math.RoundingMode
 import java.util.Locale
 
 /**
@@ -107,6 +108,12 @@ object ObisProfileCsvParser {
         val tokens: MutableList<String> = mutableListOf()
         val rows: MutableList<List<String>> = mutableListOf()
     }
+
+    private data class SectionHeader(
+        val original: String,
+        val lookup: String,
+        val index: Int
+    )
 
     private val NUMERIC = Regex("""^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$""")
     private val TIMESTAMP = Regex(
@@ -262,15 +269,12 @@ object ObisProfileCsvParser {
      */
     private fun readSections(text: String): Map<String, SectionData> {
         val sections = linkedMapOf<String, SectionData>()
-        var current: String? = null
+        var current: SectionData? = null
         val pending = mutableListOf<String>()
         val lineRow = mutableListOf<String>()
 
-        fun section(): SectionData? =
-            current?.let { key -> sections.getOrPut(key) { SectionData() } }
-
         fun commitLine() {
-            val target = section()
+            val target = current
             if (target != null && lineRow.any { it.isNotBlank() }) {
                 target.rows += lineRow.toList()
             }
@@ -278,7 +282,7 @@ object ObisProfileCsvParser {
         }
 
         fun commitSection() {
-            val target = section()
+            val target = current
             if (target != null && pending.any { it.isNotBlank() }) {
                 target.tokens += pending.toList()
             }
@@ -299,14 +303,17 @@ object ObisProfileCsvParser {
                 val cells = parseCsvLine(rawLine)
                 if (cells.isEmpty() || cells.all { it.isBlank() }) return@forEach
 
-                val headerKey = sectionKeyFor(cells)
-                if (headerKey != null) {
+                val header = sectionHeaderFor(cells)
+                if (header != null) {
                     commitSection()
-                    current = headerKey
-                    sections.getOrPut(headerKey) { SectionData() }
-                    val headerIndex =
-                        if (normalizeHeader(cells.first()) == headerKey) 0 else 1
-                    val remainder = cells.drop(headerIndex + 1)
+                    // Reuse the existing buffer for mixed-case variants of the
+                    // same header, then expose both the exported spelling and
+                    // a lowercase lookup alias.
+                    val target = sections[header.lookup] ?: SectionData()
+                    sections[header.original] = target
+                    sections[header.lookup] = target
+                    current = target
+                    val remainder = cells.drop(header.index + 1)
                     val end = remainder.indexOfFirst(::isEnd)
                     append(if (end >= 0) remainder.take(end) else remainder)
                     if (end >= 0) {
@@ -332,17 +339,37 @@ object ObisProfileCsvParser {
         return sections
     }
 
-    /** Lowercased section key; vendor files differ only in header casing. */
-    private fun sectionKeyFor(cells: List<String>): String? {
-        val first = normalizeHeader(cells.first()).lowercase(Locale.US)
-        if (SECTION_ALIASES.containsKey(first)) return first
+    /**
+     * Locates a section header while keeping the exported spelling. The
+     * lowercase form remains available for alias lookups.
+     */
+    private fun sectionHeaderFor(cells: List<String>): SectionHeader? {
+        val firstLookup = normalizeHeader(cells.first())
+        if (SECTION_ALIASES.containsKey(firstLookup)) {
+            return SectionHeader(
+                original = originalHeader(cells.first()),
+                lookup = firstLookup,
+                index = 0
+            )
+        }
         // A few exporters prefix the section name with a row number.
         if (cells.size > 1 && cells.first().trim().toIntOrNull() != null) {
-            val second = normalizeHeader(cells[1]).lowercase(Locale.US)
-            if (SECTION_ALIASES.containsKey(second)) return second
+            val secondLookup = normalizeHeader(cells[1])
+            if (SECTION_ALIASES.containsKey(secondLookup)) {
+                return SectionHeader(
+                    original = originalHeader(cells[1]),
+                    lookup = secondLookup,
+                    index = 1
+                )
+            }
         }
         return null
     }
+
+    /** Header text with the exported casing retained. */
+    private fun originalHeader(text: String): String =
+        text.trim().trim('"').trimEnd(':', ';', ',').removePrefix("\uFEFF")
+            .replace(Regex("""\s+"""), " ")
 
     private fun rowsOf(
         sections: Map<String, SectionData>,
@@ -504,9 +531,16 @@ object ObisProfileCsvParser {
         val numeric = raw.toDoubleOrNull() ?: return raw
         if (numeric == 0.0) return "0"
         return runCatching {
-            BigDecimal(raw).scaleByPowerOfTen(scalar.exponent)
-                .stripTrailingZeros()
-                .toPlainString()
+            val scaled = BigDecimal(raw).scaleByPowerOfTen(scalar.exponent)
+            val plain = scaled.stripTrailingZeros().toPlainString()
+            val clamped = if (plain.contains('.') &&
+                plain.substringAfter('.').length > 4
+            ) {
+                scaled.setScale(3, RoundingMode.HALF_UP)
+            } else {
+                scaled
+            }
+            clamped.stripTrailingZeros().toPlainString()
         }.getOrDefault(raw)
     }
 

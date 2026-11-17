@@ -22,15 +22,21 @@ data class MeterFileImportResult(
  * Single entry point for the Import from Storage flow.
  *
  * JSON is parsed as a MeterLink report, tagged CSV through
- * [ObisProfileCsvParser], and raw dumps with the `S$S` marker through
- * [FramedBinaryDumpParser]. Every successful route is relabelled
- * [MeterDataReport.SOURCE_IMPORTED] so PDF and XLSX exports clearly identify
- * the reading as a file import rather than a live optical extraction.
+ * [ObisProfileCsvParser], and raw DLMS dumps through [FramedBinaryDumpParser].
+ * Every successful route is relabelled [MeterDataReport.SOURCE_IMPORTED] so PDF
+ * and XLSX exports clearly identify the reading as a file import rather than a
+ * live optical extraction.
  */
 object MeterFileImportRouter {
 
-    /** Raw dumps may carry a timestamp or other header garbage before the frame marker. */
+    /** Raw dumps may carry a timestamp or other header garbage before the frame. */
     private const val HEADER_SCAN_LIMIT = 2048
+
+    /** HDLC frame start: flag byte followed by the address field. */
+    private val HDLC_HEADER = byteArrayOf(0x7E, 0xA0.toByte())
+
+    /** DLMS/COSEM wrapper header. */
+    private val WRAPPER_HEADER = byteArrayOf(0x00, 0x01, 0x00)
 
     private val JSON_EXTENSIONS = setOf("json")
     private val CSV_EXTENSIONS = setOf("csv", "txt")
@@ -95,10 +101,7 @@ object MeterFileImportRouter {
         val text = bytes.toString(Charsets.UTF_8).removePrefix("\uFEFF").trimStart()
         val lowerText = text.lowercase(Locale.US)
 
-        if (findFrameHeader(bytes) >= 0 ||
-            (extension in BINARY_EXTENSIONS && !looksLikeJson(text) &&
-                !looksLikeTaggedCsv(lowerText))
-        ) {
+        if (findBinaryHeader(bytes) >= 0) {
             return MeterFileFormat.FRAMED_BINARY
         }
         if (looksLikeJson(text) || extension in JSON_EXTENSIONS) {
@@ -112,6 +115,7 @@ object MeterFileImportRouter {
             mime.contains("json") -> MeterFileFormat.JSON
             mime.startsWith("text/") || mime.contains("csv") -> MeterFileFormat.TAGGED_OBIS_CSV
             mime.contains("octet-stream") -> MeterFileFormat.FRAMED_BINARY
+            extension in BINARY_EXTENSIONS -> MeterFileFormat.FRAMED_BINARY
             else -> MeterFileFormat.UNKNOWN
         }
     }
@@ -126,19 +130,29 @@ object MeterFileImportRouter {
     }
 
     /**
-     * Returns the dump beginning at the first frame marker. Files exported by
-     * meter vendors often prefix the binary payload with a timestamp or other
-     * ASCII metadata, so the marker is not guaranteed to be at offset zero.
+     * Returns the dump beginning at the first DLMS binary header. Files
+     * exported by meter vendors often prefix the payload with a timestamp or
+     * other ASCII metadata, so the header is not guaranteed to be at offset
+     * zero.
      */
     private fun framePayload(bytes: ByteArray): ByteArray {
-        val match = findFrameHeader(bytes)
+        val match = findBinaryHeader(bytes)
         return if (match > 0) bytes.copyOfRange(match, bytes.size) else bytes
     }
 
-    /** Index of the frame marker within the first 2048 bytes, or -1. */
-    private fun findFrameHeader(bytes: ByteArray): Int {
+    /**
+     * Index of the earliest HDLC or wrapper header within the first 2048
+     * bytes, or -1 when the file has no binary framing.
+     */
+    private fun findBinaryHeader(bytes: ByteArray): Int {
         val probe = bytes.copyOfRange(0, minOf(bytes.size, HEADER_SCAN_LIMIT))
-        return findSequence(probe, FramedBinaryDumpParser.FRAME_HEADER)
+        val hdlc = findSequence(probe, HDLC_HEADER)
+        val wrapper = findSequence(probe, WRAPPER_HEADER)
+        return when {
+            hdlc < 0 -> wrapper
+            wrapper < 0 -> hdlc
+            else -> minOf(hdlc, wrapper)
+        }
     }
 
     /** First index of [inner] inside [outer], or -1 when there is no match. */

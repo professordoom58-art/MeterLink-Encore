@@ -16,7 +16,7 @@ android {
         // use the current release line so About and the update check agree.
         val ciBuildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
         versionCode = (ciBuildNumber ?: 0) + 100
-        versionName = "1.0.${ciBuildNumber ?: 58}"
+        versionName = "1.0.${ciBuildNumber ?: 59}"
 
         ndk {
             abiFilters += listOf("armeabi-v7a", "arm64-v8a")

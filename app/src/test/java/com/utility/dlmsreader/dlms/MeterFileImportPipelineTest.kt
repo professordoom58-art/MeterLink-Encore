@@ -117,16 +117,40 @@ class MeterFileImportPipelineTest {
     }
 
     @Test
-    fun `raw byte sniffing wins over a misleading extension`() {
-        val dump = "S\$SSerial=1".toByteArray(Charsets.ISO_8859_1) + doubleBytes(42.5)
+    fun `raw DLMS headers win over a misleading extension`() {
+        val hdlc = byteArrayOf(0x7E, 0xA0.toByte()) + "Serial=1".toByteArray()
         assertEquals(
             MeterFileFormat.FRAMED_BINARY,
-            MeterFileImportRouter.detectFormat("labels.csv", "text/csv", dump)
+            MeterFileImportRouter.detectFormat("labels.csv", "text/csv", hdlc)
+        )
+
+        val wrapper = byteArrayOf(0x00, 0x01, 0x00) + "Serial=1".toByteArray()
+        assertEquals(
+            MeterFileFormat.FRAMED_BINARY,
+            MeterFileImportRouter.detectFormat("labels.csv", "text/csv", wrapper)
         )
     }
 
     @Test
-    fun `router skips leading timestamp garbage before the binary header`() {
+    fun `text dat without a DLMS header falls back to tagged csv`() {
+        val csv = """
+            Name plate details
+            0.0.96.1.0.255,Meter Serial Number,123456
+            ,END
+        """.trimIndent()
+
+        assertEquals(
+            MeterFileFormat.TAGGED_OBIS_CSV,
+            MeterFileImportRouter.detectFormat(
+                "export.dat",
+                "application/octet-stream",
+                csv.toByteArray()
+            )
+        )
+    }
+
+    @Test
+    fun `router skips leading timestamp garbage before the frame marker`() {
         val prefix = "Exported 2026-01-01T00:00:00\n"
         val text = "S\$SModel=ML-3P,Serial=987654,Manufacturer=Example,Phase=3"
         val dump = (prefix + text).toByteArray(Charsets.ISO_8859_1) + doubleBytes(77.5)
@@ -188,6 +212,95 @@ class MeterFileImportPipelineTest {
         assertNotNull(report)
         assertEquals(listOf("0", "-", "-"), report!!.instantaneous?.rows?.single())
     }
+
+    @Test
+    fun `scale engine clamps runaway fractional padding`() {
+        val csv = """
+            Instant data OBIS
+            0100010800FF
+            END
+            Instant data value
+            123456789012345678901234567890
+            END
+            Instant scalar value
+            -30|kWh
+            END
+        """.trimIndent()
+
+        val report = ObisProfileCsvParser.parse(csv)
+        assertNotNull(report)
+        assertEquals("0.123", report!!.instantaneous?.rows?.single()?.single())
+    }
+
+    @Test
+    fun `record dump decodes identity, captures and register buffer`() {
+        val serial = record(
+            classId = 1,
+            obis = intArrayOf(0x00, 0x00, 0x60, 0x01, 0x00, 0xFF),
+            attribute = 2,
+            payload = byteArrayOf(0x09, 0x06) + "123456".toByteArray()
+        )
+        val captureObjects = record(
+            classId = 7,
+            obis = intArrayOf(0x01, 0x00, 0x5E, 0x5B, 0x00, 0xFF),
+            attribute = 3,
+            payload = byteArrayOf(
+                0x01, 0x02,
+                0x02, 0x04, 0x12, 0x00, 0x08,
+                0x09, 0x06, 0x00, 0x00, 0x01, 0x00, 0x00, 0xFF.toByte(),
+                0x0F, 0x02, 0x12, 0x00, 0x00,
+                0x02, 0x04, 0x12, 0x00, 0x03,
+                0x09, 0x06, 0x01, 0x00, 0x01, 0x08, 0x00, 0xFF.toByte(),
+                0x0F, 0x02, 0x12, 0x00, 0x00
+            )
+        )
+        val buffer = record(
+            classId = 7,
+            obis = intArrayOf(0x01, 0x00, 0x5E, 0x5B, 0x00, 0xFF),
+            attribute = 2,
+            payload = byteArrayOf(
+                0x01, 0x01,
+                0x02, 0x02,
+                0x19, 0x0C,
+                0x07, 0xE8.toByte(), 0x0B, 0x11, 0x02, 0x0C, 0x2C, 0x25,
+                0xFF.toByte(), 0x01, 0x4A, 0x00,
+                0x06, 0x00, 0x00, 0x00, 0x64
+            )
+        )
+
+        val result = MeterFileImportRouter.route(
+            serial + captureObjects + buffer,
+            "record-dump.dat",
+            "application/octet-stream"
+        )
+
+        assertEquals(MeterFileFormat.FRAMED_BINARY, result.format)
+        assertEquals(
+            "123456",
+            result.report.identity?.rows?.first { it.obisCode == "0.0.96.1.0.255" }?.formattedValue
+        )
+        assertEquals("100", result.report.instantaneous?.rows?.single()?.last())
+        assertEquals(
+            "100",
+            result.report.cumulativeEnergies.first { it.obisCode == "1.0.1.8.0.255" }.reading
+        )
+    }
+
+    private fun record(
+        classId: Int,
+        obis: IntArray,
+        attribute: Int,
+        payload: ByteArray
+    ): ByteArray = ByteArrayOutputStream().apply {
+        write("S\$S".toByteArray(Charsets.ISO_8859_1))
+        write((classId shr 8) and 0xFF)
+        write(classId and 0xFF)
+        obis.forEach { write(it and 0xFF) }
+        write(attribute)
+        write(0x00)
+        write(0x2D)
+        write(payload)
+    }.toByteArray()
 
     private fun doubleBytes(value: Double): ByteArray =
         ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN).putDouble(value).array()
