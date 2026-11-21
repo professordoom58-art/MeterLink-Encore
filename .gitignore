@@ -17,5 +17,9 @@ local.properties
 *.iml
 
 # Perch artifacts
+.perch/
+perch/
+perch.md
 .perch/public/
+.freebuff/
 public/
