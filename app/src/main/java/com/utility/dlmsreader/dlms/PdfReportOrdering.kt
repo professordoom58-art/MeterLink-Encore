@@ -18,8 +18,153 @@ import java.util.Locale
 internal object PdfReportOrdering {
 
     const val BILLING_DATE_OBIS = "0.0.0.1.2.255"
+    const val CAPTURE_TIME_OBIS = "0.0.1.0.0.255"
+
+    /** OBIS addresses of the primary timestamp capture object in a profile. */
+    private val TIMESTAMP_OBIS = setOf(BILLING_DATE_OBIS, CAPTURE_TIME_OBIS)
+
+    /** Header spellings vendors use for the primary timestamp column. */
+    private val TIMESTAMP_LABELS = listOf(
+        "billing date",
+        "real-time clock",
+        "real time clock",
+        "timestamp",
+        "date"
+    )
+
+    private val NEGATIVE_ZERO = Regex("""^-0(?:\.0+)?$""")
 
     private val PDF_NUMERIC = Regex("""^[+-]?\d[\d,]*(?:\.\d+)?$""")
+
+    /**
+     * Splits a profile table into parts of at most [maxColumnsPerPart] columns.
+     *
+     * Every part keeps the promoted timestamp column (`indexes[0]`, usually
+     * `0`) as its first, sticky column, and the timestamp is never repeated
+     * inside a part. Indexes are returned as column references, so the caller
+     * renders headers and row cells from the same permutation.
+     */
+    fun splitProfileParts(
+        columns: List<ProfileColumn>,
+        indexes: List<Int>,
+        maxColumnsPerPart: Int = 6
+    ): List<List<Int>> {
+        if (indexes.isEmpty() || columns.isEmpty()) return emptyList()
+        // Group a value column with the capture timestamp that follows it, so
+        // a pair is never split across two parts.
+        val units = mutableListOf<List<Int>>()
+        var position = 0
+        while (position < indexes.size) {
+            val index = indexes[position]
+            val column = columns[index]
+            val next = indexes.getOrNull(position + 1)?.let { columns[it] }
+            if (column.attributeIndex == 2 && next != null && next.attributeIndex == 5 &&
+                next.obisCode == column.obisCode
+            ) {
+                units += listOf(index, indexes[position + 1])
+                position += 2
+            } else {
+                units += listOf(index)
+                position++
+            }
+        }
+
+        val chunks = mutableListOf<MutableList<Int>>()
+        var current = mutableListOf<Int>()
+        units.forEach { unit ->
+            if (current.isNotEmpty() && current.size + unit.size > maxColumnsPerPart) {
+                chunks += current
+                current = mutableListOf()
+            }
+            current.addAll(unit)
+        }
+        if (current.isNotEmpty()) chunks += current
+
+        // Avoid a last part with a single column: move the trailing unit of the
+        // previous part forward instead of leaving an almost empty page.
+        if (chunks.size > 1 && chunks.last().size == 1) {
+            val previous = chunks[chunks.lastIndex - 1].toMutableList()
+            val moveCount = if (previous.size >= 2) {
+                val valueColumn = columns[previous[previous.lastIndex - 1]]
+                val timeColumn = columns[previous.last()]
+                if (valueColumn.attributeIndex == 2 && timeColumn.attributeIndex == 5 &&
+                    valueColumn.obisCode == timeColumn.obisCode
+                ) 2 else 1
+            } else 1
+            if (previous.size > moveCount) {
+                val moved = previous.takeLast(moveCount)
+                repeat(moveCount) { previous.removeAt(previous.lastIndex) }
+                chunks[chunks.lastIndex - 1] = previous
+                chunks[chunks.lastIndex].addAll(0, moved)
+            }
+        }
+
+        // Pin the promoted timestamp column as the first, sticky column of
+        // every part. Only a real timestamp column is pinned; a profile without
+        // one keeps its natural capture-object order.
+        val pinIndex = indexes.first()
+        if (isTimestampColumn(columns[pinIndex])) {
+            chunks.forEachIndexed { chunkIndex, chunk ->
+                if (!chunk.contains(pinIndex)) {
+                    chunk.add(0, pinIndex)
+                } else if (chunk.first() != pinIndex) {
+                    // removeAt, not remove: on a MutableList<Int> remove(Int)
+                    // deletes the element equal to that value, which shifts
+                    // every column.
+                    chunk.removeAt(chunk.indexOf(pinIndex))
+                    chunk.add(0, pinIndex)
+                }
+                chunks[chunkIndex] = chunk
+            }
+        }
+        return chunks
+    }
+
+    /**
+     * Index of the primary timestamp capture object, or `-1` when the profile
+     * has none. The address is matched before the header text, so a vendor
+     * that writes `Billing Date` (`0.0.0.1.2.255`) at the end of its capture
+     * object list is still recognised.
+     */
+    fun timestampColumnIndex(columns: List<ProfileColumn>): Int {
+        listOf(BILLING_DATE_OBIS, CAPTURE_TIME_OBIS).forEach { obis ->
+            val index = columns.indexOfFirst { it.obisCode.trim() == obis }
+            if (index >= 0) return index
+        }
+        val labelled = columns.indexOfFirst { column ->
+            val name = column.parameterName.lowercase(Locale.ENGLISH)
+            TIMESTAMP_LABELS.any { name.contains(it) }
+        }
+        if (labelled >= 0) return labelled
+        return columns.indexOfFirst { it.attributeIndex == 5 }
+    }
+
+    /** True when [column] is the primary timestamp of a profile table. */
+    fun isTimestampColumn(column: ProfileColumn): Boolean =
+        column.obisCode.trim() == BILLING_DATE_OBIS ||
+            column.obisCode.trim() == CAPTURE_TIME_OBIS ||
+            TIMESTAMP_LABELS.any { column.parameterName.lowercase(Locale.ENGLISH).contains(it) }
+
+    /**
+     * Moves the primary timestamp column to index `0` and drops it from its
+     * original position, permuting the header list and every row's cells with
+     * the same index order so headers and values can never drift apart.
+     *
+     * Tables that already start with their timestamp are returned unchanged.
+     */
+    fun promoteTimestampColumn(section: ProfileSection): ProfileSection {
+        val index = timestampColumnIndex(section.columns)
+        if (index <= 0) return section
+        val order = listOf(index) + section.columns.indices.filter { it != index }
+        fun permute(rows: List<List<String>>): List<List<String>> = rows.map { row ->
+            order.map { row.getOrNull(it) ?: "N/A" }
+        }
+        return section.copy(
+            columns = order.map { section.columns[it] },
+            rows = permute(section.rows),
+            fullRows = permute(section.fullRows)
+        )
+    }
 
     /** Common billing-date spellings. */
     private val BILL_DATE_PATTERNS = listOf(
@@ -88,13 +233,16 @@ internal object PdfReportOrdering {
     fun clampNumericText(value: String): String {
         val text = value.trim()
         if (text.isEmpty() || !PDF_NUMERIC.matches(text)) return value
+        if (NEGATIVE_ZERO.matches(text)) {
+            return text.removePrefix("-")
+        }
         val fraction = text.substringAfter('.', "")
         if (fraction.length <= 3) return value
         return runCatching {
             val negative = text.startsWith('-')
             val body = text.removePrefix("-").removePrefix("+").replace(",", "")
             val rounded = BigDecimal(body).setScale(3, RoundingMode.HALF_UP)
-            if (text.contains(',')) {
+            val formatted = if (text.contains(',')) {
                 val symbols = DecimalFormatSymbols.getInstance(Locale.ENGLISH)
                 val formatter = DecimalFormat("#,##0.###", symbols)
                 (if (negative) "-" else "") + formatter.format(rounded.abs())
@@ -102,18 +250,14 @@ internal object PdfReportOrdering {
                 (if (negative) "-" else "") +
                     rounded.abs().stripTrailingZeros().toPlainString()
             }
+            // A value that rounds to zero must never keep its sign.
+            if (NEGATIVE_ZERO.matches(formatted)) formatted.removePrefix("-") else formatted
         }.getOrDefault(value)
     }
 
     private fun billingDateIndex(section: ProfileSection): Int {
-        section.columns.indexOfFirst { it.obisCode == BILLING_DATE_OBIS }
-            .takeIf { it >= 0 }
-            ?.let { return it }
-        return section.columns.indexOfFirst { column ->
-            column.attributeIndex == 5 ||
-                column.parameterName.contains("date", ignoreCase = true) ||
-                column.parameterName.contains("time", ignoreCase = true)
-        }.takeIf { it >= 0 } ?: 0
+        val index = timestampColumnIndex(section.columns)
+        return if (index >= 0) index else 0
     }
 
     private fun phaseRank(column: ProfileColumn): Int {

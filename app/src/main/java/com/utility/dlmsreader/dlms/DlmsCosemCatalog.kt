@@ -273,12 +273,12 @@ object DlmsCosemCatalog {
 
         // These names are present in vendor load-JSON special cases. Their
         // units are semantic and do not depend on a vendor's RES payload.
-        "1.0.72.27.0.255" to ObisMetadata("Voltage Y-N", "V", ObisCategory.LOAD_SURVEY),
-        "1.0.32.27.0.255" to ObisMetadata("Voltage R-N", "V", ObisCategory.LOAD_SURVEY),
-        "1.0.51.27.0.255" to ObisMetadata("Voltage B-N", "V", ObisCategory.LOAD_SURVEY),
-        "1.0.31.27.0.255" to ObisMetadata("Current R", "A", ObisCategory.LOAD_SURVEY),
-        "1.0.52.27.0.255" to ObisMetadata("Current B", "A", ObisCategory.LOAD_SURVEY),
-        "1.0.71.27.0.255" to ObisMetadata("Current Y", "A", ObisCategory.LOAD_SURVEY),
+        "1.0.72.27.0.255" to ObisMetadata("Average Voltage B-N", "V", ObisCategory.LOAD_SURVEY),
+        "1.0.32.27.0.255" to ObisMetadata("Average Voltage R-N", "V", ObisCategory.LOAD_SURVEY),
+        "1.0.52.27.0.255" to ObisMetadata("Average Voltage Y-N", "V", ObisCategory.LOAD_SURVEY),
+        "1.0.31.27.0.255" to ObisMetadata("Average Current R", "A", ObisCategory.LOAD_SURVEY),
+        "1.0.51.27.0.255" to ObisMetadata("Average Current Y", "A", ObisCategory.LOAD_SURVEY),
+        "1.0.71.27.0.255" to ObisMetadata("Average Current B", "A", ObisCategory.LOAD_SURVEY),
         "1.0.12.27.0.255" to ObisMetadata("Average Voltage (V)", "V", ObisCategory.LOAD_SURVEY),
         "1.0.11.27.0.255" to ObisMetadata("Load Survey Object", category = ObisCategory.LOAD_SURVEY),
         "1.0.1.29.0.255" to ObisMetadata("Block Energy - Active Import (kWh)", "kWh", ObisCategory.LOAD_SURVEY),

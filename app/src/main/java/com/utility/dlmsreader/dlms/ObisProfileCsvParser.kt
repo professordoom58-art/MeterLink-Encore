@@ -466,9 +466,17 @@ object ObisProfileCsvParser {
             .mapNotNull { (obis, scalar) -> scalar?.let { obis to it } }
             .toMap()
 
+        // A scalar-OBIS section lists only the capture objects that carry a
+        // scaler, so it is shorter than the value list. Trust that list and
+        // map by address only: a positional fallback would give every column
+        // after the first gap its neighbour's unit and scaler.
+        val positionalScalars = scalarByObis.isEmpty() && scalars.size == obisList.size
+        fun scalarFor(index: Int, obis: String): ScalarValue? =
+            scalarByObis[obis] ?: scalars.getOrNull(index).takeIf { positionalScalars }
+
         val columns = obisList.mapIndexed { index, obis ->
             val descriptor = descriptor(obis)
-            val scalar = scalarByObis[obis] ?: scalars.getOrNull(index)
+            val scalar = scalarFor(index, obis)
             ProfileColumn(
                 parameterName = descriptor.label.ifBlank { "OBIS $obis" },
                 obisCode = obis,
@@ -477,7 +485,7 @@ object ObisProfileCsvParser {
             )
         }
 
-        val rows = parseMultiRowProfile(values, obisList, columns, scalars, scalarByObis)
+        val rows = parseMultiRowProfile(values, obisList, columns, ::scalarFor)
 
         return ProfileSection(
             title = title,
@@ -496,17 +504,14 @@ object ObisProfileCsvParser {
         values: List<String>,
         obisList: List<String>,
         columns: List<ProfileColumn>,
-        scalars: List<ScalarValue?>,
-        scalarByObis: Map<String, ScalarValue>
+        scalarFor: (Int, String) -> ScalarValue?
     ): List<List<String>> =
         values.chunked(obisList.size)
             .filter { it.size == obisList.size }
             .map { chunk ->
                 columns.indices.map { index ->
                     val raw = chunk[index].trim()
-                    val scalar = scalarByObis[columns[index].obisCode]
-                        ?: scalars.getOrNull(index)
-                    applyScalar(raw, scalar)
+                    applyScalar(raw, scalarFor(index, columns[index].obisCode))
                 }
             }
 

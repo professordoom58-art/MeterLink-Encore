@@ -234,14 +234,16 @@ object DlmsCosemFormatter {
         val metadataUnit = obis?.let {
             DlmsCosemCatalog.metadataFor(it, runtimeMetadata, meterMake)?.unit
         }.orEmpty()
-        return when {
-        isEnergyOrPower(unit, obis) -> decimalFormat("#,##0.000").format(value)
-        unit == DlmsUnit.VOLTAGE || unit == DlmsUnit.CURRENT ||
-            unit == DlmsUnit.FREQUENCY || unit == DlmsUnit.PERCENTAGE ||
-            unit == DlmsUnit.PHASE_ANGLE_DEGREE ||
-            metadataUnit in setOf("V", "A", "Hz", "%", "PF", "deg") -> decimalFormat("#,##0.00").format(value)
-        else -> decimalFormat("#,##0.###").format(value)
-    }
+        val text = when {
+            isEnergyOrPower(unit, obis) -> decimalFormat("#,##0.000").format(value)
+            unit == DlmsUnit.VOLTAGE || unit == DlmsUnit.CURRENT ||
+                unit == DlmsUnit.FREQUENCY || unit == DlmsUnit.PERCENTAGE ||
+                unit == DlmsUnit.PHASE_ANGLE_DEGREE ||
+                metadataUnit in setOf("V", "A", "Hz", "%", "PF", "deg") -> decimalFormat("#,##0.00").format(value)
+            else -> decimalFormat("#,##0.###").format(value)
+        }
+        // A reading that rounds to zero is zero, never "-0.000".
+        return UnitNormalization.cleanNegativeZero(text)
     }
 
     /** Returns the meter scaler only. Display-unit conversion is done by formatValue. */

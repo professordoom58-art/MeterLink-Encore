@@ -564,9 +564,12 @@ object MeterLinkXlsxWriter {
             sheet.text("No rows returned")
             return
         }
-        sheet.rows += section.columns.map { headerCell(it.parameterName) }
-        section.rows.forEach { row ->
-            sheet.rows += section.columns.indices.map { index ->
+        // Vendor capture-object orders vary, so the timestamp is promoted to
+        // column 0 with the same permutation applied to every row.
+        val display = PdfReportOrdering.promoteTimestampColumn(section)
+        sheet.rows += display.columns.map { headerCell(it.parameterName) }
+        display.rows.forEach { row ->
+            sheet.rows += display.columns.indices.map { index ->
                 cell(row.getOrNull(index))
             }
         }

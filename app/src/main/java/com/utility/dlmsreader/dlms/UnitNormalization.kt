@@ -58,6 +58,20 @@ object UnitNormalization {
     /** A whole profile cell that is only a value, with an optional unit suffix. */
     private val NUMBER_CELL = Regex("""^[+-]?\d[\d,]*(?:\.\d+)?\s*(?:[A-Za-z%]+)?$""")
 
+    /** A value that is zero but still carries a minus sign. */
+    private val NEGATIVE_ZERO = Regex("""^-0(?:\.0+)?$""")
+
+    /**
+     * Removes the sign from `-0` / `-0.000`: a rounded-to-zero reading is zero,
+     * not a negative quantity. Any other text is returned unchanged.
+     */
+    fun cleanNegativeZero(value: String): String {
+        val text = value.trim()
+        if (!NEGATIVE_ZERO.matches(text)) return value
+        val decimals = text.substringAfter('.', "")
+        return if (decimals.isEmpty()) "0" else "0.$decimals"
+    }
+
     /** True for a unit symbol the normalizer understands. */
     fun isKnownUnit(unit: String): Boolean {
         val key = unitKey(unit)
@@ -77,15 +91,15 @@ object UnitNormalization {
         if (text.isEmpty() || text == "-" || text.equals("N/A", ignoreCase = true)) {
             return NormalizedQuantity(valueText, declaredUnit)
         }
-        val number = NUMBER_PREFIX.find(text) ?: return NormalizedQuantity(valueText, declaredUnit)
+        val number = NUMBER_PREFIX.find(text) ?: return NormalizedQuantity(cleanNegativeZero(valueText), declaredUnit)
         val embeddedUnit = text.substring(number.range.last + 1)
             .trim()
             .trim('(', ')')
         val sourceUnit = embeddedUnit.ifBlank { declaredUnit }
         val conversion = BASE_UNITS[unitKey(sourceUnit)]
-            ?: return NormalizedQuantity(valueText, declaredUnit)
+            ?: return NormalizedQuantity(cleanNegativeZero(valueText), declaredUnit)
         val amount = number.value.replace(",", "").toBigDecimalOrNull()
-            ?: return NormalizedQuantity(valueText, declaredUnit)
+            ?: return NormalizedQuantity(cleanNegativeZero(valueText), declaredUnit)
         val converted = amount.divide(conversion.divisor, PRECISION, RoundingMode.HALF_UP)
         return NormalizedQuantity(format(converted), conversion.target)
     }
@@ -115,17 +129,16 @@ object UnitNormalization {
      * from their declared scaler unit, so a report with kWh columns is returned
      * unchanged.
      */
+    /** Normalizes every value column of a profile and cleans negative zero. */
     fun normalize(section: ProfileSection): ProfileSection {
         val conversions = section.columns.map { BASE_UNITS[unitKey(it.unit)] }
-        if (conversions.all { it == null }) return section
         val columns = section.columns.mapIndexed { index, column ->
-            val conversion = conversions[index] ?: return@mapIndexed column
-            column.copy(unit = conversion.target)
+            conversions[index]?.let { column.copy(unit = it.target) } ?: column
         }
         fun convertRows(rows: List<List<String>>): List<List<String>> = rows.map { row ->
             row.mapIndexed { index, cell ->
-                val conversion = conversions.getOrNull(index) ?: return@mapIndexed cell
-                normalizeCell(cell, conversion)
+                val conversion = conversions.getOrNull(index)
+                if (conversion != null) normalizeCell(cell, conversion) else cleanNegativeZero(cell)
             }
         }
         return section.copy(
@@ -156,9 +169,10 @@ object UnitNormalization {
     /** `7,443.000`-style grouped decimal with strict three-decimal precision. */
     fun format(amount: BigDecimal): String {
         val symbols = DecimalFormatSymbols(Locale.ENGLISH)
-        return DecimalFormat("#,##0.000", symbols).apply {
+        val text = DecimalFormat("#,##0.000", symbols).apply {
             roundingMode = RoundingMode.HALF_UP
         }.format(amount)
+        return cleanNegativeZero(text)
     }
 
     private fun normalizeCell(cell: String, conversion: Conversion): String {
@@ -166,9 +180,10 @@ object UnitNormalization {
         if (text.isEmpty() || text == "-") return cell
         // Timestamps and other free text share cells with values; only a plain
         // number (with an optional unit suffix) is converted.
-        if (!NUMBER_CELL.matches(text)) return cell
-        val number = NUMBER_PREFIX.find(text) ?: return cell
-        val amount = number.value.replace(",", "").toBigDecimalOrNull() ?: return cell
+        if (!NUMBER_CELL.matches(text)) return cleanNegativeZero(cell)
+        val number = NUMBER_PREFIX.find(text) ?: return cleanNegativeZero(cell)
+        val amount = number.value.replace(",", "").toBigDecimalOrNull()
+            ?: return cleanNegativeZero(cell)
         return format(amount.divide(conversion.divisor, PRECISION, RoundingMode.HALF_UP))
     }
 

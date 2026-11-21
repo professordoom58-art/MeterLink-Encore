@@ -289,14 +289,17 @@ class MeterLinkPdfExporter(private val context: Context) {
             section.title.contains("Instantaneous", ignoreCase = true)
 
     private fun drawWideProfile(layout: ReportLayout, section: ProfileSection) {
-        val headers = section.columns.map { it.parameterName }
+        // Vendor capture-object orders vary; the timestamp is promoted to
+        // column 0 before splitting so every part keeps it as the sticky column.
+        val display = PdfReportOrdering.promoteTimestampColumn(section)
+        val headers = display.columns.map { it.parameterName }
         if (headers.isEmpty()) {
             layout.table(
                 listOf("Profile", "Status"),
                 listOf(listOf(section.title.ifBlank { "Meter Profile" }, "No rows returned"))
             )
         } else {
-            drawProfileChunks(layout, section, section.columns.indices.toList(), section.title)
+            drawProfileChunks(layout, display, display.columns.indices.toList(), display.title)
             if (section.windowNote.isNotBlank()) {
                 layout.note(section.windowNote)
             } else if (section.rows.size < section.totalRows) {
@@ -316,7 +319,13 @@ class MeterLinkPdfExporter(private val context: Context) {
                 listOf(listOf(section.title.ifBlank { "Billing History Profile" }, "No rows returned"))
             )
         } else {
-            val display = section.copy(rows = PdfReportOrdering.sortBillingRowsDescending(section))
+            // Promote the timestamp before sorting, so a vendor that keeps
+            // `Billing Date` at the end of its capture list still sorts and
+            // splits on the real column while headers and cells stay paired.
+            val promoted = PdfReportOrdering.promoteTimestampColumn(section)
+            val display = promoted.copy(
+                rows = PdfReportOrdering.sortBillingRowsDescending(promoted)
+            )
             drawProfileChunks(layout, display, display.columns.indices.toList(), "Billing History Profile", billing = true)
         }
     }
@@ -338,67 +347,15 @@ class MeterLinkPdfExporter(private val context: Context) {
         title: String,
         billing: Boolean = false
     ) {
-        val units = mutableListOf<List<Int>>()
-        var position = 0
-        while (position < indexes.size) {
-            val index = indexes[position]
-            val column = section.columns[index]
-            val next = indexes.getOrNull(position + 1)?.let { section.columns[it] }
-            if (column.attributeIndex == 2 && next != null && next.attributeIndex == 5 && next.obisCode == column.obisCode) {
-                units += listOf(index, indexes[position + 1])
-                position += 2
-            } else {
-                units += listOf(index)
-                position++
-            }
-        }
-
         // Six columns per part keep every cell wide enough that value columns
         // and "dd-MM-yy HH:mm" timestamps stay on one line instead of being
-        // split mid-token or squeezed horizontally.
-        val maxColumnsPerPart = 6
-        val chunks = mutableListOf<MutableList<Int>>()
-        var current = mutableListOf<Int>()
-        units.forEach { unit ->
-            if (current.isNotEmpty() && current.size + unit.size > maxColumnsPerPart) {
-                chunks += current
-                current = mutableListOf()
-            }
-            current.addAll(unit)
-        }
-        if (current.isNotEmpty()) chunks += current
-        if (chunks.size > 1 && chunks.last().size == 1) {
-            val previous = chunks[chunks.lastIndex - 1].toMutableList()
-            val moveCount = if (previous.size >= 2) {
-                val valueColumn = section.columns[previous[previous.lastIndex - 1]]
-                val timeColumn = section.columns[previous.last()]
-                if (valueColumn.attributeIndex == 2 && timeColumn.attributeIndex == 5 &&
-                    valueColumn.obisCode == timeColumn.obisCode
-                ) 2 else 1
-            } else 1
-            if (previous.size > moveCount) {
-                val moved = previous.takeLast(moveCount)
-                repeat(moveCount) { previous.removeAt(previous.lastIndex) }
-                chunks[chunks.lastIndex - 1] = previous
-                chunks[chunks.lastIndex].addAll(0, moved)
-            }
-        }
-
-        // Pin column 0 (Billing Date / Real-Time Clock) as the first column of every split part
-        val pinIndex = 0
-        if (indexes.contains(pinIndex)) {
-            for (i in chunks.indices) {
-                val chunk = chunks[i]
-                if (!chunk.contains(pinIndex)) {
-                    chunk.add(0, pinIndex)
-                } else if (chunk.first() != pinIndex) {
-                    // removeAt, not remove: on a MutableList<Int> remove(Int) deletes
-                    // the element equal to that value, which shifts every column.
-                    chunk.removeAt(chunk.indexOf(pinIndex))
-                    chunk.add(0, pinIndex)
-                }
-            }
-        }
+        // split mid-token or squeezed horizontally. The splitter is shared
+        // with the ordering tests and pins the promoted timestamp column.
+        val chunks = PdfReportOrdering.splitProfileParts(
+            section.columns,
+            indexes,
+            maxColumnsPerPart = 6
+        )
 
         chunks.forEachIndexed { chunkIndex, chunk ->
             val chunkTitle = if (chunks.size == 1) title else "$title (Part ${chunkIndex + 1} of ${chunks.size})"
@@ -523,7 +480,10 @@ class MeterLinkPdfExporter(private val context: Context) {
 
         fun section(title: String) {
             flushPendingTitle()
-            ensure(34f)
+            // Reserve space for the title, the first part heading and the
+            // table header plus one row so a section heading is never left
+            // alone at the bottom of a page.
+            ensure(34f + 62f)
             add(Op.Text(title, LEFT, y + 18f, 13f, NAVY, true))
             y += 32f
         }

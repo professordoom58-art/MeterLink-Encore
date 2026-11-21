@@ -112,6 +112,41 @@ class MeterLinkExcelExporterTest {
     }
 
     @Test
+    fun `billing sheet promotes the date column to the front`() {
+        val report = MeterDataReport(
+            billing = ProfileSection(
+                title = "Billing History Profile",
+                profileObis = DlmsCosemCatalog.OBIS_BILLING_PROFILE,
+                columns = listOf(
+                    ProfileColumn("Cumulative Active Energy - Import", "1.0.1.8.0.255", "kWh"),
+                    ProfileColumn("Cumulative Active Energy - Export", "1.0.2.8.0.255", "kWh"),
+                    ProfileColumn("Billing Date", "0.0.0.1.2.255", attributeIndex = 5)
+                ),
+                rows = listOf(listOf("12000.100", "800.500", "01-10-26 00:00"))
+            )
+        )
+        val file = temporaryFolder.newFile("MeterLink_Promote_TEST.xlsx")
+        file.outputStream().use { out -> MeterLinkXlsxWriter.write(report, out) }
+
+        ZipFile(file).use { zip ->
+            val sheet = zip.getInputStream(zip.getEntry("xl/worksheets/sheet4.xml"))
+                .bufferedReader()
+                .readText()
+
+            // Header order: Billing Date first, energy columns afterwards.
+            assertTrue(
+                "billing date header is not first",
+                sheet.indexOf("Billing Date") < sheet.indexOf("Cumulative Active Energy - Import")
+            )
+            // Every row is permuted with the same index order as the headers.
+            assertTrue(
+                "billing date value is not in the first cell",
+                sheet.indexOf("01-10-26 00:00") < sheet.indexOf("12000.100")
+            )
+        }
+    }
+
+    @Test
     fun `workbook contains every required part and all seven worksheets`() {
         val file = buildWorkbook()
         assertTrue("workbook was not written", file.length() > 0)

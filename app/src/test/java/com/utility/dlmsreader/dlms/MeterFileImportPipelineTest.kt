@@ -50,6 +50,52 @@ class MeterFileImportPipelineTest {
     """.trimIndent()
 
     @Test
+    fun `sparse scalar obis list keeps every column's own unit and scaler`() {
+        // SECURE-style export: the scalar-OBIS section lists only the capture
+        // objects that carry a scaler, so positional pairing would hand the
+        // RTC, billing date and counters their neighbours' units.
+        val csv = """
+            Instant data OBIS
+            01001F0700FF,0100200700FF,0000010000FF,0000000102FF,00005E5B08FF,0000600700FF,0100010800FF,0100010600FF
+            ,END
+            Instant data value
+            1234,2304,29/01/2025 10:38:39,01/01/2025 00:00:00,227689,6586,2074475,4
+            ,END
+            Instant scalar value
+            -3|A,-1|V,0|min,2|WH,1|W
+            ,END
+            Instant scalar OBIS
+            01001F0700FF,0100200700FF,00005E5B08FF,0100010800FF,0100010600FF
+            ,END
+        """.trimIndent()
+
+        val section = ObisProfileCsvParser.parse(csv)!!.instantaneous!!
+        val units = section.columns.associate { it.obisCode to it.unit }
+        val values = section.columns.indices.associate { index ->
+            section.columns[index].obisCode to section.rows.first()[index]
+        }
+
+        assertEquals("A", units["1.0.31.7.0.255"])
+        assertEquals("V", units["1.0.32.7.0.255"])
+        assertEquals("min", units["0.0.94.91.8.255"])
+        assertEquals("WH", units["1.0.1.8.0.255"])
+        assertEquals("W", units["1.0.1.6.0.255"])
+
+        // Unmapped objects must not inherit a neighbour's unit or scaler.
+        assertEquals("", units["0.0.1.0.0.255"])
+        assertEquals("", units["0.0.0.1.2.255"])
+        assertEquals("", units["0.0.96.7.0.255"])
+        assertEquals("6586", values["0.0.96.7.0.255"])
+        assertEquals("29/01/2025 10:38:39", values["0.0.1.0.0.255"])
+
+        // The scalers that are listed still apply to their own address.
+        assertEquals("1.234", values["1.0.31.7.0.255"])
+        assertEquals("230.4", values["1.0.32.7.0.255"])
+        assertEquals("207447500", values["1.0.1.8.0.255"])
+        assertEquals("40", values["1.0.1.6.0.255"])
+    }
+
+    @Test
     fun `tagged csv converts hex obis, scales values and chunks profiles`() {
         val report = ObisProfileCsvParser.parse(taggedCsv)
         assertNotNull(report)
