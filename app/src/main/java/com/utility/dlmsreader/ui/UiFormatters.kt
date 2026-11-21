@@ -6,14 +6,38 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.Locale
 
+/** Four or more digits are worth grouping: `7443` becomes `7,443`. */
+private val GROUPABLE_INTEGER = Regex("""^[+-]?\d{4,}$""")
+
+/**
+ * Groups the integer part with commas so every summary tile reads the same
+ * way. Only plain integers are touched, so timestamps, `N/A` and already
+ * grouped values pass through unchanged.
+ */
+private fun String.groupWholeThousands(): String {
+    val trimmed = trim()
+    val sign = if (trimmed.startsWith('-') || trimmed.startsWith('+')) trimmed.substring(0, 1) else ""
+    val body = trimmed.removePrefix(sign)
+    if (!GROUPABLE_INTEGER.matches(sign + body)) return this
+    return sign + String.format(Locale.US, "%,d", java.math.BigInteger(body))
+}
+
+/** Groups the integer part of `1234.5` while keeping any fraction intact. */
+private fun groupIntegerPart(text: String): String {
+    val dot = text.indexOf('.')
+    if (dot < 0) return text.groupWholeThousands()
+    return text.substring(0, dot).groupWholeThousands() + text.substring(dot)
+}
+
 /**
  * UI-only preview formatter: drops the decimal fraction so `7,443.000` becomes
- * `7,443`. Raw report data, JSON, PDF and Excel keep full precision.
+ * `7,443` and groups thousands so `5342` becomes `5,342`. Raw report data,
+ * JSON, PDF and Excel keep full precision.
  */
 internal fun String.toPreviewWholeUnits(): String {
     val trimmed = trim()
     if (trimmed.isBlank() || trimmed == "—") return trimmed
-    return trimmed.substringBefore('.').ifBlank { trimmed }
+    return trimmed.substringBefore('.').ifBlank { trimmed }.groupWholeThousands()
 }
 
 private val ENERGY_NUMBER = Regex("""^[+-]?\d[\d,]*(?:\.\d+)?""")
@@ -63,9 +87,9 @@ internal fun energyAmount(reading: String, unit: String): String {
         .divide(target.first, 6, RoundingMode.HALF_UP)
         .stripTrailingZeros()
     return if (converted.scale() > 0) {
-        converted.toPlainString()
+        groupIntegerPart(converted.toPlainString())
     } else {
-        converted.toBigInteger().toString()
+        converted.toBigInteger().toString().groupWholeThousands()
     }
 }
 

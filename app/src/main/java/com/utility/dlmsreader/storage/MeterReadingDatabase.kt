@@ -517,7 +517,9 @@ class MeterReadingDatabase(
         ).use { cursor ->
             if (!cursor.moveToFirst()) return@use null
             val bytes = cursor.getBlob(0) ?: return@use null
-            MeterReportSerializer.fromJsonBytesGzip(bytes)
+            // Legacy rows were stored before net metering existed: derive the
+            // export/net rows on read so old and new readings look the same.
+            MeterReportSerializer.fromJsonBytesGzip(bytes)?.withNetMetering()
         }
     }
 

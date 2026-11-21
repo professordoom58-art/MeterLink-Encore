@@ -280,6 +280,110 @@ class PdfReportOrderingTest {
     }
 
     @Test
+    fun `chunker never splits a repeated md value and its capture time`() {
+        // Tagged CSV exports repeat the value address for the capture time, so
+        // both columns are attribute 2 on the same OBIS.
+        val columns = mutableListOf(
+            column("Real-Time Clock", "0.0.1.0.0.255", "", attribute = 5)
+        )
+        repeat(4) { zone ->
+            repeat(2) {
+                columns += column(
+                    "Maximum Demand - Active - ToD Zone ${zone + 1}",
+                    "1.0.2.6.${zone + 1}.255",
+                    "kW",
+                    attribute = 2
+                )
+            }
+        }
+
+        val parts = PdfReportOrdering.splitProfileParts(
+            columns,
+            columns.indices.toList(),
+            maxColumnsPerPart = 6
+        )
+
+        assertTrue("expected several parts", parts.size > 1)
+        parts.forEach { part ->
+            assertEquals("timestamp first", 0, part.first())
+            // Both halves of every duplicate-OBIS pair stay in the same part.
+            columns.indices.drop(1).chunked(2).forEach { pair ->
+                assertEquals(
+                    "pair ${pair} split across parts",
+                    pair.count { it in part },
+                    if (pair.first() in part) 2 else 0
+                )
+            }
+        }
+        val rendered = parts.flatten().distinct()
+        assertEquals(columns.size, rendered.size)
+    }
+
+    @Test
+    fun `duplicate md header is renamed to timestamp on its capture column`() {
+        val labels = listOf(
+            "Billing Date",
+            "Maximum Demand - Active - ToD Zone 1 (kW)",
+            "Maximum Demand - Active - ToD Zone 1 (kW)"
+        )
+        val values = listOf(
+            "01/01/2025 00:00:00",
+            "5200",
+            "23/01/2025 18:30:00"
+        )
+        assertEquals(
+            listOf(
+                "Billing Date",
+                "Maximum Demand - Active - ToD Zone 1 (kW)",
+                "Timestamp"
+            ),
+            PdfReportOrdering.markDuplicateTimestamps(labels, values)
+        )
+
+        // A blank or unparseable capture cell is still a capture column.
+        assertEquals(
+            "Timestamp",
+            PdfReportOrdering.markDuplicateTimestamps(labels, values, capturePositions = setOf(2)).last()
+        )
+        assertEquals(
+            listOf(
+                "Maximum Demand - Apparent - ToD Zone 2 (kVA)",
+                "Timestamp"
+            ),
+            PdfReportOrdering.markDuplicateTimestamps(
+                listOf("Maximum Demand - Apparent - ToD Zone 2 (kVA)", "Maximum Demand - Apparent - ToD Zone 2 (kVA)"),
+                listOf("140", "N/A"),
+                capturePositions = setOf(1)
+            )
+        )
+        // Two capture columns in one part get distinct names.
+        assertEquals(
+            listOf("A", "Timestamp", "Timestamp 2"),
+            PdfReportOrdering.markDuplicateTimestamps(
+                listOf("A", "A", "A"),
+                listOf("1", "01/01/2025 00:00", "01/02/2025 00:00")
+            )
+        )
+        // A genuine "Timestamp" header already in the part must not collide
+        // with the generated name.
+        assertEquals(
+            listOf("Timestamp", "MD Active - ToD Zone 1 (kW)", "Timestamp 2"),
+            PdfReportOrdering.markDuplicateTimestamps(
+                listOf("Timestamp", "MD Active - ToD Zone 1 (kW)", "MD Active - ToD Zone 1 (kW)"),
+                listOf("01/01/2025 00:00", "20", "01/01/2025 01:00"),
+                capturePositions = setOf(2)
+            )
+        )
+        assertEquals(
+            listOf("Timestamp", "Timestamp 2", "A", "Timestamp 3"),
+            PdfReportOrdering.markDuplicateTimestamps(
+                listOf("Timestamp", "Timestamp 2", "A", "A"),
+                listOf("01/01/2025 00:00", "01/02/2025 00:00", "5", "01/03/2025 00:00")
+            )
+        )
+    }
+
+    @Test
     fun `negative zero formats without a minus sign`() {
         assertEquals("0", PdfReportOrdering.clampNumericText("-0"))
         assertEquals("0.000", PdfReportOrdering.clampNumericText("-0.000"))

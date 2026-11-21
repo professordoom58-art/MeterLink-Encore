@@ -7,12 +7,12 @@ class UiFormattersTest {
 
     @Test
     fun `wh readings scale down to the kWh heading`() {
-        assertEquals("21239.7", energyAmount("21239700 WH", "kWh"))
+        assertEquals("21,239.7", energyAmount("21239700 WH", "kWh"))
     }
 
     @Test
     fun `vah readings scale down to the kVAh heading`() {
-        assertEquals("24506.7", energyAmount("24506700 VAH", "kVAh"))
+        assertEquals("24,506.7", energyAmount("24506700 VAH", "kVAh"))
     }
 
     @Test
@@ -30,7 +30,21 @@ class UiFormattersTest {
 
     @Test
     fun `different energy families are not converted`() {
-        assertEquals("1234", energyAmount("1234 WH", "kVAh"))
+        assertEquals("1,234", energyAmount("1234 WH", "kVAh"))
+    }
+
+    @Test
+    fun `whole unit preview groups thousands consistently`() {
+        assertEquals("7,443", "7443".toPreviewWholeUnits())
+        assertEquals("5,342", "5342.000".toPreviewWholeUnits())
+        assertEquals("21,239", "21239.7".toPreviewWholeUnits())
+        assertEquals("825", "825.900".toPreviewWholeUnits())
+        assertEquals("7,443", "7,443".toPreviewWholeUnits())
+        assertEquals("-1,234", "-1234.5".toPreviewWholeUnits())
+        // Non-numeric preview text is never regrouped.
+        assertEquals("29/01/2025 10:38:42", "29/01/2025 10:38:42".toPreviewWholeUnits())
+        assertEquals("N/A", "N/A".toPreviewWholeUnits())
+        assertEquals("—", "—".toPreviewWholeUnits())
     }
 
     @Test
@@ -52,8 +66,8 @@ class UiFormattersTest {
             )
         )
 
-        assertEquals("7443", report.energyReading("1.0.1.8.0.255", "kWh"))
-        assertEquals("2100", report.energyReading("1.0.2.8.0.255", "kWh"))
+        assertEquals("7,443", report.energyReading("1.0.1.8.0.255", "kWh"))
+        assertEquals("2,100", report.energyReading("1.0.2.8.0.255", "kWh"))
         assertEquals("5,342", report.netActiveEnergyReading())
         assertEquals("—", report.netApparentEnergyReading())
     }

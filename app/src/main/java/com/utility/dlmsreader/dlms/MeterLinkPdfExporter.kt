@@ -361,7 +361,7 @@ class MeterLinkPdfExporter(private val context: Context) {
             val chunkTitle = if (chunks.size == 1) title else "$title (Part ${chunkIndex + 1} of ${chunks.size})"
             layout.subsection(chunkTitle)
             val allocator = PdfReportLabels.Allocator()
-            val selected = chunk.mapIndexed { position, index ->
+            val labelled = chunk.mapIndexed { position, index ->
                 val column = section.columns[index]
                 val previous = chunk.getOrNull(position - 1)?.let { section.columns[it] }
                 // TODO: confirm code 65 against L&T manual; reset values remain unchanged.
@@ -379,6 +379,25 @@ class MeterLinkPdfExporter(private val context: Context) {
                 index to allocator.allocate(
                     PdfReportLabels.resolve(label, column.obisCode, column.unit)
                 )
+            }
+            // Tagged CSV exports repeat the value's address for its capture
+            // time instead of using attribute 5, so both columns resolve to the
+            // same MD label. Rename the timestamp column of each duplicate pair.
+            val firstRow = section.rows.firstOrNull().orEmpty()
+            val capturePositions = chunk.indices.filter { position ->
+                position > 0 && chunk[position].let { index ->
+                    val current = section.columns[index]
+                    val previous = section.columns[chunk[position - 1]]
+                    current.obisCode.isNotBlank() && current.obisCode == previous.obisCode
+                }
+            }.toSet()
+            val deduped = PdfReportOrdering.markDuplicateTimestamps(
+                labelled.map { it.second },
+                labelled.map { pair -> firstRow.getOrNull(pair.first).orEmpty() },
+                capturePositions
+            )
+            val selected = labelled.mapIndexed { position, pair ->
+                pair.first to deduped[position]
             }
             drawSelectedProfile(layout, section, selected)
         }

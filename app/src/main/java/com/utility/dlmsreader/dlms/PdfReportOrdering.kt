@@ -56,12 +56,11 @@ internal object PdfReportOrdering {
         var position = 0
         while (position < indexes.size) {
             val index = indexes[position]
-            val column = columns[index]
-            val next = indexes.getOrNull(position + 1)?.let { columns[it] }
-            if (column.attributeIndex == 2 && next != null && next.attributeIndex == 5 &&
-                next.obisCode == column.obisCode
+            val nextIndex = indexes.getOrNull(position + 1)
+            if (nextIndex != null &&
+                isCapturePair(columns[index], columns[nextIndex])
             ) {
-                units += listOf(index, indexes[position + 1])
+                units += listOf(index, nextIndex)
                 position += 2
             } else {
                 units += listOf(index)
@@ -84,13 +83,16 @@ internal object PdfReportOrdering {
         // previous part forward instead of leaving an almost empty page.
         if (chunks.size > 1 && chunks.last().size == 1) {
             val previous = chunks[chunks.lastIndex - 1].toMutableList()
-            val moveCount = if (previous.size >= 2) {
-                val valueColumn = columns[previous[previous.lastIndex - 1]]
-                val timeColumn = columns[previous.last()]
-                if (valueColumn.attributeIndex == 2 && timeColumn.attributeIndex == 5 &&
-                    valueColumn.obisCode == timeColumn.obisCode
-                ) 2 else 1
-            } else 1
+            val moveCount = if (previous.size >= 2 &&
+                isCapturePair(
+                    columns[previous[previous.lastIndex - 1]],
+                    columns[previous.last()]
+                )
+            ) {
+                2
+            } else {
+                1
+            }
             if (previous.size > moveCount) {
                 val moved = previous.takeLast(moveCount)
                 repeat(moveCount) { previous.removeAt(previous.lastIndex) }
@@ -118,6 +120,62 @@ internal object PdfReportOrdering {
             }
         }
         return chunks
+    }
+
+    /**
+     * True when [capture] is the capture-time column that belongs to the value
+     * column [value] directly before it.
+     *
+     * Live profile capture objects express the pair as attribute 2 followed by
+     * attribute 5 on the same address; tagged CSV exports repeat the same
+     * attribute-2 address twice (value, then timestamp), so both shapes count.
+     */
+    private fun isCapturePair(value: ProfileColumn, capture: ProfileColumn?): Boolean {
+        if (capture == null) return false
+        if (value.obisCode.isBlank() || value.obisCode != capture.obisCode) return false
+        return (value.attributeIndex == 2 && capture.attributeIndex == 5) ||
+            value.attributeIndex == capture.attributeIndex
+    }
+
+    /** Date/time cell as written by meters and vendor exports. */
+    private val TIMESTAMP_VALUE = Regex(
+        """^(?:\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|\d{4}-\d{2}-\d{2})""" +
+            """(?:[ T]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?)?$"""
+    )
+
+    /** True when [value] is a date/time cell rather than a quantity. */
+    fun isTimestampValue(value: String): Boolean = TIMESTAMP_VALUE.matches(value.trim())
+
+    /**
+     * Renames the trailing capture-time column of a repeated capture object to
+     * `Timestamp`, so two identical headers never sit side by side. [labels]
+     * and [values] are in display order; already-unique labels are untouched.
+     */
+    fun markDuplicateTimestamps(
+        labels: List<String>,
+        values: List<String>,
+        capturePositions: Set<Int> = emptySet()
+    ): List<String> {
+        val used = mutableSetOf<String>()
+        var timestamps = 0
+        return labels.mapIndexed { index, label ->
+            if (used.add(label)) return@mapIndexed label
+            if (index !in capturePositions &&
+                !isTimestampValue(values.getOrNull(index).orEmpty())
+            ) {
+                return@mapIndexed label
+            }
+            timestamps += 1
+            var name = if (timestamps == 1) "Timestamp" else "Timestamp $timestamps"
+            // A profile may already carry a literal "Timestamp" header, so walk
+            // forward until the generated name is free instead of assuming the
+            // first candidate is unused.
+            while (!used.add(name)) {
+                timestamps += 1
+                name = "Timestamp $timestamps"
+            }
+            name
+        }
     }
 
     /**
