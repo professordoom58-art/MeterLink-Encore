@@ -1,6 +1,7 @@
 package com.utility.dlmsreader.ui
 
 import com.utility.dlmsreader.dlms.MeterDataReport
+import com.utility.dlmsreader.dlms.NetMetering
 import java.math.BigDecimal
 import java.math.RoundingMode
 import java.util.Locale
@@ -68,11 +69,44 @@ internal fun energyAmount(reading: String, unit: String): String {
     }
 }
 
-internal fun MeterDataReport.energyReading(obis: String, unit: String): String =
+internal fun MeterDataReport.energyReading(obis: String, unit: String): String {
+    val register = cumulativeEnergies.firstOrNull { it.obisCode == obis }
+    val reading = register?.reading.orEmpty()
+    val sourceUnit = register?.unit.orEmpty().trim()
+    // A base scaler unit lives in the register's unit column, so attach it
+    // before previewing; the card always shows whole report units.
+    val value = if (reading.isNotBlank() && sourceUnit.isNotEmpty() && reading.none { it.isLetter() }) {
+        "$reading $sourceUnit"
+    } else {
+        reading
+    }
+    return energyAmount(value, unit).toPreviewWholeUnits()
+}
+
+/**
+ * `import − export` active energy for a net-metering summary card, already in
+ * whole-unit preview form. Empty when either side of the channel is missing.
+ */
+internal fun MeterDataReport.netActiveEnergyReading(): String =
     energyAmount(
-        cumulativeEnergies.firstOrNull { it.obisCode == obis }?.reading.orEmpty(),
-        unit
-    )
+        NetMetering.netText(
+            cumulativeEnergies,
+            NetMetering.OBIS_ACTIVE_ENERGY_IMPORT,
+            NetMetering.OBIS_ACTIVE_ENERGY_EXPORT
+        ),
+        "kWh"
+    ).toPreviewWholeUnits().ifBlank { "—" }
+
+/** `import − export` apparent energy for a net-metering summary card. */
+internal fun MeterDataReport.netApparentEnergyReading(): String =
+    energyAmount(
+        NetMetering.netText(
+            cumulativeEnergies,
+            NetMetering.OBIS_APPARENT_ENERGY_IMPORT,
+            NetMetering.OBIS_APPARENT_ENERGY_EXPORT
+        ),
+        "kVAh"
+    ).toPreviewWholeUnits().ifBlank { "—" }
 
 internal fun manufacturerTag(manufacturer: String): String {
     val upper = manufacturer.uppercase(Locale.US)

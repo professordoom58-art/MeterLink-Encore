@@ -292,8 +292,8 @@ object DlmsCosemFormatter {
         val parts = obis?.split('.')?.mapNotNull { it.toIntOrNull() } ?: return false
         if (parts.size != 6 || parts[0] != 1 || parts[1] != 0 || parts[5] != 255) return false
         return (parts[3] == 8 && parts[2] in setOf(1, 2, 3, 4, 5, 8, 9, 10)) ||
-            (parts[3] == 7 && parts[2] in setOf(1, 3, 9)) ||
-            (parts[3] == 6 && parts[2] in setOf(1, 9))
+            (parts[3] == 7 && parts[2] in setOf(1, 2, 3, 9, 10)) ||
+            (parts[3] == 6 && parts[2] in setOf(1, 2, 9, 10))
     }
 
     private fun obisUnitSymbol(obis: String?): String {
@@ -304,9 +304,13 @@ object DlmsCosemFormatter {
             parts[3] == 8 && parts[2] in setOf(3, 4, 5, 8) -> "kVArh"
             parts[3] == 8 && parts[2] in setOf(1, 2) -> "kWh"
             parts[3] == 7 && parts[2] == 9 -> "kVA"
+            parts[3] == 7 && parts[2] == 10 -> "kVA"
             parts[3] == 7 && parts[2] == 3 -> "kVAr"
+            parts[3] == 7 && parts[2] == 2 -> "kW"
             parts[3] == 7 && parts[2] == 1 -> "kW"
             parts[3] == 6 && parts[2] == 9 -> "kVA"
+            parts[3] == 6 && parts[2] == 10 -> "kVA"
+            parts[3] == 6 && parts[2] == 2 -> "kW"
             parts[3] == 6 && parts[2] == 1 -> "kW"
             else -> ""
         }

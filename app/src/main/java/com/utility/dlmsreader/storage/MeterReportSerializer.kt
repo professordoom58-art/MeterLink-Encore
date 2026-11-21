@@ -57,6 +57,7 @@ object MeterReportSerializer {
             }
         })
         put("errors", JSONArray().apply { report.errors.forEach { put(it) } })
+        report.meteringMode?.let { put("meteringMode", it) }
         put("sourceLabel", report.sourceLabel)
     }
 
@@ -76,6 +77,11 @@ object MeterReportSerializer {
             }
         },
         errors = json.optJSONArray("errors").strings(),
+        meteringMode = if (json.has("meteringMode") && !json.isNull("meteringMode")) {
+            json.optInt("meteringMode")
+        } else {
+            null
+        },
         sourceLabel = json.optString(
             "sourceLabel",
             MeterDataReport.SOURCE_OPTICAL

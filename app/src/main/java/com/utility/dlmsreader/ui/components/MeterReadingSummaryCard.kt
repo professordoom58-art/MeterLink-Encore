@@ -41,12 +41,15 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.utility.dlmsreader.dlms.MeterDataReport
+import com.utility.dlmsreader.dlms.NetMetering
 import com.utility.dlmsreader.storage.identityValue
 import com.utility.dlmsreader.storage.instantaneousParameterCount
 import com.utility.dlmsreader.storage.nameplateFieldCount
 import com.utility.dlmsreader.ui.PreviewSection
 import com.utility.dlmsreader.ui.energyReading
 import com.utility.dlmsreader.ui.manufacturerTag
+import com.utility.dlmsreader.ui.netActiveEnergyReading
+import com.utility.dlmsreader.ui.netApparentEnergyReading
 import com.utility.dlmsreader.ui.theme.*
 
 @Composable
@@ -65,6 +68,11 @@ internal fun MeterReadingSummaryCard(
     val manufacturerTag = manufacturerTag(report.identityValue("0.0.96.1.1.255"))
     val activeEnergy = report.energyReading("1.0.1.8.0.255", "kWh")
     val apparentEnergy = report.energyReading("1.0.9.8.0.255", "kVAh")
+    val isNetMeter = report.isNetMeter
+    val exportActiveEnergy = report.energyReading(NetMetering.OBIS_ACTIVE_ENERGY_EXPORT, "kWh")
+    val exportApparentEnergy = report.energyReading(NetMetering.OBIS_APPARENT_ENERGY_EXPORT, "kVAh")
+    val netActiveEnergy = report.netActiveEnergyReading()
+    val netApparentEnergy = report.netApparentEnergyReading()
 
     val sections = listOf(
         PreviewSection.NAMEPLATE to report.nameplateFieldCount(),
@@ -119,6 +127,22 @@ internal fun MeterReadingSummaryCard(
                             maxLines = 1
                         )
                     }
+                    if (isNetMeter) {
+                        Spacer(Modifier.width(6.dp))
+                        Surface(
+                            color = Color(0xFFDCFCE7),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text(
+                                "NET METER",
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = Color(0xFF166534),
+                                maxLines = 1
+                            )
+                        }
+                    }
                     if (ldn.isNotBlank()) {
                         Spacer(Modifier.width(6.dp))
                         Text(
@@ -135,22 +159,74 @@ internal fun MeterReadingSummaryCard(
                 }
             }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                EnergyReadout(
-                    label = "ACTIVE ENERGY",
-                    value = activeEnergy,
-                    unit = "kWh",
-                    modifier = Modifier.weight(1f)
-                )
-                EnergyReadout(
-                    label = "APPARENT ENERGY",
-                    value = apparentEnergy,
-                    unit = "kVAh",
-                    modifier = Modifier.weight(1f)
-                )
+            if (isNetMeter) {
+                // Bi-directional meter: import, export and net on each channel.
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        EnergyReadout(
+                            label = "ACTIVE IMPORT",
+                            value = activeEnergy,
+                            unit = "kWh",
+                            modifier = Modifier.weight(1f)
+                        )
+                        EnergyReadout(
+                            label = "ACTIVE EXPORT",
+                            value = exportActiveEnergy.ifBlank { "—" },
+                            unit = "kWh",
+                            modifier = Modifier.weight(1f)
+                        )
+                        EnergyReadout(
+                            label = "ACTIVE NET",
+                            value = netActiveEnergy,
+                            unit = "kWh",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        EnergyReadout(
+                            label = "APPARENT IMPORT",
+                            value = apparentEnergy,
+                            unit = "kVAh",
+                            modifier = Modifier.weight(1f)
+                        )
+                        EnergyReadout(
+                            label = "APPARENT EXPORT",
+                            value = exportApparentEnergy.ifBlank { "—" },
+                            unit = "kVAh",
+                            modifier = Modifier.weight(1f)
+                        )
+                        EnergyReadout(
+                            label = "APPARENT NET",
+                            value = netApparentEnergy,
+                            unit = "kVAh",
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    EnergyReadout(
+                        label = "ACTIVE ENERGY",
+                        value = activeEnergy,
+                        unit = "kWh",
+                        modifier = Modifier.weight(1f)
+                    )
+                    EnergyReadout(
+                        label = "APPARENT ENERGY",
+                        value = apparentEnergy,
+                        unit = "kVAh",
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
 
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

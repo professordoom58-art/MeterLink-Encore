@@ -37,7 +37,6 @@ internal object PdfReportLabels {
     private val EXPLICIT_LABELS = mapOf(
         "1.0.2.2.0.255" to "Cum. MD Active Export (kW)",
         "1.0.10.2.0.255" to "Cum. MD Apparent Export (kVA)",
-        "1.0.16.8.0.255" to "Cum. MD Active Export (kW)",
         "1.0.128.8.62.255" to "Cum. MD Apparent Export (kVA)",
         "1.0.128.7.26.255" to "Meter Program Identifier"
     )

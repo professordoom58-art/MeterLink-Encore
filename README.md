@@ -33,6 +33,13 @@ Works on Android 8.0 or newer with a phone that supports a USB cable connection.
 - Finds your optical cable automatically.
 - Reads your meter's identity, energy, billing, load and tamper records over the
   universal **DLMS / COSEM (IEC 62056)** optical interface.
+- Handles **net metering (bi-directional / rooftop solar)** meters: export energy,
+  export maximum demand and the `import − export` net energy are read and
+  reported with standard OBIS codes only, and uni-directional meters simply skip
+  the export objects.
+- Normalizes base scaler units once (`Wh` → `kWh`, `VAh` → `kVAh`, `W` → `kW`,
+  `VA` → `kVA`) so imported files and live reads always report in kWh/kVAh/kW/kVA
+  with three-decimal precision in JSON, PDF and Excel.
 - Imports meter files from phone storage in several formats: MeterLink JSON
   reports, tagged OBIS CSV exports, and framed binary dumps with an `S$S`
   header.

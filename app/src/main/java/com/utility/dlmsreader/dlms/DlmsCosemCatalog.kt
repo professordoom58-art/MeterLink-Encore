@@ -191,8 +191,43 @@ object DlmsCosemCatalog {
         "1.0.9.6.7.255" to ObisMetadata("MD Apparent - ToD Zone 7 (kVA)", "kVA", category = ObisCategory.BILLING),
         "1.0.9.6.8.255" to ObisMetadata("MD Apparent - ToD Zone 8 (kVA)", "kVA", category = ObisCategory.BILLING),
         // Export-side maximum demand, needed for net-metering / solar meters.
-        "1.0.2.6.0.255" to ObisMetadata("MD Active Export - Cumulative (kW)", "kW", category = ObisCategory.BILLING),
-        "1.0.10.6.0.255" to ObisMetadata("MD Apparent Export - Cumulative (kVA)", "kVA", category = ObisCategory.BILLING),
+        "1.0.2.6.0.255" to ObisMetadata("Maximum Demand - Active Export (kW)", "kW", category = ObisCategory.BILLING),
+        "1.0.10.6.0.255" to ObisMetadata("Maximum Demand - Apparent Export (kVA)", "kVA", category = ObisCategory.BILLING),
+        "1.0.2.2.0.255" to ObisMetadata("Cum. MD Active Export (kW)", "kW", category = ObisCategory.BILLING),
+        "1.0.10.2.0.255" to ObisMetadata("Cum. MD Apparent Export (kVA)", "kVA", category = ObisCategory.BILLING),
+        // ToD slabs for the export maximum demand, per IEC 62056 / BIS IS 15959.
+        "1.0.2.6.1.255" to ObisMetadata("MD Active Export - ToD Zone 1 (kW)", "kW", category = ObisCategory.BILLING),
+        "1.0.2.6.2.255" to ObisMetadata("MD Active Export - ToD Zone 2 (kW)", "kW", category = ObisCategory.BILLING),
+        "1.0.2.6.3.255" to ObisMetadata("MD Active Export - ToD Zone 3 (kW)", "kW", category = ObisCategory.BILLING),
+        "1.0.2.6.4.255" to ObisMetadata("MD Active Export - ToD Zone 4 (kW)", "kW", category = ObisCategory.BILLING),
+        "1.0.2.6.5.255" to ObisMetadata("MD Active Export - ToD Zone 5 (kW)", "kW", category = ObisCategory.BILLING),
+        "1.0.2.6.6.255" to ObisMetadata("MD Active Export - ToD Zone 6 (kW)", "kW", category = ObisCategory.BILLING),
+        "1.0.2.6.7.255" to ObisMetadata("MD Active Export - ToD Zone 7 (kW)", "kW", category = ObisCategory.BILLING),
+        "1.0.2.6.8.255" to ObisMetadata("MD Active Export - ToD Zone 8 (kW)", "kW", category = ObisCategory.BILLING),
+        "1.0.10.6.1.255" to ObisMetadata("MD Apparent Export - ToD Zone 1 (kVA)", "kVA", category = ObisCategory.BILLING),
+        "1.0.10.6.2.255" to ObisMetadata("MD Apparent Export - ToD Zone 2 (kVA)", "kVA", category = ObisCategory.BILLING),
+        "1.0.10.6.3.255" to ObisMetadata("MD Apparent Export - ToD Zone 3 (kVA)", "kVA", category = ObisCategory.BILLING),
+        "1.0.10.6.4.255" to ObisMetadata("MD Apparent Export - ToD Zone 4 (kVA)", "kVA", category = ObisCategory.BILLING),
+        "1.0.10.6.5.255" to ObisMetadata("MD Apparent Export - ToD Zone 5 (kVA)", "kVA", category = ObisCategory.BILLING),
+        "1.0.10.6.6.255" to ObisMetadata("MD Apparent Export - ToD Zone 6 (kVA)", "kVA", category = ObisCategory.BILLING),
+        "1.0.10.6.7.255" to ObisMetadata("MD Apparent Export - ToD Zone 7 (kVA)", "kVA", category = ObisCategory.BILLING),
+        "1.0.10.6.8.255" to ObisMetadata("MD Apparent Export - ToD Zone 8 (kVA)", "kVA", category = ObisCategory.BILLING),
+        // Block-load export intervals (profile capture objects, not registers).
+        "1.0.2.29.0.255" to ObisMetadata(
+            "Block Energy - Active Export (kWh)",
+            "kWh",
+            category = ObisCategory.LOAD_SURVEY
+        ),
+        "1.0.10.29.0.255" to ObisMetadata(
+            "Block Energy - Apparent Export (kVAh)",
+            "kVAh",
+            category = ObisCategory.LOAD_SURVEY
+        ),
+        // Metering mode: 0 = uni-directional, 1 = bi-directional (net metering).
+        "0.0.94.96.19.255" to ObisMetadata(
+            "Metering Mode (0=Import Only, 1=Net Meter)",
+            category = ObisCategory.CONFIGURATION
+        ),
         "1.0.91.27.0.255" to ObisMetadata("Avg Neutral Current (A)", "A", category = ObisCategory.INSTANTANEOUS),
         // DLMS / COSEM (IEC 62056) defines no dedicated standard label/unit for this Secure-meter
         // word; keep a neutral name rather than asserting an unverified meaning.
@@ -255,7 +290,11 @@ object DlmsCosemCatalog {
             "Meter Temp / L&T Status",
             category = ObisCategory.VENDOR_SPECIFIC
         ),
-        "1.0.84.0.0.255" to ObisMetadata("Billing XML Object", category = ObisCategory.BILLING),
+        "1.0.84.0.0.255" to ObisMetadata(
+            "Average Billing Power Factor - Export",
+            "PF",
+            category = ObisCategory.BILLING
+        ),
         "1.0.29.0.0.255" to ObisMetadata("Block-Load Active Energy", category = ObisCategory.LOAD_SURVEY),
 
         // The decompiled source identifies these as OBIS_LIST/vendor objects,

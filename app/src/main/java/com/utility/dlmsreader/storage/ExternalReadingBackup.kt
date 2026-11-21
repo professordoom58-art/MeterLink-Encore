@@ -1,6 +1,7 @@
 package com.utility.dlmsreader.storage
 
 import com.utility.dlmsreader.dlms.MeterDataReport
+import com.utility.dlmsreader.dlms.UnitNormalization
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -99,7 +100,9 @@ object ExternalReadingBackup {
     }
 
     fun toJson(report: MeterDataReport): String =
-        MeterReportSerializer.toJson(report).toString()
+        // The JSON backup is a user-facing export, so it carries the same net
+        // metering rows and kWh/kVAh/kW/kVA units as the PDF and Excel reports.
+        MeterReportSerializer.toJson(UnitNormalization.normalize(report.withNetMetering())).toString()
 
     fun fromJson(text: String): MeterDataReport? =
         runCatching { MeterReportSerializer.fromJson(JSONObject(text)) }.getOrNull()

@@ -32,4 +32,29 @@ class UiFormattersTest {
     fun `different energy families are not converted`() {
         assertEquals("1234", energyAmount("1234 WH", "kVAh"))
     }
+
+    @Test
+    fun `net meter card previews whole units from imported base units`() {
+        val report = com.utility.dlmsreader.dlms.MeterDataReport(
+            cumulativeEnergies = listOf(
+                com.utility.dlmsreader.dlms.RegisterReading(
+                    "Cumulative Active Energy - Import",
+                    "1.0.1.8.0.255",
+                    "7443000",
+                    "WH"
+                ),
+                com.utility.dlmsreader.dlms.RegisterReading(
+                    "Cumulative Active Energy - Export",
+                    "1.0.2.8.0.255",
+                    "2100500",
+                    "WH"
+                )
+            )
+        )
+
+        assertEquals("7443", report.energyReading("1.0.1.8.0.255", "kWh"))
+        assertEquals("2100", report.energyReading("1.0.2.8.0.255", "kWh"))
+        assertEquals("5,342", report.netActiveEnergyReading())
+        assertEquals("—", report.netApparentEnergyReading())
+    }
 }

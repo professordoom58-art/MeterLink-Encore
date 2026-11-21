@@ -61,7 +61,9 @@ object MeterFileImportRouter {
                 "Choose a JSON report, a tagged OBIS CSV, or a framed binary dump."
         )
         return MeterFileImportResult(
-            report = report.copy(sourceLabel = MeterDataReport.SOURCE_IMPORTED),
+            report = report
+                .copy(sourceLabel = MeterDataReport.SOURCE_IMPORTED)
+                .withNetMetering(),
             format = format
         )
     }

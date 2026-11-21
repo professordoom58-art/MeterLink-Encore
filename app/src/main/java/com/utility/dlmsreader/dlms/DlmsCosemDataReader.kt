@@ -454,6 +454,8 @@ data class MeterDataReport(
     val tamperEvents: List<TamperEventRow> = emptyList(),
     val eventLogStatus: List<Pair<String, String>> = emptyList(),
     val errors: List<String> = emptyList(),
+    /** Raw metering mode (`0.0.94.96.19.255`): 0 import-only, 1 net metering. */
+    val meteringMode: Int? = null,
     /** Where the report came from: an optical read or an imported meter file. */
     val sourceLabel: String = SOURCE_OPTICAL
 ) {
@@ -470,6 +472,23 @@ data class MeterDataReport(
             instantaneous != null || billing != null || blockLoad != null ||
             dailyLoad != null || tamperEvents.isNotEmpty() || eventLogStatus.isNotEmpty()
 
+    /**
+     * True for a bi-directional (net-metering / rooftop solar) meter.
+     *
+     * The flag comes from metering mode `0.0.94.96.19.255 == 1` or from the
+     * presence of an export energy register, whether it was read optically or
+     * imported from a `.csv`, `.dat` or `.OUT` file.
+     */
+    val isNetMeter: Boolean
+        get() = NetMetering.isNetMeter(meteringMode, cumulativeEnergies)
+
+    /**
+     * Report with the net-metering Section 2 rows added: export energy, export
+     * maximum demand and `import − export` net energy. Uni-directional meters
+     * are returned unchanged.
+     */
+    fun withNetMetering(): MeterDataReport = NetMetering.apply(this)
+
     fun merge(other: MeterDataReport): MeterDataReport = MeterDataReport(
         identity = when {
             identity == null -> other.identity
@@ -484,6 +503,7 @@ data class MeterDataReport(
         tamperEvents = if (other.tamperEvents.isNotEmpty()) other.tamperEvents else tamperEvents,
         eventLogStatus = eventLogStatus + other.eventLogStatus,
         errors = errors + other.errors,
+        meteringMode = other.meteringMode ?: meteringMode,
         // A live session always keeps the optical label; only imports carry
         // their own vendor-neutral "Imported File" marker.
         sourceLabel = if (other.isImported) other.sourceLabel else sourceLabel
@@ -511,6 +531,9 @@ class DlmsCosemDataReader(
     private val entryTierDeniedProfiles = mutableSetOf<String>()
     private var lastEventLogStatus: List<Pair<String, String>> = emptyList()
     val eventLogStatus: List<Pair<String, String>> get() = lastEventLogStatus
+    /** Raw metering mode read during the energy pass, if the meter exposes it. */
+    private var lastMeteringMode: Int? = null
+    val meteringMode: Int? get() = lastMeteringMode
     /** Section currently streaming frames; frame estimates are mapped onto it. */
     private var activeSection: String? = null
     private val executor = GuruxPacketExecutor(
@@ -595,9 +618,9 @@ class DlmsCosemDataReader(
     }
 
     suspend fun readCumulativeEnergies(): List<RegisterReading> {
-        val definitions = listOf(
-            "1.0.1.8.0.255",
-            "1.0.9.8.0.255",
+        val importDefinitions = listOf(
+            NetMetering.OBIS_ACTIVE_ENERGY_IMPORT,
+            NetMetering.OBIS_APPARENT_ENERGY_IMPORT,
             "1.0.5.8.0.255",
             "1.0.6.8.0.255",
             "1.0.7.8.0.255",
@@ -607,18 +630,99 @@ class DlmsCosemDataReader(
         )
         emitPercent(ExtractionProgress.ENERGY, 0)
         val readings = mutableListOf<RegisterReading>()
-        definitions.forEachIndexed { index, obis ->
-            runCatching { readRegister(obis, obis.endsWith(".6.0.255")) }
-                .getOrNull()
-                ?.let(readings::add)
+        // 1) Import-side registers are always present on a compliant meter.
+        importDefinitions.forEachIndexed { index, obis ->
+            probeRegister(obis)?.let(readings::add)
             emitPercent(
                 ExtractionProgress.ENERGY,
-                ExtractionProgress.percent(index + 1, definitions.size)
+                ExtractionProgress.percent(index + 1, importDefinitions.size + 2)
             )
+        }
+        // 2) Metering mode tells us whether export objects can exist at all.
+        lastMeteringMode = probeMeteringMode()
+        lastMeteringMode?.let { mode ->
+            progress("Metering mode ${NetMetering.OBIS_METERING_MODE} = $mode")
+        }
+        // 3) Export registers are probed gracefully: a uni-directional meter
+        //    answers ObjectUndefined / ReadWriteDenied and is simply skipped.
+        NetMetering.EXPORT_REGISTER_OBIS.forEach { obis ->
+            probeRegister(obis)?.let { reading -> readings += reading }
+        }
+        // Average billing power factor of the export channel is a plain data
+        // object (class 1), not a register, so it is probed separately.
+        probeDataObject(NetMetering.OBIS_EXPORT_BILLING_PF)?.let(readings::add)
+        emitPercent(
+            ExtractionProgress.ENERGY,
+            ExtractionProgress.percent(importDefinitions.size + 1, importDefinitions.size + 2)
+        )
+        // 4) ToD export zones (energy and maximum demand) only exist on a
+        //    bi-directional meter, so they are probed after the flag is known
+        //    instead of slowing every read.
+        if (NetMetering.isNetMeter(lastMeteringMode, readings)) {
+            progress("Net metering detected; probing export ToD zones 1-8")
+            NetMetering.EXPORT_TOD_OBIS.forEach { obis ->
+                probeRegister(obis)?.let(readings::add)
+            }
         }
         emitPercent(ExtractionProgress.ENERGY, 100)
         return readings
     }
+
+    /**
+     * Optional register probe: any meter-side rejection (undefined object, read
+     * denied, unsupported attribute) only skips that register.
+     */
+    private suspend fun probeRegister(obis: String): RegisterReading? =
+        runCatching { readRegister(obis, NetMetering.isDemandRegisterObis(obis)) }
+            .onFailure { error ->
+                progress(
+                    "Skipped optional register $obis: " +
+                        (error.message ?: error.javaClass.simpleName)
+                )
+            }
+            .getOrNull()
+
+    /**
+     * Graceful probe for a plain class 1 data object (power factor, metering
+     * mode and similar single values). Rejections only skip the object.
+     */
+    private suspend fun probeDataObject(obis: String): RegisterReading? = runCatching {
+        val obj = GXDLMSData(obis)
+        val raw = executor.readObject(obj, 2)
+        val descriptor = descriptor(obis)
+        RegisterReading(
+            parameterName = descriptor.label,
+            obisCode = obis,
+            reading = DlmsCosemFormatter.formatValue(
+                raw,
+                obis = obis,
+                includeUnit = false,
+                runtimeMetadata = runtimeMetadata,
+                meterMake = meterMake
+            ),
+            unit = descriptor.unit
+        )
+    }.onFailure { error ->
+        progress(
+            "Skipped optional object $obis: " +
+                (error.message ?: error.javaClass.simpleName)
+        )
+    }.getOrNull()
+
+    /** Class 1 metering mode object (`0.0.94.96.19.255`), or null when absent. */
+    private suspend fun probeMeteringMode(): Int? = runCatching {
+        val obj = GXDLMSData(NetMetering.OBIS_METERING_MODE)
+        when (val raw = executor.readObject(obj, 2)) {
+            is Number -> raw.toInt()
+            is ByteArray -> String(raw, Charsets.US_ASCII).trim().toIntOrNull()
+            else -> raw?.toString()?.trim()?.toIntOrNull()
+        }
+    }.onFailure { error ->
+        progress(
+            "Metering mode ${NetMetering.OBIS_METERING_MODE} unavailable: " +
+                (error.message ?: error.javaClass.simpleName)
+        )
+    }.getOrNull()
 
     suspend fun readInstantaneousProfile(): ProfileSection {
         val profile = DlmsCosemCatalog.profileByName("Instantaneous Profile")
@@ -756,7 +860,10 @@ class DlmsCosemDataReader(
             )
         }
         progress("Full meter extraction complete.")
-        return report.copy(errors = report.errors + errors)
+        return report.copy(
+            errors = report.errors + errors,
+            meteringMode = meteringMode
+        ).withNetMetering()
     }
 
     private suspend fun readTextObject(obis: String, rows: MutableList<ParameterRow>) {
@@ -767,38 +874,86 @@ class DlmsCosemDataReader(
         }
     }
 
-    private suspend fun readRegister(obis: String, extended: Boolean): RegisterReading {
-        val register = if (extended) GXDLMSExtendedRegister(obis) else GXDLMSRegister(obis)
+    /**
+     * Reads one cumulative register. `.6.\d.255` objects are maximum-demand
+     * registers: DLMS / COSEM allows both class 4 (demand register) and class 5
+     * (extended register), and both expose scaler_unit and capture_time. The
+     * class 5 form is tried first, then class 4, then the plain class 3 form,
+     * so a meter that implements any of the three still reports the value.
+     */
+    private suspend fun readRegister(obis: String, demand: Boolean): RegisterReading {
+        if (!demand) return readRegisterObject(obis, RegisterObjectKind.PLAIN)
+        val kinds = listOf(
+            RegisterObjectKind.EXTENDED,
+            RegisterObjectKind.DEMAND,
+            RegisterObjectKind.PLAIN
+        )
+        var lastError: Throwable? = null
+        kinds.forEach { kind ->
+            runCatching { readRegisterObject(obis, kind) }
+                .onSuccess { return it }
+                .onFailure { lastError = it }
+        }
+        throw lastError ?: IllegalStateException("Register $obis could not be read")
+    }
+
+    /** COSEM object forms a register may be exposed as on a compliant meter. */
+    private enum class RegisterObjectKind { EXTENDED, DEMAND, PLAIN }
+
+    private suspend fun readRegisterObject(
+        obis: String,
+        kind: RegisterObjectKind
+    ): RegisterReading {
+        val register: GXDLMSObject = when (kind) {
+            RegisterObjectKind.EXTENDED -> GXDLMSExtendedRegister(obis)
+            RegisterObjectKind.DEMAND -> GXDLMSDemandRegister(obis)
+            RegisterObjectKind.PLAIN -> GXDLMSRegister(obis)
+        }
+        val scalerUnit = register as? GXDLMSRegister
+        val extendedRegister = register as? GXDLMSExtendedRegister
+        val demandRegister = register as? GXDLMSDemandRegister
+        // Class 4 keeps the value in attribute 1 and the status in 2, while
+        // class 3 / 5 expose the value in attribute 2.
+        val valueAttribute = if (demandRegister != null) 1 else 2
+        val captureAttribute = when {
+            demandRegister != null -> 4
+            extendedRegister != null -> 5
+            else -> 0
+        }
         executor.readObject(register, 3)
-        val rawRead = executor.readObjectWithRaw(register, 2)
+        val rawRead = executor.readObjectWithRaw(register, valueAttribute)
         val raw = rawRead.value
         if (obis == "1.0.1.8.0.255") {
+            val logScaler = scalerUnit?.scaler ?: extendedRegister?.scaler ?: demandRegister?.scaler
+            val logUnit = scalerUnit?.unit ?: extendedRegister?.unit ?: demandRegister?.unit
             transport.log(
                 com.utility.dlmsreader.transport.TraceDirection.INFO,
-                "OBIS $obis raw=${rawRead.raw} scaler=${register.scaler} unit=${register.unit}"
+                "OBIS $obis raw=${rawRead.raw} scaler=$logScaler unit=$logUnit"
             )
         }
-        if (register is GXDLMSExtendedRegister) {
-            runCatching { executor.readObject(register, 5) }
-        }
+        if (captureAttribute != 0) runCatching { executor.readObject(register, captureAttribute) }
+        val unit = scalerUnit?.unit ?: extendedRegister?.unit ?: demandRegister?.unit
         val descriptor = descriptor(obis)
         val formatted = DlmsCosemFormatter.formatValue(
             raw,
             scaler = 1.0,
-            unit = register.unit,
+            unit = unit,
             obis = obis,
             includeUnit = false,
             runtimeMetadata = runtimeMetadata,
             meterMake = meterMake
         )
-        val capture = if (register is GXDLMSExtendedRegister) {
-            if (isZeroValue(raw)) "—" else DlmsCosemFormatter.formatValue(register.captureTime)
-        } else ""
+        val captureTime = extendedRegister?.captureTime ?: demandRegister?.captureTime
+        val capture = if (captureTime != null) {
+            if (isZeroValue(raw)) "—" else DlmsCosemFormatter.formatValue(captureTime)
+        } else {
+            ""
+        }
         return RegisterReading(
             parameterName = descriptor.label,
             obisCode = obis,
             reading = formatted,
-            unit = descriptor.unit.ifEmpty { DlmsCosemFormatter.unitSymbol(register.unit) },
+            unit = descriptor.unit.ifEmpty { DlmsCosemFormatter.unitSymbol(unit) },
             captureTimestamp = capture
         )
     }

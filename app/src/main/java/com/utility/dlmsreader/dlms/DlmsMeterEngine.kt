@@ -154,7 +154,10 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     val moduleReport = try {
                         when (module) {
                         MeterDataModule.IDENTITY -> MeterDataReport(identity = reader.readIdentityAndNameplate())
-                        MeterDataModule.ENERGY -> MeterDataReport(cumulativeEnergies = reader.readCumulativeEnergies())
+                        MeterDataModule.ENERGY -> MeterDataReport(
+                            cumulativeEnergies = reader.readCumulativeEnergies(),
+                            meteringMode = reader.meteringMode
+                        )
                         MeterDataModule.INSTANTANEOUS -> MeterDataReport(instantaneous = reader.readInstantaneousProfile())
                         MeterDataModule.BILLING -> MeterDataReport(billing = reader.readBillingProfile())
                         MeterDataModule.BLOCK_LOAD -> MeterDataReport(
@@ -176,7 +179,9 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                         )
                         throw e
                     }
-                    moduleReport.copy(identity = identityHeader ?: moduleReport.identity)
+                    moduleReport
+                        .copy(identity = identityHeader ?: moduleReport.identity)
+                        .withNetMetering()
                 } finally {
                     if (linked) {
                         runCatching {

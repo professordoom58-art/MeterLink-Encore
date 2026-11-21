@@ -85,7 +85,9 @@ object MeterLinkXlsxWriter {
     private const val MARK_TITLE = "\u0001T\u0001"
 
     fun write(report: MeterDataReport, out: OutputStream) {
-        val sheets = buildSheets(report)
+        // Net-metering rows and Wh/VAh/W/VA normalization are applied once so
+        // every worksheet (energy, billing, load survey) agrees.
+        val sheets = buildSheets(UnitNormalization.normalize(report.withNetMetering()))
         ZipOutputStream(out).use { zip ->
             put(zip, "[Content_Types].xml", contentTypes())
             put(zip, "_rels/.rels", rootRels())
@@ -359,6 +361,10 @@ object MeterLinkXlsxWriter {
         sheet.rows += listOf(headerCell("Logical Device Name"), cell(identityValue(report, "0.0.42.0.0.255")))
         sheet.rows += listOf(headerCell("Manufacturer"), cell(identityValue(report, "0.0.96.1.1.255")))
         sheet.rows += listOf(headerCell("Source"), cell(report.sourceLabel))
+        sheet.rows += listOf(
+            headerCell("Metering Mode"),
+            cell(if (report.isNetMeter) "Net Metering (Bi-Directional)" else "Uni-Directional")
+        )
         sheet.blank()
 
         val identity = report.identity

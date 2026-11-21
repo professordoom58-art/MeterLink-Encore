@@ -73,7 +73,9 @@ object FramedBinaryDumpParser {
         """(?i)([A-Za-z][A-Za-z0-9 _./()#-]{1,40})\s*[:=]\s*([^\x00-\x1F|;,\r\n]{1,80})"""
     )
     private val HEX_OBIS = Regex("""(?i)([0-9a-f]{12})""")
-    private val NUMERIC = Regex("""^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$""")
+    /** A numeric value with an optional base unit suffix, e.g. `7443000 WH`. */
+    private val NUMERIC_WITH_UNIT =
+        Regex("""^([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*([A-Za-z%]+)?$""")
     private val ENERGY_UNITS = setOf("kWh", "kVAh", "kVArh", "kW", "kVA", "kVAr")
 
     private data class NameField(val label: String, val obis: String, val unit: String = "")
@@ -108,12 +110,25 @@ object FramedBinaryDumpParser {
         "activeenergyimportkwh" to NameField("Cumulative Active Energy - Import", "1.0.1.8.0.255", "kWh"),
         "kwhimport" to NameField("Cumulative Active Energy - Import", "1.0.1.8.0.255", "kWh"),
         "activeenergyexport" to NameField("Cumulative Active Energy - Export", "1.0.2.8.0.255", "kWh"),
+        "activeenergyexportkwh" to NameField("Cumulative Active Energy - Export", "1.0.2.8.0.255", "kWh"),
         "kwh" to NameField("Cumulative Active Energy - Import", "1.0.1.8.0.255", "kWh"),
         "apparentenergyimport" to NameField("Cumulative Apparent Energy - Import", "1.0.9.8.0.255", "kVAh"),
         "apparentenergyimportkvah" to NameField("Cumulative Apparent Energy - Import", "1.0.9.8.0.255", "kVAh"),
         "kvahimport" to NameField("Cumulative Apparent Energy - Import", "1.0.9.8.0.255", "kVAh"),
         "kvah" to NameField("Cumulative Apparent Energy - Import", "1.0.9.8.0.255", "kVAh"),
         "apparentenergyexport" to NameField("Cumulative Apparent Energy - Export", "1.0.10.8.0.255", "kVAh"),
+        "apparentenergyexportkvah" to NameField("Cumulative Apparent Energy - Export", "1.0.10.8.0.255", "kVAh"),
+        "reactiveenergyq1" to NameField("Cumulative Reactive Energy Q1", "1.0.5.8.0.255", "kVArh"),
+        "kvarhq1" to NameField("Cumulative Reactive Energy Q1", "1.0.5.8.0.255", "kVArh"),
+        "reactiveenergyq2" to NameField("Cumulative Reactive Energy Q2", "1.0.6.8.0.255", "kVArh"),
+        "kvarhq2" to NameField("Cumulative Reactive Energy Q2", "1.0.6.8.0.255", "kVArh"),
+        "reactiveenergyq3" to NameField("Cumulative Reactive Energy Q3", "1.0.7.8.0.255", "kVArh"),
+        "kvarhq3" to NameField("Cumulative Reactive Energy Q3", "1.0.7.8.0.255", "kVArh"),
+        "reactiveenergyq4" to NameField("Cumulative Reactive Energy Q4", "1.0.8.8.0.255", "kVArh"),
+        "kvarhq4" to NameField("Cumulative Reactive Energy Q4", "1.0.8.8.0.255", "kVArh"),
+        "averagebillingpfexport" to NameField("Average Billing Power Factor - Export", "1.0.84.0.0.255", "PF"),
+        "billingpfexport" to NameField("Average Billing Power Factor - Export", "1.0.84.0.0.255", "PF"),
+        "powerfactorexport" to NameField("Average Billing Power Factor - Export", "1.0.84.0.0.255", "PF"),
         "activepower" to NameField("Active Power", "1.0.1.7.0.255", "kW"),
         "kw" to NameField("Active Power", "1.0.1.7.0.255", "kW"),
         "apparentpower" to NameField("Apparent Power", "1.0.9.7.0.255", "kVA"),
@@ -162,13 +177,18 @@ object FramedBinaryDumpParser {
 
                 val registerField = REGISTER_FIELDS[key]
                 val obis = normalizeObis(rawKey) ?: registerField?.obis
-                if (obis != null && NUMERIC.matches(cleanText(rawValue))) {
+                val numeric = NUMERIC_WITH_UNIT.matchEntire(cleanText(rawValue))
+                if (obis != null && numeric != null) {
                     val descriptor = DlmsCosemFormatter.getObisLabelAndUnit(obis)
+                    // A trailing unit in the export (`7443000 WH`) overrides the
+                    // catalogue unit; the exporters normalize base units once.
+                    val exportedUnit = numeric.groupValues[2]
+                        .takeIf { it.isNotBlank() && UnitNormalization.isKnownUnit(it) }
                     registers[obis] = RegisterReading(
                         parameterName = registerField?.label ?: descriptor.label.ifBlank { "OBIS $obis" },
                         obisCode = obis,
-                        reading = formatDouble(cleanText(rawValue).toDouble()),
-                        unit = registerField?.unit ?: descriptor.unit
+                        reading = formatDouble(numeric.groupValues[1].toDouble()),
+                        unit = exportedUnit ?: registerField?.unit ?: descriptor.unit
                     )
                 }
             }

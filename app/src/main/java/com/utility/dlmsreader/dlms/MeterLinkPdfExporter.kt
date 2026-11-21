@@ -48,9 +48,12 @@ class MeterLinkPdfExporter(private val context: Context) {
         droppedLineCount: Long = 0
     ): MeterLinkExportBundle {
         require(report.hasData) { "No meter data is available for export." }
+        // Net-metering rows and Wh/VAh/W/VA normalization are applied once,
+        // here, so every PDF table (registers, billing, load survey) agrees.
+        val prepared = UnitNormalization.normalize(report.withNetMetering())
         val generated = SimpleDateFormat("dd-MMM-yyyy HH:mm:ss", Locale.ENGLISH).format(Date())
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.ENGLISH).format(Date())
-        val serial = identityValue(report, "0.0.96.1.0.255")
+        val serial = identityValue(prepared, "0.0.96.1.0.255")
             .ifBlank { "Meter" }
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
         val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
@@ -61,11 +64,11 @@ class MeterLinkPdfExporter(private val context: Context) {
         val layout = ReportLayout(
             generated = generated,
             serial = serial,
-            logicalDevice = identityValue(report, "0.0.42.0.0.255"),
-            manufacturer = identityValue(report, "0.0.96.1.1.255"),
-            source = report.sourceLabel
+            logicalDevice = identityValue(prepared, "0.0.42.0.0.255"),
+            manufacturer = identityValue(prepared, "0.0.96.1.1.255"),
+            source = prepared.sourceLabel
         )
-        buildReport(layout, report, traceLogs, counters, droppedLineCount)
+        buildReport(layout, prepared, traceLogs, counters, droppedLineCount)
 
         val document = PdfDocument()
         try {
@@ -243,6 +246,10 @@ class MeterLinkPdfExporter(private val context: Context) {
             listOf("Field", "Details"),
             listOf(
                 listOf("Signature", "Generated & Verified by MeterLink"),
+                listOf(
+                    "Metering Mode",
+                    if (report.isNetMeter) "Net Metering (Bi-Directional)" else "Uni-Directional"
+                ),
                 listOf("Source", report.sourceLabel)
             )
         )
