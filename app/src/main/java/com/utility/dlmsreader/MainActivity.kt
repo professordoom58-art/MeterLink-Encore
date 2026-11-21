@@ -33,12 +33,14 @@ import com.utility.dlmsreader.dlms.MeterLinkExcelExporter
 import com.utility.dlmsreader.dlms.MeterLinkPdfExporter
 import com.utility.dlmsreader.dlms.VendorPasswordCatalog
 import com.utility.dlmsreader.dlms.applyLoadSurveySelectionToReport
+import com.utility.dlmsreader.security.SecurityGuard
 import com.utility.dlmsreader.storage.MeterReadingDatabase
 import com.utility.dlmsreader.storage.SavedReadingSummary
 import com.utility.dlmsreader.storage.identityValue
 import com.utility.dlmsreader.transport.OpticalUsbTransport
 import com.utility.dlmsreader.transport.TraceLog
 import com.utility.dlmsreader.update.MeterLinkRelease
+import com.utility.dlmsreader.update.ApkSignatureVerifier
 import com.utility.dlmsreader.update.MeterLinkUpdater
 import gurux.dlms.enums.Authentication
 import kotlinx.coroutines.Dispatchers
@@ -74,6 +76,15 @@ class MainActivity : ComponentActivity() {
     @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Release-only integrity check: an APK that is still debuggable, is
+        // being traced, or no longer carries the expected signing certificate
+        // is refused before any USB or database work starts. Debug builds and
+        // builds without a configured hash (see SecurityGuard) skip this.
+        if (SecurityGuard.verify(applicationContext).compromised) {
+            Toast.makeText(this, "Integrity check failed for this build.", Toast.LENGTH_LONG).show()
+            finish()
+            return
+        }
         // The Compose UI below always uses the light palette, so the system bars
         // must stay visible with dark icons whatever the device night mode is.
         // enableEdgeToEdge() used to pick the bar style from the device night
@@ -302,6 +313,14 @@ fun MeterReaderScreen(
     var pendingUpdateApk by remember { mutableStateOf<File?>(null) }
 
     fun launchApkInstaller(apk: File) {
+        // Never hand an unverified download to the package installer: a bad
+        // signature means a tampered update, so drop the file immediately.
+        val verdict = ApkSignatureVerifier.verify(context, apk)
+        if (!verdict.accepted) {
+            apk.delete()
+            updateError = verdict.message ?: ApkSignatureVerifier.REJECTED_SIGNATURE
+            return
+        }
         runCatching { context.startActivity(MeterLinkUpdater.installIntent(context, apk)) }
             .onFailure { updateError = "Could not open the installer: ${it.message}" }
     }

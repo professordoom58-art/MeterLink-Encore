@@ -76,6 +76,9 @@ android {
     }
     buildFeatures {
         compose = true
+        // SecurityGuard reads BuildConfig.DEBUG to keep the tamper checks out
+        // of debug builds.
+        buildConfig = true
     }
 }
 
