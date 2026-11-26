@@ -114,6 +114,43 @@ internal enum class RegisterObjectKind(
     PLAIN(classId = 3, valueAttribute = 2, scalerUnitAttribute = 3, captureTimeAttribute = null)
 }
 
+/** One decoded scaler_unit entry: value × 10^[exponent], DLMS unit code [unitCode]. */
+internal data class ScalerEntry(val exponent: Int, val unitCode: Int?)
+
+/** Largest |exponent| accepted from a scaler profile; anything beyond is corrupt. */
+internal const val MAX_SCALER_EXPONENT = 9
+
+/**
+ * Decodes the single row of a scaler profile (`1.0.94.91.x.255`) into a
+ * scaler per capture-object OBIS.
+ *
+ * Each row cell is a `scaler_unit` structure `{integer8 scaler, enum unit}`,
+ * in the same order as the scaler profile's capture objects.
+ *
+ * - Returns `null` when the row and the capture list differ in length. The
+ *   index pairing is then unreliable: one missing or extra cell would shift
+ *   every later scaler onto the wrong column. The caller then reads each
+ *   register's own scaler_unit instead.
+ * - An exponent sent as unsigned8 (`0xFD` arriving as 253) is reinterpreted as
+ *   the signed integer8 the Blue Book defines (−3).
+ * - Entries with an exponent outside ±[MAX_SCALER_EXPONENT] or no numeric
+ *   exponent are dropped, so those columns fall back to a direct read too.
+ */
+internal fun parseScalerProfileRow(
+    captureObis: List<String>,
+    row: List<List<Any?>>
+): Map<String, ScalerEntry>? {
+    if (row.size != captureObis.size) return null
+    return captureObis.indices.mapNotNull { index ->
+        val structure = row[index]
+        val rawExponent = (structure.getOrNull(0) as? Number)?.toInt() ?: return@mapNotNull null
+        val exponent = if (rawExponent in 128..255) rawExponent - 256 else rawExponent
+        if (exponent !in -MAX_SCALER_EXPONENT..MAX_SCALER_EXPONENT) return@mapNotNull null
+        val unitCode = (structure.getOrNull(1) as? Number)?.toInt()
+        captureObis[index] to ScalerEntry(exponent, unitCode)
+    }.toMap()
+}
+
 private val ISO_DAY_PREFIX = Regex("""^(\d{4})-(\d{2})-(\d{2})""")
 private val DMY_DAY_PREFIX = Regex("""^(\d{2})-(\d{2})-(\d{2})(?![0-9])""")
 private val DMY4_DAY_PREFIX = Regex("""^(\d{2})-(\d{2})-(\d{4})(?![0-9])""")
@@ -985,7 +1022,7 @@ class DlmsCosemDataReader(
             configureRangeRestrictingObject(profile)
             progress("Profile $obis captureObjects count=${profile.captureObjects.size}, scaler=$scalerObis")
             val scalers = loadCompanionScalers(scalerObis ?: DlmsCosemCatalog.profileByDataObis(obis).scalerObis)
-            if (scalers.isEmpty()) loadCaptureScalers(profile)
+            loadCaptureScalers(profile, covered = scalers.keys)
             progressSection?.let { emitPercent(it, 50) }
             val expectedEntries = if (entriesBasedProgress) {
                 runCatching { resolveEntriesInUse(profile) }.getOrDefault(0).takeIf { it > 0 }
@@ -1020,7 +1057,7 @@ class DlmsCosemDataReader(
         configureRangeRestrictingObject(profile)
         progress("Profile $obis captureObjects count=${profile.captureObjects.size}, scaler=$scalerObis")
         val scalers = loadCompanionScalers(scalerObis)
-        if (scalers.isEmpty()) loadCaptureScalers(profile)
+        loadCaptureScalers(profile, covered = scalers.keys)
 
         var totalRows = profile.buffer.size
         var loaded = false
@@ -1501,8 +1538,29 @@ class DlmsCosemDataReader(
         return dateTime
     }
 
-    private suspend fun loadCaptureScalers(profile: GXDLMSProfileGeneric) {
-        for (entry in profile.captureObjects) {
+    /**
+     * Reads scaler_unit straight from each capture object so Gurux scales the
+     * buffer itself. Objects already covered by the companion scaler profile
+     * ([covered]) are skipped: scaling them here as well would apply the
+     * scaler twice.
+     */
+    private suspend fun loadCaptureScalers(
+        profile: GXDLMSProfileGeneric,
+        covered: Set<String> = emptySet()
+    ) {
+        val missing = profile.captureObjects.filter { entry ->
+            entry.key.logicalName !in covered &&
+                (entry.key is GXDLMSRegister || entry.key is GXDLMSDemandRegister)
+        }
+        if (covered.isNotEmpty() && missing.isNotEmpty()) {
+            transport.log(
+                com.utility.dlmsreader.transport.TraceDirection.INFO,
+                "Profile ${profile.logicalName}: scaler profile has no entry for " +
+                    missing.joinToString { it.key.logicalName }.ifEmpty { "-" } +
+                    "; reading their scaler_unit directly."
+            )
+        }
+        for (entry in missing) {
             val obj = entry.key
             if (obj is GXDLMSRegister) {
                 runCatching { executor.readObject(obj, 3) }
@@ -1519,13 +1577,29 @@ class DlmsCosemDataReader(
             executor.readObject(scalerProfile, 3)
             executor.readObject(scalerProfile, 2)
             val row = scalerProfile.buffer.lastOrNull()?.let { rowValues(it) }.orEmpty()
-            scalerProfile.captureObjects.mapIndexedNotNull { index, entry ->
-                val structure = row.getOrNull(index)?.let { rowValues(it) } ?: return@mapIndexedNotNull null
-                val exponent = (structure.getOrNull(0) as? Number)?.toInt() ?: return@mapIndexedNotNull null
-                val unitValue = (structure.getOrNull(1) as? Number)?.toInt()
-                val unit = unitValue?.let { DlmsUnit.forValue(it) }
-                entry.key.logicalName to ProfileScaler(10.0.pow(exponent), unit)
-            }.toMap()
+            val captureObis = scalerProfile.captureObjects.map { it.key.logicalName }
+            val parsed = parseScalerProfileRow(captureObis, row.map { rowValues(it) })
+            if (parsed == null) {
+                transport.log(
+                    com.utility.dlmsreader.transport.TraceDirection.ERROR,
+                    "Scaler profile $obis: ${row.size} scaler entries for " +
+                        "${captureObis.size} capture objects; ignoring it and " +
+                        "reading each register's scaler_unit instead."
+                )
+                return@runCatching emptyMap()
+            }
+            transport.log(
+                com.utility.dlmsreader.transport.TraceDirection.INFO,
+                "Scaler profile $obis: " + parsed.entries.joinToString { (key, scaler) ->
+                    "$key=10^${scaler.exponent} unit=${scaler.unitCode ?: "-"}"
+                }
+            )
+            parsed.mapValues { (_, scaler) ->
+                ProfileScaler(
+                    10.0.pow(scaler.exponent),
+                    scaler.unitCode?.let { DlmsUnit.forValue(it) }
+                )
+            }
         }.getOrDefault(emptyMap())
     }
 
@@ -1587,7 +1661,7 @@ class DlmsCosemDataReader(
         val profile = GXDLMSProfileGeneric(obis)
         executor.readObject(profile, 3)
         val scalers = loadCompanionScalers(DlmsCosemCatalog.profileByDataObis(obis).scalerObis)
-        if (scalers.isEmpty()) loadCaptureScalers(profile)
+        loadCaptureScalers(profile, covered = scalers.keys)
         executor.readObject(profile, 2)
         val formatted = formatProfile(profile, "$compartment Tamper Events", scalers)
         val objects = profile.captureObjects.map { it.key }
