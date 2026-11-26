@@ -94,6 +94,26 @@ fun loadSurveyWindow(
 internal fun loadSurveyNeedsWindow(selection: LoadSurveySelection): Boolean =
     selection.days != null
 
+/**
+ * COSEM object forms a register may be exposed as, with the Blue Book
+ * attribute indices each class uses for scaler_unit, value and capture_time.
+ *
+ * - Class 3 Register: 2 value, 3 scaler_unit.
+ * - Class 4 Extended register: 2 value, 3 scaler_unit, 4 status, 5 capture_time.
+ * - Class 5 Demand register: 2 current_average_value, 3 last_average_value,
+ *   4 scaler_unit, 5 status, 6 capture_time.
+ */
+internal enum class RegisterObjectKind(
+    val classId: Int,
+    val valueAttribute: Int,
+    val scalerUnitAttribute: Int,
+    val captureTimeAttribute: Int?
+) {
+    EXTENDED(classId = 4, valueAttribute = 2, scalerUnitAttribute = 3, captureTimeAttribute = 5),
+    DEMAND(classId = 5, valueAttribute = 2, scalerUnitAttribute = 4, captureTimeAttribute = 6),
+    PLAIN(classId = 3, valueAttribute = 2, scalerUnitAttribute = 3, captureTimeAttribute = null)
+}
+
 private val ISO_DAY_PREFIX = Regex("""^(\d{4})-(\d{2})-(\d{2})""")
 private val DMY_DAY_PREFIX = Regex("""^(\d{2})-(\d{2})-(\d{2})(?![0-9])""")
 private val DMY4_DAY_PREFIX = Regex("""^(\d{2})-(\d{2})-(\d{4})(?![0-9])""")
@@ -876,10 +896,11 @@ class DlmsCosemDataReader(
 
     /**
      * Reads one cumulative register. `.6.\d.255` objects are maximum-demand
-     * registers: DLMS / COSEM allows both class 4 (demand register) and class 5
-     * (extended register), and both expose scaler_unit and capture_time. The
-     * class 5 form is tried first, then class 4, then the plain class 3 form,
-     * so a meter that implements any of the three still reports the value.
+     * registers: DLMS / COSEM allows both class 4 (extended register, the form
+     * IS 15959 uses) and class 5 (demand register), and both expose
+     * scaler_unit and capture_time. The class 4 form is tried first, then
+     * class 5, then the plain class 3 form, so a meter that implements any of
+     * the three still reports the value.
      */
     private suspend fun readRegister(obis: String, demand: Boolean): RegisterReading {
         if (!demand) return readRegisterObject(obis, RegisterObjectKind.PLAIN)
@@ -897,9 +918,6 @@ class DlmsCosemDataReader(
         throw lastError ?: IllegalStateException("Register $obis could not be read")
     }
 
-    /** COSEM object forms a register may be exposed as on a compliant meter. */
-    private enum class RegisterObjectKind { EXTENDED, DEMAND, PLAIN }
-
     private suspend fun readRegisterObject(
         obis: String,
         kind: RegisterObjectKind
@@ -912,16 +930,9 @@ class DlmsCosemDataReader(
         val scalerUnit = register as? GXDLMSRegister
         val extendedRegister = register as? GXDLMSExtendedRegister
         val demandRegister = register as? GXDLMSDemandRegister
-        // Class 4 keeps the value in attribute 1 and the status in 2, while
-        // class 3 / 5 expose the value in attribute 2.
-        val valueAttribute = if (demandRegister != null) 1 else 2
-        val captureAttribute = when {
-            demandRegister != null -> 4
-            extendedRegister != null -> 5
-            else -> 0
-        }
-        executor.readObject(register, 3)
-        val rawRead = executor.readObjectWithRaw(register, valueAttribute)
+        // scaler_unit must be read before the value so Gurux scales it.
+        executor.readObject(register, kind.scalerUnitAttribute)
+        val rawRead = executor.readObjectWithRaw(register, kind.valueAttribute)
         val raw = rawRead.value
         if (obis == "1.0.1.8.0.255") {
             val logScaler = scalerUnit?.scaler ?: extendedRegister?.scaler ?: demandRegister?.scaler
@@ -931,7 +942,9 @@ class DlmsCosemDataReader(
                 "OBIS $obis raw=${rawRead.raw} scaler=$logScaler unit=$logUnit"
             )
         }
-        if (captureAttribute != 0) runCatching { executor.readObject(register, captureAttribute) }
+        kind.captureTimeAttribute?.let { attribute ->
+            runCatching { executor.readObject(register, attribute) }
+        }
         val unit = scalerUnit?.unit ?: extendedRegister?.unit ?: demandRegister?.unit
         val descriptor = descriptor(obis)
         val formatted = DlmsCosemFormatter.formatValue(
