@@ -50,7 +50,7 @@ object PublicClientDiscovery {
         val clockTime = formatDlmsValue(executor.readObject(clockObj, 2))
 
         // Suite 0 clients need the invocation counter before the secure AARQ.
-        val invocationCounter = runCatching {
+        val invocationCounter = runCatchingCancellable {
             val counter = GXDLMSData(DlmsCosemCatalog.OBIS_INVOCATION_COUNTER_MR)
             (executor.readObject(counter, 2) as? Number)?.toLong()
         }.getOrNull()

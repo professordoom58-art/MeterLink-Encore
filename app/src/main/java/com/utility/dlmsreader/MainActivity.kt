@@ -155,6 +155,8 @@ fun MeterReaderScreen(
     var selectedVendor by remember { mutableStateOf(VendorPasswordCatalog.VENDORS.first()) }
     var llsPassword by remember { mutableStateOf(selectedVendor.defaultPrimaryPassword) }
     var isReading by remember { mutableStateOf(false) }
+    /** The running optical read, so Stop can cancel it. */
+    var readJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     // A 30-90 second full load-survey download must not be interrupted by the
     // screen timing out, which can also throttle the USB link.
@@ -430,7 +432,7 @@ fun MeterReaderScreen(
             lastGeneratedPdf = null
         }
         traceLogs.clear()
-        scope.launch {
+        val job = scope.launch {
             val params = ConnectionParams(
                 clientAddress = 0x20,
                 authentication = Authentication.LOW,
@@ -507,6 +509,17 @@ fun MeterReaderScreen(
                 }
             isReading = false
             progressText = null
+        }
+        readJob = job
+        // Runs after the engine's cleanup (DISC + port close) has finished,
+        // including when the read was stopped or the screen went away.
+        job.invokeOnCompletion { cause ->
+            if (readJob === job) readJob = null
+            if (cause is kotlinx.coroutines.CancellationException) {
+                isReading = false
+                progressText = null
+                reportStatusText = "Read stopped. The meter session was closed."
+            }
         }
     }
 
@@ -797,7 +810,10 @@ fun MeterReaderScreen(
                         )
                     }
                 },
-                onStartReading = ::runModule
+                onStartReading = ::runModule,
+                // Only optical reads are cancellable; file imports and exports
+                // also set isReading but have no job here.
+                onStopReading = readJob?.let { job -> { job.cancel() } }
             )
 
             if (meterReport.hasData) {

@@ -13,7 +13,9 @@ import gurux.dlms.secure.GXDLMSSecureClient
 import com.utility.dlmsreader.transport.OpticalUsbTransport
 import com.utility.dlmsreader.transport.TraceDirection
 import com.utility.dlmsreader.transport.toHexString
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import java.io.IOException
 import java.util.Date
 import java.util.concurrent.TimeoutException
@@ -305,6 +307,9 @@ internal suspend fun readDlmsPacket(
             val deadline = now() + packetTimeoutMs
 
             while (!client.getData(rd, reply)) {
+                // USB reads block for up to 200 ms each; check between them so
+                // a cancelled read stops within one poll instead of running on.
+                currentCoroutineContext().ensureActive()
                 if (now() >= deadline) {
                     throw TimeoutException("Timeout waiting for DLMS packet (Attempt $attempt/$maxRetries)")
                 }
@@ -323,6 +328,7 @@ internal suspend fun readDlmsPacket(
         } catch (e: GXDLMSException) {
             throw e
         } catch (e: Exception) {
+            rethrowIfCancelled(e)
             if (attempt >= maxRetries) {
                 throw IOException("Failed after $maxRetries attempts: ${e.message}", e)
             }

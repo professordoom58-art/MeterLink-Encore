@@ -42,7 +42,9 @@ internal fun ExtractionCenterCard(
     loadSurveySelection: LoadSurveySelection,
     onSelectLoadSurveyRange: (LoadSurveySelection) -> Unit,
     onStartReading: (MeterDataModule) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Cancels the running read; the engine still closes the meter session. */
+    onStopReading: (() -> Unit)? = null
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = CardSurface),
@@ -89,6 +91,22 @@ internal fun ExtractionCenterCard(
                                 color = Cobalt,
                                 trackColor = Palette.trackBlue
                             )
+                            if (onStopReading != null) {
+                                OutlinedButton(
+                                    onClick = onStopReading,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(36.dp),
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, Palette.danger),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = Palette.danger
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 12.dp)
+                                ) {
+                                    Text("Stop reading", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
                         } else {
                             // Completed run: full tonal bar under the status line.
                             LinearProgressIndicator(

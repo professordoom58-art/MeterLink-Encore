@@ -163,10 +163,10 @@ private val MONTH_NAME_INDEX = mapOf(
 
 /** Epoch millis for a raw profile timestamp cell, or null when unparseable. */
 internal fun profileRowTimestamp(raw: Any?): Long? = when (raw) {
-    is GXDateTime -> runCatching { MeterTime.wallClock(raw).timeInMillis }.getOrNull()
+    is GXDateTime -> runCatchingCancellable { MeterTime.wallClock(raw).timeInMillis }.getOrNull()
     is Date -> raw.time
     is ByteArray -> if (raw.size == 12) {
-        runCatching {
+        runCatchingCancellable {
             (GXDLMSClient.changeType(raw, DataType.DATETIME, false) as? GXDateTime)
                 ?.let { MeterTime.wallClock(it).timeInMillis }
         }.getOrNull()
@@ -176,10 +176,10 @@ internal fun profileRowTimestamp(raw: Any?): Long? = when (raw) {
 
 /** Canonical `yyyy-MM-dd` day key for a raw profile timestamp cell. */
 internal fun profileRowDay(raw: Any?): String? = when (raw) {
-    is GXDateTime -> runCatching { dayKey(MeterTime.wallClock(raw)) }.getOrNull()
+    is GXDateTime -> runCatchingCancellable { dayKey(MeterTime.wallClock(raw)) }.getOrNull()
     is Date -> dayKey(raw.time)
     is ByteArray -> if (raw.size == 12) {
-        runCatching {
+        runCatchingCancellable {
             (GXDLMSClient.changeType(raw, DataType.DATETIME, false) as? GXDateTime)
                 ?.let { dayKey(MeterTime.wallClock(it)) }
         }.getOrNull()
@@ -424,7 +424,7 @@ internal fun buildLoadSurveyWindowNote(
  */
 internal fun meterRawDeviationMinutes(meterRtc: GXDateTime?): Int? {
     val rtc = meterRtc ?: return null
-    val calendar = runCatching { MeterTime.wallClock(rtc) }.getOrNull() ?: return null
+    val calendar = runCatchingCancellable { MeterTime.wallClock(rtc) }.getOrNull() ?: return null
     val zoneMinutes = (calendar.get(Calendar.ZONE_OFFSET) + calendar.get(Calendar.DST_OFFSET)) / 60000
     if (zoneMinutes != 0) return zoneMinutes
     val parsed = rtc.deviation
@@ -641,14 +641,14 @@ class DlmsCosemDataReader(
         readTextObject("0.0.96.1.1.255", rows); tick()
         readTextObject("0.0.96.1.4.255", rows); tick()
         readTextObject("1.0.0.2.0.255", rows); tick()
-        runCatching {
+        runCatchingCancellable {
             val clock = GXDLMSClock("0.0.1.0.0.255")
             val value = executor.readObject(clock, 2)
             acceptMeterRtc(value)
             addRow(rows, "0.0.1.0.0.255", value)
         }
         tick()
-        val nameplate = runCatching {
+        val nameplate = runCatchingCancellable {
             val profile = DlmsCosemCatalog.profileByName("Nameplate Profile")
             loadProfile(profile.dataObis, profile.name)
         }.getOrNull()
@@ -669,7 +669,7 @@ class DlmsCosemDataReader(
         readTextObject("0.0.42.0.0.255", rows); tick()
         readTextObject("0.0.96.1.0.255", rows); tick()
         readTextObject("0.0.96.1.1.255", rows); tick()
-        runCatching { readMeterRtc() }; tick()
+        runCatchingCancellable { readMeterRtc() }; tick()
         emitPercent(ExtractionProgress.IDENTITY, 100)
         return IdentitySection(rows)
     }
@@ -730,7 +730,7 @@ class DlmsCosemDataReader(
      * denied, unsupported attribute) only skips that register.
      */
     private suspend fun probeRegister(obis: String): RegisterReading? =
-        runCatching { readRegister(obis, NetMetering.isDemandRegisterObis(obis)) }
+        runCatchingCancellable { readRegister(obis, NetMetering.isDemandRegisterObis(obis)) }
             .onFailure { error ->
                 progress(
                     "Skipped optional register $obis: " +
@@ -743,7 +743,7 @@ class DlmsCosemDataReader(
      * Graceful probe for a plain class 1 data object (power factor, metering
      * mode and similar single values). Rejections only skip the object.
      */
-    private suspend fun probeDataObject(obis: String): RegisterReading? = runCatching {
+    private suspend fun probeDataObject(obis: String): RegisterReading? = runCatchingCancellable {
         val obj = GXDLMSData(obis)
         val raw = executor.readObject(obj, 2)
         val descriptor = descriptor(obis)
@@ -767,7 +767,7 @@ class DlmsCosemDataReader(
     }.getOrNull()
 
     /** Class 1 metering mode object (`0.0.94.96.19.255`), or null when absent. */
-    private suspend fun probeMeteringMode(): Int? = runCatching {
+    private suspend fun probeMeteringMode(): Int? = runCatchingCancellable {
         val obj = GXDLMSData(NetMetering.OBIS_METERING_MODE)
         when (val raw = executor.readObject(obj, 2)) {
             is Number -> raw.toInt()
@@ -838,7 +838,7 @@ class DlmsCosemDataReader(
             .filter { it.dataObis.startsWith("0.0.99.98.") }
         emitPercent(ExtractionProgress.TAMPER, 0)
         val rows = compartments.flatMapIndexed { index, profile ->
-            val values = runCatching { readTamperProfile(profile.name, profile.dataObis) }
+            val values = runCatchingCancellable { readTamperProfile(profile.name, profile.dataObis) }
                 .onSuccess { values -> statuses += profile.name to "${values.size} entries" }
                 .onFailure { error ->
                     if (isObjectUndefined(error)) {
@@ -879,7 +879,7 @@ class DlmsCosemDataReader(
         val errors = mutableListOf<String>()
 
         suspend fun section(name: String, action: suspend () -> MeterDataReport) {
-            runCatching { action() }
+            runCatchingCancellable { action() }
                 .onSuccess { report = report.merge(it) }
                 .onFailure {
                     val message = "$name unavailable: ${it.message ?: "unsupported or unreadable"}"
@@ -924,7 +924,7 @@ class DlmsCosemDataReader(
     }
 
     private suspend fun readTextObject(obis: String, rows: MutableList<ParameterRow>) {
-        runCatching {
+        runCatchingCancellable {
             val obj = GXDLMSData(obis)
             obj.setUIDataType(2, gurux.dlms.enums.DataType.STRING)
             addRow(rows, obis, executor.readObject(obj, 2))
@@ -948,7 +948,7 @@ class DlmsCosemDataReader(
         )
         var lastError: Throwable? = null
         kinds.forEach { kind ->
-            runCatching { readRegisterObject(obis, kind) }
+            runCatchingCancellable { readRegisterObject(obis, kind) }
                 .onSuccess { return it }
                 .onFailure { lastError = it }
         }
@@ -980,7 +980,7 @@ class DlmsCosemDataReader(
             )
         }
         kind.captureTimeAttribute?.let { attribute ->
-            runCatching { executor.readObject(register, attribute) }
+            runCatchingCancellable { executor.readObject(register, attribute) }
         }
         val unit = scalerUnit?.unit ?: extendedRegister?.unit ?: demandRegister?.unit
         val descriptor = descriptor(obis)
@@ -1025,7 +1025,7 @@ class DlmsCosemDataReader(
             loadCaptureScalers(profile, covered = scalers.keys)
             progressSection?.let { emitPercent(it, 50) }
             val expectedEntries = if (entriesBasedProgress) {
-                runCatching { resolveEntriesInUse(profile) }.getOrDefault(0).takeIf { it > 0 }
+                runCatchingCancellable { resolveEntriesInUse(profile) }.getOrDefault(0).takeIf { it > 0 }
             } else {
                 null
             }
@@ -1130,6 +1130,7 @@ class DlmsCosemDataReader(
                 totalRows = maxOf(profile.buffer.size, entriesInUse)
                 rememberBuffer("Tier 3 Full Buffer", snapshot = false)
             } catch (error: Exception) {
+                rethrowIfCancelled(error)
                 progress("Tier3 full: failed(${error.message ?: "unknown error"})")
             }
             if (!loaded && !entryTierDeniedProfiles.contains(obis)) {
@@ -1152,6 +1153,7 @@ class DlmsCosemDataReader(
                     totalRows = maxOf(entriesInUse, profile.buffer.size)
                     rememberBuffer("Tier 2 Entry")
                 } catch (error: Exception) {
+                    rethrowIfCancelled(error)
                     if (error is GXDLMSException) {
                         entryTierDeniedProfiles += obis
                         progress("Tier2 entry: denied(${error.errorCode})")
@@ -1283,6 +1285,7 @@ class DlmsCosemDataReader(
                     rememberBuffer("Tier 3 Full Buffer", snapshot = false)
                     if (profile.buffer.size < bestRows) restoreBest()
                 } catch (error: Exception) {
+                    rethrowIfCancelled(error)
                     progress("Tier3 full: failed(${error.message ?: "unknown error"})")
                     restoreBest()
                 }
@@ -1324,6 +1327,7 @@ class DlmsCosemDataReader(
                     rememberBuffer("Tier 2 Entry")
                     if (profile.buffer.size < bestRows) restoreBest()
                 } catch (error: Exception) {
+                    rethrowIfCancelled(error)
                     if (error is GXDLMSException) {
                         entryTierDeniedProfiles += obis
                         progress("Tier2 entry: denied(${error.errorCode})")
@@ -1404,7 +1408,7 @@ class DlmsCosemDataReader(
 
     /** Attribute 7 (entries in use), falling back to the object's cached value. */
     private suspend fun resolveEntriesInUse(profile: GXDLMSProfileGeneric): Int =
-        runCatching {
+        runCatchingCancellable {
             val raw = executor.readObject(profile, 7)
             (raw as? Number)?.toInt()?.takeIf { it > 0 } ?: profile.entriesInUse
         }.getOrDefault(profile.entriesInUse)
@@ -1563,16 +1567,16 @@ class DlmsCosemDataReader(
         for (entry in missing) {
             val obj = entry.key
             if (obj is GXDLMSRegister) {
-                runCatching { executor.readObject(obj, 3) }
+                runCatchingCancellable { executor.readObject(obj, 3) }
             } else if (obj is GXDLMSDemandRegister) {
-                runCatching { executor.readObject(obj, 4) }
+                runCatchingCancellable { executor.readObject(obj, 4) }
             }
         }
     }
 
     private suspend fun loadCompanionScalers(obis: String?): Map<String, ProfileScaler> {
         if (obis == null) return emptyMap()
-        return runCatching {
+        return runCatchingCancellable {
             val scalerProfile = GXDLMSProfileGeneric(obis)
             executor.readObject(scalerProfile, 3)
             executor.readObject(scalerProfile, 2)
@@ -1586,7 +1590,7 @@ class DlmsCosemDataReader(
                         "${captureObis.size} capture objects; ignoring it and " +
                         "reading each register's scaler_unit instead."
                 )
-                return@runCatching emptyMap()
+                return@runCatchingCancellable emptyMap()
             }
             transport.log(
                 com.utility.dlmsreader.transport.TraceDirection.INFO,

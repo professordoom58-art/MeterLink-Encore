@@ -9,6 +9,7 @@ import gurux.dlms.enums.Security
 import gurux.dlms.objects.enums.SecuritySuite
 import gurux.dlms.secure.GXDLMSSecureClient
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.io.IOException
@@ -85,7 +86,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
         module: MeterDataModule,
         onProgress: suspend (String) -> Unit = {}
     ): Result<MeterDataReport> = withContext(Dispatchers.IO) {
-        runCatching {
+        runCatchingCancellable {
             suspend fun reportProgress(message: String) {
                 // Connection/session diagnostics stay in the optical trace log;
                 // the user-facing banner only receives section percentages.
@@ -110,7 +111,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                 if (module == MeterDataModule.IDENTITY && params.clientAddress == 0x10) {
                     transport.markMeterLinkEstablished()
                     onProgress(ExtractionProgress.format(ExtractionProgress.IDENTITY, 100))
-                    return@runCatching MeterDataReport(identity = publicIdentity.toIdentitySection())
+                    return@runCatchingCancellable MeterDataReport(identity = publicIdentity.toIdentitySection())
                 }
                 if (params.clientAddress == 0x10) {
                     throw IOException("Client 32 authentication is required for ${module.name.lowercase(Locale.US)} data.")
@@ -128,10 +129,11 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                     try {
                         establishSession(client, executor, reply)
                     } catch (e: Exception) {
+                        rethrowIfCancelled(e)
                         if (isAuthenticationFailure(e)) {
                             val message = authenticationRejectedMessage()
                             transport.log(TraceDirection.ERROR, message)
-                            runCatching {
+                            runCatchingCancellable {
                                 executor.readDLMSPacket(client.disconnectRequest(), GXReplyData())
                             }
                             throw IOException(message, e)
@@ -173,6 +175,7 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                         MeterDataModule.ALL -> reader.readAllMeterData()
                         }
                     } catch (e: Exception) {
+                        rethrowIfCancelled(e)
                         transport.log(
                             TraceDirection.ERROR,
                             "Section ${module.name.replace('_', ' ')} failed: ${e.message ?: "unknown error"}"
@@ -184,14 +187,27 @@ class DlmsMeterEngine(private val transport: OpticalUsbTransport) {
                         .withNetMetering()
                 } finally {
                     if (linked) {
-                        runCatching {
-                            reportProgress("Closing Meter Reader session...")
-                            executor.readDLMSPacket(client.disconnectRequest(), GXReplyData())
+                        // NonCancellable: after Stop or the screen closing, the
+                        // DISC must still reach the meter, or it keeps the
+                        // association open until its inactivity timeout and
+                        // rejects the next read. One attempt only, so a meter
+                        // that is already gone cannot delay the cleanup.
+                        withContext(NonCancellable) {
+                            runCatching {
+                                transport.log(TraceDirection.INFO, "Closing Meter Reader session...")
+                                executor.readDLMSPacket(
+                                    client.disconnectRequest(),
+                                    GXReplyData(),
+                                    maxRetriesOverride = 1
+                                )
+                            }
                         }
                     }
                 }
             } finally {
-                transport.closePort(preserveStatus = true)
+                withContext(NonCancellable) {
+                    transport.closePort(preserveStatus = true)
+                }
             }
         }
     }
