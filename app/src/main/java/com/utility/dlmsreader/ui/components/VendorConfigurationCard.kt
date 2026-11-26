@@ -1,5 +1,6 @@
 package com.utility.dlmsreader.ui.components
 
+import com.utility.dlmsreader.ui.theme.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -33,9 +34,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.utility.dlmsreader.dlms.VendorPasswordCatalog
 import com.utility.dlmsreader.dlms.VendorProfile
-import com.utility.dlmsreader.ui.theme.Cobalt
-import com.utility.dlmsreader.ui.theme.Hairline
-import com.utility.dlmsreader.ui.theme.Ink
 
 /**
  * Vendor picker plus authentication controls. Owns only the dropdown's
@@ -57,7 +55,7 @@ internal fun VendorConfigurationCard(
     var vendorMenuExpanded by remember { mutableStateOf(false) }
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = CardSurface),
         border = BorderStroke(1.dp, Hairline),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
@@ -87,7 +85,7 @@ internal fun VendorConfigurationCard(
                 ExposedDropdownMenu(
                     expanded = vendorMenuExpanded,
                     onDismissRequest = { vendorMenuExpanded = false },
-                    containerColor = Color.White,
+                    containerColor = CardSurface,
                     tonalElevation = 0.dp,
                     shadowElevation = 8.dp,
                     shape = RoundedCornerShape(12.dp),
@@ -134,8 +132,8 @@ internal fun VendorConfigurationCard(
                         checkedTrackColor = Cobalt,
                         checkedBorderColor = Cobalt,
                         uncheckedThumbColor = Color.White,
-                        uncheckedTrackColor = Color(0xFFE2E8F0),
-                        uncheckedBorderColor = Color(0xFFCBD5E1)
+                        uncheckedTrackColor = Palette.switchTrackOff,
+                        uncheckedBorderColor = Palette.strongBorder
                     )
                 )
                 Text(

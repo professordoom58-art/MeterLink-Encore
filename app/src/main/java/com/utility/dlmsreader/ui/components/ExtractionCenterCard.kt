@@ -1,5 +1,6 @@
 package com.utility.dlmsreader.ui.components
 
+import com.utility.dlmsreader.ui.theme.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -27,10 +28,6 @@ import androidx.compose.ui.unit.sp
 import com.utility.dlmsreader.dlms.ExtractionProgress
 import com.utility.dlmsreader.dlms.LoadSurveySelection
 import com.utility.dlmsreader.dlms.MeterDataModule
-import com.utility.dlmsreader.ui.theme.Cobalt
-import com.utility.dlmsreader.ui.theme.Hairline
-import com.utility.dlmsreader.ui.theme.SoftBlue
-import com.utility.dlmsreader.ui.theme.SoftBlueBorder
 
 /**
  * Primary extraction surface: progress banner, full dump, per-module reads,
@@ -48,7 +45,7 @@ internal fun ExtractionCenterCard(
     modifier: Modifier = Modifier
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = CardSurface),
         border = BorderStroke(1.dp, Hairline),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
@@ -90,7 +87,7 @@ internal fun ExtractionCenterCard(
                                 progress = { progressPercent / 100f },
                                 modifier = barShape,
                                 color = Cobalt,
-                                trackColor = Color(0xFFDBEAFE)
+                                trackColor = Palette.trackBlue
                             )
                         } else {
                             // Completed run: full tonal bar under the status line.
@@ -98,7 +95,7 @@ internal fun ExtractionCenterCard(
                                 progress = { 1f },
                                 modifier = barShape,
                                 color = Cobalt,
-                                trackColor = Color(0xFFDBEAFE)
+                                trackColor = Palette.trackBlue
                             )
                         }
                     }
@@ -113,7 +110,7 @@ internal fun ExtractionCenterCard(
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Cobalt,
-                    contentColor = Color.White
+                    contentColor = Palette.onCobalt
                 ),
                 contentPadding = PaddingValues(horizontal = 12.dp)
             ) {
@@ -153,7 +150,7 @@ internal fun ExtractionCenterCard(
                     .fillMaxWidth()
                     .height(42.dp),
                 shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(1.dp, Color(0xFF3B82F6)),
+                border = BorderStroke(1.dp, Palette.accentBlue),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Cobalt),
                 contentPadding = PaddingValues(horizontal = 12.dp)
             ) {

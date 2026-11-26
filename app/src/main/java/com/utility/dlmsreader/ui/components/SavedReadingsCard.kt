@@ -113,7 +113,7 @@ internal fun SavedReadingsCard(
     onSectionClick: (SavedReadingSummary, PreviewSection) -> Unit
 ) {
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = CardSurface),
         border = BorderStroke(1.dp, Hairline),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
@@ -162,7 +162,7 @@ internal fun SavedReadingsCard(
                     .fillMaxWidth()
                     .height(38.dp),
                 shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(1.dp, Color(0xFF3B82F6)),
+                border = BorderStroke(1.dp, Palette.accentBlue),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Cobalt),
                 contentPadding = PaddingValues(horizontal = 12.dp)
             ) {

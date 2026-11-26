@@ -18,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -85,48 +86,32 @@ class MainActivity : ComponentActivity() {
             finish()
             return
         }
-        // The Compose UI below always uses the light palette, so the system bars
-        // must stay visible with dark icons whatever the device night mode is.
-        // enableEdgeToEdge() used to pick the bar style from the device night
-        // mode, which drew white icons on the white header and hid the clock and
-        // battery. The Scaffold/TopAppBar insets already keep the content clear
-        // of the status bar, so no extra padding is applied here.
+        // The system bars follow the app palette (light or dark, see
+        // ThemePreferences) and are restyled from Compose whenever it changes.
+        // The Scaffold/TopAppBar insets already keep the content clear of the
+        // status bar, so no extra padding is applied here.
         WindowCompat.setDecorFitsSystemWindows(window, true)
-        window.statusBarColor = android.graphics.Color.parseColor("#F8FAFC")
-        WindowCompat.getInsetsController(window, window.decorView).apply {
-            show(WindowInsetsCompat.Type.statusBars())
-            isAppearanceLightStatusBars = true
-            isAppearanceLightNavigationBars = true
-        }
+        ThemePreferences.load(applicationContext)
         transport = OpticalUsbTransport(applicationContext)
         engine = DlmsMeterEngine(transport)
         readingDatabase = MeterReadingDatabase(applicationContext)
         transport.refreshProbeStatus()
 
         setContent {
-            MaterialTheme(
-                colorScheme = lightColorScheme(
-                    primary = Cobalt,
-                    onPrimary = Color.White,
-                    secondary = Color(0xFF3B82F6),
-                    onSecondary = Color.White,
-                    background = Color(0xFFF8FAFC),
-                    onBackground = Ink,
-                    surface = Color.White,
-                    onSurface = Ink,
-                    surfaceVariant = Color(0xFFF8FAFC),
-                    onSurfaceVariant = Muted,
-                    surfaceTint = Color.Transparent,
-                    surfaceContainer = Color.White,
-                    surfaceContainerLow = Color.White,
-                    surfaceContainerHigh = Color.White,
-                    surfaceContainerHighest = Color(0xFFF1F5F9),
-                    secondaryContainer = Color(0xFFEFF6FF),
-                    onSecondaryContainer = Color(0xFF1D4ED8),
-                    outline = Hairline,
-                    error = Color(0xFFEF4444)
-                )
-            ) {
+            val dark = ThemePreferences.isDark(androidx.compose.foundation.isSystemInDarkTheme())
+            val palette = if (dark) DarkPalette else LightPalette
+            SideEffect {
+                // Bar background matches the header; icons must contrast with it.
+                window.statusBarColor = palette.background.toArgb()
+                window.navigationBarColor = palette.background.toArgb()
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    show(WindowInsetsCompat.Type.statusBars())
+                    isAppearanceLightStatusBars = !palette.isDark
+                    isAppearanceLightNavigationBars = !palette.isDark
+                }
+            }
+            ProvideMeterLinkPalette(palette) {
+            MaterialTheme(colorScheme = meterLinkColorScheme(palette)) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -138,6 +123,7 @@ class MainActivity : ComponentActivity() {
                         onRefreshUsb = { transport.refreshProbeStatus() }
                     )
                 }
+            }
             }
         }
     }
@@ -744,15 +730,24 @@ fun MeterReaderScreen(
         }
     }
 
+    val darkModeOn = Palette.isDark
     Scaffold(
         topBar = {
             LandingHeader(
                 probeStatus = probeStatus,
                 historyCount = savedReadings.size,
                 checkingForUpdates = checkingForUpdates,
+                darkMode = darkModeOn,
                 onScanUsb = onRefreshUsb,
                 onHistory = { showHistoryDialog = true },
                 onCheckUpdates = ::checkForUpdates,
+                onToggleDarkMode = {
+                    // An explicit choice replaces "follow system" from now on.
+                    ThemePreferences.set(
+                        context,
+                        if (darkModeOn) ThemeMode.LIGHT else ThemeMode.DARK
+                    )
+                },
                 onAbout = { showAboutDialog = true }
             )
         },

@@ -55,7 +55,7 @@ internal fun LoadSurveyRangeChips(
             "Load Survey Range",
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,
-            color = Color(0xFF475569)
+            color = Palette.subtleText
         )
         Row(
             modifier = Modifier
@@ -69,16 +69,16 @@ internal fun LoadSurveyRangeChips(
                 val labelColor = when {
                     !enabled -> Muted.copy(alpha = 0.5f)
                     isSelected -> Cobalt
-                    else -> Color(0xFF334155)
+                    else -> Palette.subtleText
                 }
                 Surface(
                     onClick = { onSelect(option) },
                     enabled = enabled,
                     shape = RoundedCornerShape(percent = 50),
-                    color = if (isSelected) SoftBlue else Color.White,
+                    color = if (isSelected) SoftBlue else CardSurface,
                     border = BorderStroke(
                         1.dp,
-                        if (isSelected) Color(0xFF93C5FD) else Hairline
+                        if (isSelected) Palette.selectedBorder else Hairline
                     ),
                     contentColor = labelColor
                 ) {

@@ -67,7 +67,7 @@ internal fun MeterLinkDialog(
                 .fillMaxWidth(0.92f)
                 .padding(vertical = 16.dp),
             shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            colors = CardDefaults.cardColors(containerColor = CardSurface),
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {

@@ -84,7 +84,7 @@ internal fun MeterReadingSummaryCard(
     )
 
     Card(
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = CardSurface),
         border = BorderStroke(1.dp, Hairline),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
@@ -130,7 +130,7 @@ internal fun MeterReadingSummaryCard(
                     if (isNetMeter) {
                         Spacer(Modifier.width(6.dp))
                         Surface(
-                            color = Color(0xFFDCFCE7),
+                            color = Palette.successFill,
                             shape = RoundedCornerShape(6.dp)
                         ) {
                             Text(
@@ -138,7 +138,7 @@ internal fun MeterReadingSummaryCard(
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                 fontSize = 9.sp,
                                 fontWeight = FontWeight.ExtraBold,
-                                color = Color(0xFF166534),
+                                color = Palette.successText,
                                 maxLines = 1
                             )
                         }
@@ -248,7 +248,7 @@ internal fun MeterReadingSummaryCard(
             }
 
             report.errors.take(3).forEach {
-                Text(it, color = Color(0xFFB45309), fontSize = 10.sp)
+                Text(it, color = Palette.warningText, fontSize = 10.sp)
             }
 
             Row(
@@ -264,7 +264,7 @@ internal fun MeterReadingSummaryCard(
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Cobalt,
-                        contentColor = Color.White
+                        contentColor = Palette.onCobalt
                     ),
                     contentPadding = PaddingValues(horizontal = 4.dp)
                 ) {
@@ -284,7 +284,7 @@ internal fun MeterReadingSummaryCard(
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Cobalt,
-                        contentColor = Color.White
+                        contentColor = Palette.onCobalt
                     ),
                     contentPadding = PaddingValues(horizontal = 4.dp)
                 ) {
@@ -303,7 +303,7 @@ internal fun MeterReadingSummaryCard(
                     .fillMaxWidth()
                     .height(40.dp),
                 shape = RoundedCornerShape(10.dp),
-                border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
+                border = BorderStroke(1.dp, Palette.strongBorder),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Ink),
                 contentPadding = PaddingValues(horizontal = 12.dp)
             ) {
@@ -348,9 +348,9 @@ internal fun EnergyReadout(
 ) {
     Surface(
         modifier = modifier,
-        color = Color(0xFFF0F7FF),
+        color = Palette.panelBlue,
         shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, Color(0xFFDBEAFE))
+        border = BorderStroke(1.dp, Palette.trackBlue)
     ) {
         Column(
             modifier = Modifier.padding(12.dp),
@@ -396,11 +396,11 @@ internal fun SectionCountBadge(
     Surface(
         modifier = modifier
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
-        color = if (onClick != null) Color(0xFFF8FAFC) else TileFill,
+        color = if (onClick != null) TileFill else TileFill,
         shape = RoundedCornerShape(8.dp),
         border = BorderStroke(
             1.dp,
-            if (onClick != null) Color(0xFFBFDBFE) else Hairline
+            if (onClick != null) SoftBlueBorder else Hairline
         )
     ) {
         Row(

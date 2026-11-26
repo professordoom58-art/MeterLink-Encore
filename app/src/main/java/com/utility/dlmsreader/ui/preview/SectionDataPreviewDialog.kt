@@ -67,7 +67,7 @@ internal fun SectionDataPreviewDialog(
                 .heightIn(max = 620.dp)
                 .padding(vertical = 16.dp),
             shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color.White),
+            colors = CardDefaults.cardColors(containerColor = CardSurface),
             elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
@@ -311,7 +311,7 @@ private fun PreviewDataTable(
                 itemsIndexed(rows) { index, row ->
                     Row(
                         modifier = Modifier.background(
-                            if (index % 2 == 0) Color.White else Color(0xFFF8FAFC)
+                            if (index % 2 == 0) CardSurface else TileFill
                         )
                     ) {
                         headers.forEachIndexed { columnIndex, (_, width) ->

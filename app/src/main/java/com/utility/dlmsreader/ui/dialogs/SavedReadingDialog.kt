@@ -134,7 +134,7 @@ internal fun SavedReadingsHistoryDialog(
                 ) {
                     items(filteredReadings, key = { it.id }) { reading ->
                         Surface(
-                            color = Color(0xFFF8FAFC),
+                            color = TileFill,
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
                                 .fillMaxWidth()

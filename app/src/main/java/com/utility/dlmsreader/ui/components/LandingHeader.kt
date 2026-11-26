@@ -23,6 +23,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
@@ -79,14 +80,16 @@ internal fun LandingHeader(
     probeStatus: String,
     historyCount: Int,
     checkingForUpdates: Boolean,
+    darkMode: Boolean,
     onScanUsb: () -> Unit,
     onHistory: () -> Unit,
     onCheckUpdates: () -> Unit,
+    onToggleDarkMode: () -> Unit,
     onAbout: () -> Unit
 ) {
     val dotColor = scanUsbDotColor(probeStatus)
 
-    Surface(color = Color(0xFFF8FAFC)) {
+    Surface(color = Palette.background) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -126,7 +129,7 @@ internal fun LandingHeader(
                     onClick = onScanUsb,
                     modifier = Modifier.height(34.dp),
                     shape = RoundedCornerShape(percent = 50),
-                    color = Color.White,
+                    color = CardSurface,
                     border = BorderStroke(1.dp, Hairline)
                 ) {
                     Row(
@@ -150,8 +153,10 @@ internal fun LandingHeader(
                 HeaderOverflowMenu(
                     historyCount = historyCount,
                     checkingForUpdates = checkingForUpdates,
+                    darkMode = darkMode,
                     onHistory = onHistory,
                     onCheckUpdates = onCheckUpdates,
+                    onToggleDarkMode = onToggleDarkMode,
                     onAbout = onAbout
                 )
             }
@@ -164,8 +169,10 @@ internal fun LandingHeader(
 private fun HeaderOverflowMenu(
     historyCount: Int,
     checkingForUpdates: Boolean,
+    darkMode: Boolean,
     onHistory: () -> Unit,
     onCheckUpdates: () -> Unit,
+    onToggleDarkMode: () -> Unit,
     onAbout: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -181,7 +188,7 @@ private fun HeaderOverflowMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
             offset = DpOffset(x = (-16).dp, y = 4.dp),
-            containerColor = Color.White,
+            containerColor = CardSurface,
             tonalElevation = 0.dp,
             shadowElevation = 8.dp,
             shape = RoundedCornerShape(12.dp),
@@ -216,6 +223,24 @@ private fun HeaderOverflowMenu(
                     expanded = false
                     onCheckUpdates()
                 },
+                colors = MenuDefaults.itemColors(
+                    textColor = Ink,
+                    leadingIconColor = Cobalt
+                )
+            )
+            DropdownMenuItem(
+                text = { Text("Dark mode", fontSize = 14.sp) },
+                leadingIcon = { MenuItemIcon(R.drawable.ic_menu_dark_mode) },
+                trailingIcon = {
+                    // The whole row toggles; the switch only shows the state.
+                    Switch(
+                        checked = darkMode,
+                        onCheckedChange = null,
+                        modifier = Modifier.scale(0.8f)
+                    )
+                },
+                // The menu stays open so the theme change shows immediately.
+                onClick = onToggleDarkMode,
                 colors = MenuDefaults.itemColors(
                     textColor = Ink,
                     leadingIconColor = Cobalt

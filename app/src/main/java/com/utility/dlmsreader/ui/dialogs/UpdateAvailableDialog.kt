@@ -74,7 +74,7 @@ internal fun UpdateAvailableDialog(
                     CircularProgressIndicator(
                         modifier = Modifier.size(14.dp),
                         strokeWidth = 2.dp,
-                        color = Color.White
+                        color = Palette.onCobalt
                     )
                     Spacer(Modifier.width(6.dp))
                     Text("Downloading…", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
@@ -96,7 +96,7 @@ internal fun UpdateAvailableDialog(
         ResultRow("Latest release", release.tagName)
         ResultRow("Installed build", installedVersion)
         error?.let {
-            Text(it, fontSize = 12.sp, color = Color(0xFFB91C1C))
+            Text(it, fontSize = 12.sp, color = Palette.errorText)
         }
         Text(
             "The APK downloads from GitHub into the app cache. Android asks for confirmation before installing.",
