@@ -128,12 +128,17 @@ class OpticalUsbTransport(private val context: Context) {
                 _probeStatus.value = STATUS_USB_CABLE_WAITING
                 log(TraceDirection.INFO, STATUS_USB_CABLE_WAITING)
 
+                var openedBaud = baudRate
                 if (useModeE) {
-                    if (!performModeEHandshake()) {
+                    val negotiated = performModeEHandshake()
+                    if (negotiated != null) {
+                        openedBaud = negotiated
+                    } else {
                         log(
                             TraceDirection.INFO,
                             "Mode E did not receive a banner; falling back to direct 9600 8N1 HDLC."
                         )
+                        openedBaud = 9600
                         openedPort.setParameters(
                             9600,
                             8,
@@ -158,74 +163,98 @@ class OpticalUsbTransport(private val context: Context) {
                     openedPort.purgeHwBuffers(true, true)
                 } catch (_: UnsupportedOperationException) { }
 
-                log(TraceDirection.INFO, "Optical port opened at $baudRate 8N1 (DTR/RTS ON)")
+                log(TraceDirection.INFO, "Optical port opened at $openedBaud 8N1 (DTR/RTS ON)")
             }
         }
 
-    fun performModeEHandshake(): Boolean {
-        val signOnQuery = byteArrayOf(0x2F, 0x3F, 0x21, 0x0D, 0x0A)
+    /**
+     * IEC 62056-21 Mode E sign-on (see [Iec62056ModeE]). Returns the HDLC baud
+     * rate the port was switched to, or null when the meter did not answer
+     * with a valid identification (the caller then falls back to direct HDLC).
+     */
+    fun performModeEHandshake(): Int? {
+        val signOnQuery = Iec62056ModeE.SIGN_ON_REQUEST
         var lastPacketSent: ByteArray? = null
         var receivedBytes: ByteArray? = null
 
         try {
-            log(TraceDirection.INFO, "Starting L&T Mode E Handshake (300 7E1)...")
-
-            port?.let { p ->
-                // openPort() has already opened and stored this port.
-                p.setParameters(300, 7, 1, com.hoho.android.usbserial.driver.UsbSerialPort.PARITY_EVEN)
-                p.dtr = true
-                p.rts = true
-
-                // CRITICAL: Clear stale noise before sending the 300-baud sign-on.
-                try {
-                    p.purgeHwBuffers(true, true)
-                } catch (_: Exception) {
-                    // Ignore if the specific driver wrapper does not support purging.
-                }
-
-                Thread.sleep(300)
-
-                p.write(signOnQuery, 1000)
-                lastPacketSent = signOnQuery
-                log(TraceDirection.TX, "/?! (300 baud sign-on sent)")
-
-                val buffer = ByteArray(128)
-                val len = try {
-                    readBytes(buffer, 3000)
-                } catch (e: Exception) {
-                    val error = "No physical meter response detected (Mode E read timeout): ${e.message ?: "timeout"}"
-                    markNoMeterResponse(error)
-                    logConnectionDiagnosticReport(true, lastPacketSent ?: signOnQuery, null, error)
-                    return false
-                }
-
-                if (len > 0) {
-                    receivedBytes = buffer.copyOf(len)
-                    val responseStr = String(buffer, 0, len, Charsets.US_ASCII).trim()
-                    log(TraceDirection.RX, "Meter Response: $responseStr")
-
-                    val ackFrame = byteArrayOf(0x06, 0x30, 0x35, 0x30, 0x0D, 0x0A)
-                    Thread.sleep(300)
-                    p.write(ackFrame, 1000)
-                    lastPacketSent = ackFrame
-                    log(TraceDirection.TX, "ACK Baud-Rate Switch sent")
-
-                    Thread.sleep(400)
-                    p.setParameters(9600, 8, 1, com.hoho.android.usbserial.driver.UsbSerialPort.PARITY_NONE)
-                    log(TraceDirection.INFO, "Switched port to 9600 8N1. Ready for HDLC.")
-                    return true
-                } else {
-                    val error = "No physical meter response detected (Mode E sign-on timeout)."
-                    markNoMeterResponse(error)
-                    logConnectionDiagnosticReport(true, lastPacketSent, null, error)
-                }
+            log(TraceDirection.INFO, "Starting IEC 62056-21 Mode E sign-on (300 7E1)...")
+            val p = port ?: return null
+            // openPort() has already opened and stored this port.
+            p.setParameters(300, 7, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_EVEN)
+            p.dtr = true
+            p.rts = true
+            // Clear stale noise before sending the 300-baud request.
+            try {
+                p.purgeHwBuffers(true, true)
+            } catch (_: Exception) {
+                // Some driver wrappers do not support hardware purging.
             }
+            Thread.sleep(300)
+
+            p.write(signOnQuery, 1000)
+            lastPacketSent = signOnQuery
+            log(TraceDirection.TX, "/?! (300 baud sign-on request)")
+
+            // At 300 baud an identification of ~20 characters takes ~0.7 s and
+            // arrives over several USB reads: collect until CR LF or 3 s.
+            val collected = ByteArrayOutputStream()
+            val chunk = ByteArray(64)
+            val deadline = System.currentTimeMillis() + 3000
+            while (System.currentTimeMillis() < deadline &&
+                !Iec62056ModeE.isIdentificationComplete(collected.toByteArray())
+            ) {
+                val len = readBytes(chunk, 200)
+                if (len > 0) collected.write(chunk, 0, len)
+            }
+            receivedBytes = collected.toByteArray().takeIf { it.isNotEmpty() }
+
+            val identification = receivedBytes?.let(Iec62056ModeE::parseIdentification)
+            if (identification == null) {
+                val error = if (receivedBytes == null) {
+                    "No physical meter response detected (Mode E sign-on timeout)."
+                } else {
+                    "Mode E: meter reply is not a valid IEC 62056-21 identification."
+                }
+                markNoMeterResponse(error)
+                logConnectionDiagnosticReport(true, lastPacketSent, receivedBytes, error)
+                return null
+            }
+            log(TraceDirection.RX, "Identification: ${identification.raw}")
+            if (!identification.supportsModeE) {
+                log(
+                    TraceDirection.INFO,
+                    "Identification has no \\2 Mode E marker; requesting HDLC anyway."
+                )
+            }
+
+            val ack = Iec62056ModeE.modeEAcknowledgement(identification.baudChar)
+            Thread.sleep(300)
+            p.write(ack, 1000)
+            lastPacketSent = ack
+            log(
+                TraceDirection.TX,
+                "ACK 2${identification.baudChar}2 (HDLC at ${identification.baudRate} baud)"
+            )
+
+            Thread.sleep(Iec62056ModeE.ACK_DRAIN_MS)
+            p.setParameters(
+                identification.baudRate,
+                8,
+                UsbSerialPort.STOPBITS_1,
+                UsbSerialPort.PARITY_NONE
+            )
+            log(
+                TraceDirection.INFO,
+                "Switched port to ${identification.baudRate} 8N1. Ready for HDLC."
+            )
+            return identification.baudRate
         } catch (e: Exception) {
             val error = "Mode E error: ${e.message ?: "communication error"}"
             markNoMeterResponse(error)
             logConnectionDiagnosticReport(true, lastPacketSent ?: signOnQuery, receivedBytes, error)
         }
-        return false
+        return null
     }
 
     fun testDirectHdlcConnection(): Boolean {
