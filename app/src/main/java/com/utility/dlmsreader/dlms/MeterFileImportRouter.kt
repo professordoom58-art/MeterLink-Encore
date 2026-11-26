@@ -60,11 +60,49 @@ object MeterFileImportRouter {
             "The selected file is not a supported meter file. " +
                 "Choose a JSON report, a tagged OBIS CSV, or a framed binary dump."
         )
+        // .OUT/.dat exports carry base units (`78532710 VAH`, `7443000 WH`).
+        // Normalize here so every screen, not only the PDF/Excel exporters,
+        // shows kWh/kVAh/kW/kVA. Normalization is idempotent.
         return MeterFileImportResult(
-            report = report
-                .copy(sourceLabel = MeterDataReport.SOURCE_IMPORTED)
-                .withNetMetering(),
+            report = UnitNormalization.normalize(
+                report
+                    .copy(
+                        sourceLabel = MeterDataReport.SOURCE_IMPORTED,
+                        billing = report.billing?.let(::dropUnwrittenBillingSlots)
+                    )
+                    .withNetMetering()
+            ),
             format = format
+        )
+    }
+
+    /** Billing date cell of a slot the meter never wrote: `00/00/0000 00:00:00`. */
+    private val ZERO_DATE = Regex("""^0{1,2}[/.-]0{1,2}[/.-]0{1,4}(?:\s.*)?$""")
+
+    /**
+     * Removes billing rows whose billing date (0.0.0.1.2.255, or the first
+     * column) is all zeros. Such rows are unused billing slots: meters fill
+     * their value cells with uninitialized memory, for example `579796992 VAH`
+     * or negative counts, which then appear as impossible kVAh readings.
+     */
+    internal fun dropUnwrittenBillingSlots(section: ProfileSection): ProfileSection {
+        val dateIndex = section.columns.indexOfFirst { it.obisCode == "0.0.0.1.2.255" }
+            .takeIf { it >= 0 } ?: 0
+        fun written(row: List<String>): Boolean =
+            !ZERO_DATE.matches(row.getOrNull(dateIndex)?.trim().orEmpty())
+        val rows = section.rows.filter(::written)
+        if (rows.size == section.rows.size) return section
+        val dropped = section.rows.size - rows.size
+        val fullRows = section.fullRows.filter(::written)
+        return section.copy(
+            rows = rows,
+            totalRows = (section.totalRows - dropped).coerceAtLeast(rows.size),
+            fullRows = fullRows,
+            fullTotalRows = if (section.fullTotalRows > 0) {
+                (section.fullTotalRows - (section.fullRows.size - fullRows.size)).coerceAtLeast(fullRows.size)
+            } else {
+                section.fullTotalRows
+            }
         )
     }
 

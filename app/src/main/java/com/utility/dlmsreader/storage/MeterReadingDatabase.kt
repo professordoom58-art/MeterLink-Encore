@@ -519,7 +519,10 @@ class MeterReadingDatabase(
             val bytes = cursor.getBlob(0) ?: return@use null
             // Legacy rows were stored before net metering existed: derive the
             // export/net rows on read so old and new readings look the same.
+            // Imports saved by older builds kept base units (VAh, Wh); normalize
+            // on read too so they display in kVAh/kWh. Idempotent for new rows.
             MeterReportSerializer.fromJsonBytesGzip(bytes)?.withNetMetering()
+                ?.let { com.utility.dlmsreader.dlms.UnitNormalization.normalize(it) }
         }
     }
 
