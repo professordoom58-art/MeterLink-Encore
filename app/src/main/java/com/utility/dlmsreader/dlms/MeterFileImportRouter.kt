@@ -42,6 +42,9 @@ object MeterFileImportRouter {
     private val CSV_EXTENSIONS = setOf("csv", "txt", "out")
     private val BINARY_EXTENSIONS = setOf("bin", "dat")
 
+    internal const val EMPTY_FILE_MESSAGE =
+        "The selected file is empty (0 bytes). The reading was not saved by the meter-reading device."
+
     /** Max prefix decoded for text sniffing; keeps large binary dumps off-heap. */
     private const val TEXT_SAMPLE_LIMIT = 64 * 1024
 
@@ -50,6 +53,9 @@ object MeterFileImportRouter {
         fileName: String = "",
         mimeType: String? = null
     ): MeterFileImportResult {
+        // Zero-byte .dat files are common in MRI dumps (the device created the
+        // file but never wrote the reading); say so instead of "not supported".
+        require(bytes.isNotEmpty()) { EMPTY_FILE_MESSAGE }
         val format = detectFormat(fileName, mimeType, bytes)
         val report = when (format) {
             MeterFileFormat.JSON -> parseJson(bytes)
