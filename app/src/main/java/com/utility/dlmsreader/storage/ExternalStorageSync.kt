@@ -37,7 +37,12 @@ internal class ExternalStorageSync(
         val name: String,
         val lastModifiedMs: Long,
         val readText: () -> String?,
-        val delete: () -> Unit
+        /**
+         * Removes a legacy-named copy after it was rewritten under the canonical
+         * name. Null for files in a user-picked (SAF) folder: those belong to the
+         * user and are never deleted by an import.
+         */
+        val delete: (() -> Unit)?
     )
 
     /** Imports MeterLink JSONs exposed by a user-granted SAF folder tree. */
@@ -103,11 +108,7 @@ internal class ExternalStorageSync(
                                         }
                                     }.getOrNull()
                                 },
-                                delete = {
-                                    runCatching {
-                                        DocumentsContract.deleteDocument(resolver, documentUri)
-                                    }
-                                }
+                                delete = null
                             )
                         }
                     }

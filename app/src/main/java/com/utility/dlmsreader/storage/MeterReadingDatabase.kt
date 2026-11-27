@@ -626,7 +626,7 @@ class MeterReadingDatabase(
             report.identityValue(SERIAL_OBIS),
             scannedAt
         )
-        if (backup.name != expectedName) backup.delete()
+        if (backup.name != expectedName) backup.delete?.invoke()
         return true
     }
 
