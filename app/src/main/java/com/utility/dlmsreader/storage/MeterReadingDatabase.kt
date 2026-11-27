@@ -386,33 +386,24 @@ class MeterReadingDatabase(
     }
 
     /**
-     * Keeps the reading history bounded so partial reads cannot grow it forever.
-     * External backup files belonging to the dropped rows are removed too, so a
-     * later startup scan cannot resurrect them.
+     * Keeps the in-app reading history bounded so partial reads cannot grow it
+     * forever. Only the SQLite rows are dropped: the JSON backups in
+     * `Documents/MeterLink` are the user's long-term record and are kept. Only
+     * "Delete Saved Reading" ([deleteReport]) removes a backup file. Restores
+     * skip backups the cap would drop again (see [BackupRetention]).
      */
     internal fun pruneOldReadings(db: SQLiteDatabase) {
         val keep = "SELECT $COL_ID FROM $TABLE " +
             "ORDER BY $COL_SCANNED_AT_EPOCH DESC, $COL_ID DESC LIMIT $MAX_SAVED_READINGS"
-        val doomed = mutableListOf<BackupKey>()
-        db.rawQuery(
-            "SELECT $COL_ID, $COL_SERIAL, $COL_SCANNED_AT_EPOCH, $COL_BACKUP_PATH FROM $TABLE " +
-                "WHERE $COL_ID NOT IN ($keep)",
-            null
-        ).use { cursor ->
-            while (cursor.moveToNext()) {
-                doomed += BackupKey(
-                    id = cursor.getLong(0),
-                    serial = cursor.getString(1),
-                    scannedAtEpochMs = cursor.getLong(2),
-                    path = cursor.getString(3)
-                )
-            }
-        }
         db.execSQL("DELETE FROM $TABLE WHERE $COL_ID NOT IN ($keep)")
-        doomed.forEach {
-            externalStorage.deleteBackup(it.serial, it.id, it.scannedAtEpochMs, it.path)
-        }
     }
+
+    /** Row count and oldest scan time of the history, for [BackupRetention]. */
+    private fun historyWindow(db: SQLiteDatabase): Pair<Int, Long?> =
+        db.rawQuery("SELECT COUNT(*), MIN($COL_SCANNED_AT_EPOCH) FROM $TABLE", null).use { cursor ->
+            if (!cursor.moveToFirst()) return@use 0 to null
+            cursor.getInt(0) to (if (cursor.isNull(1)) null else cursor.getLong(1))
+        }
 
     /** All saved readings, newest first, without touching the report BLOB. */
     suspend fun listSummaries(): List<SavedReadingSummary> = withContext(Dispatchers.IO) {
@@ -601,15 +592,22 @@ class MeterReadingDatabase(
         knownFingerprints: MutableSet<String>,
         backup: ExternalStorageSync.BackupFile
     ): Boolean {
+        val scannedAt = ExternalReadingBackup.parseScanTimestamp(
+            backup.name,
+            backup.lastModifiedMs
+        )
+        // Backups older than a full history would be pruned again at once;
+        // leave them on disk and out of SQLite instead of churning every launch.
+        val (keptCount, oldestKept) = historyWindow(db)
+        if (!BackupRetention.wouldBeKept(scannedAt, keptCount, oldestKept, MAX_SAVED_READINGS)) {
+            return false
+        }
+
         val text = backup.readText() ?: return false
         val report = ExternalReadingBackup.fromJson(text) ?: return false
         val fingerprint = ExternalReadingBackup.fingerprint(report)
         if (!knownFingerprints.add(fingerprint)) return false
 
-        val scannedAt = ExternalReadingBackup.parseScanTimestamp(
-            backup.name,
-            backup.lastModifiedMs
-        )
         val rowId = db.insertOrThrow(
             TABLE,
             null,
@@ -631,12 +629,5 @@ class MeterReadingDatabase(
         if (backup.name != expectedName) backup.delete()
         return true
     }
-
-    private data class BackupKey(
-        val id: Long,
-        val serial: String,
-        val scannedAtEpochMs: Long,
-        val path: String
-    )
 
 }
