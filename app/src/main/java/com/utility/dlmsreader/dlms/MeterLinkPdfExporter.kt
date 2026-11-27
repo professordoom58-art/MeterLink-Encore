@@ -81,6 +81,8 @@ class MeterLinkPdfExporter(private val context: Context) {
         }
         val hexLog = File(directory, "MeterLink_HexLog_${serial}_$stamp.txt")
         writeHexLog(hexLog, traceLogs, generated, serial, counters, droppedLineCount)
+        ExportRetention.prune(directory, ExportRetention.REPORT_PREFIX, ".pdf")
+        ExportRetention.prune(directory, ExportRetention.HEX_LOG_PREFIX, ".txt")
         return MeterLinkExportBundle(file, hexLog)
     }
 
@@ -99,6 +101,7 @@ class MeterLinkPdfExporter(private val context: Context) {
         directory.mkdirs()
         return File(directory, "MeterLink_HexLog_${serial}_$stamp.txt").also {
             writeHexLog(it, traceLogs, generated, serial, counters, droppedLineCount)
+            ExportRetention.prune(directory, ExportRetention.HEX_LOG_PREFIX, ".txt")
         }
     }
 

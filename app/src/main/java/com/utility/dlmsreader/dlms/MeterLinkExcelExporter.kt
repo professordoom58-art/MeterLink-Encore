@@ -625,6 +625,7 @@ class MeterLinkExcelExporter(private val context: Context) {
         directory.mkdirs()
         val file = File(directory, "MeterLink_Report_${serial}_$stamp.xlsx")
         file.outputStream().use { out -> writeWorkbook(report, out) }
+        ExportRetention.prune(directory, ExportRetention.REPORT_PREFIX, ".xlsx")
         return file
     }
 
